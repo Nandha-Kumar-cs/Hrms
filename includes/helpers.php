@@ -99,6 +99,19 @@ function csrf_verify(): bool {
     return hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '');
 }
 
+/**
+ * Verify CSRF token and abort with redirect on failure.
+ * Use at the top of every POST-handling script:
+ *   verify_csrf($_POST['csrf_token'] ?? '');
+ */
+function verify_csrf(string $token = ''): void {
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
+        flash('error', 'Invalid or expired request. Please try again.');
+        $back = $_SERVER['HTTP_REFERER'] ?? BASE_URL . '/index.php';
+        redirect($back);
+    }
+}
+
 function csrf_field(): string {
     return '<input type="hidden" name="csrf_token" value="' . csrf_token() . '">';
 }

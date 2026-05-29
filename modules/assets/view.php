@@ -1,13 +1,13 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('assets_view');
+require_permission('assets', 'view');
 
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/assets/index.php');
 
 $asset = db()->query("SELECT a.*, ac.name AS category_name,
-    CONCAT(e.first_name,' ',e.last_name) AS emp_name, e.employee_id AS emp_code
+    e.name AS emp_name, e.employee_id AS emp_code
     FROM assets a
     LEFT JOIN asset_categories ac ON a.category_id = ac.id
     LEFT JOIN employees e ON a.assigned_to = e.id
@@ -15,8 +15,8 @@ $asset = db()->query("SELECT a.*, ac.name AS category_name,
 
 if (!$asset) redirect(BASE_URL . '/modules/assets/index.php');
 
-$assignHistory = db()->query("SELECT aa.*, CONCAT(e.first_name,' ',e.last_name) AS emp_name, e.employee_id AS emp_code,
-    CONCAT(u.first_name,' ',u.last_name) AS assigned_by_name
+$assignHistory = db()->query("SELECT aa.*, e.name AS emp_name, e.employee_id AS emp_code,
+    u.name AS assigned_by_name
     FROM asset_assignments aa
     JOIN employees e ON aa.employee_id = e.id
     LEFT JOIN users u ON aa.assigned_by = u.id
@@ -31,7 +31,7 @@ include '../../includes/header.php';
         <p class="page-subtitle"><?= h($asset['asset_name']) ?> &mdash; <?= h($asset['serial_number']) ?></p>
     </div>
     <div class="page-actions">
-        <?php if (can('assets_edit') && $asset['status'] === 'Available'): ?>
+        <?php if (can('assets', 'edit') && $asset['status'] === 'Available'): ?>
             <button class="btn btn-primary" onclick="openModal('assignModal')" data-key="A"><u>A</u>ssign</button>
         <?php endif; ?>
         <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>
@@ -115,7 +115,7 @@ include '../../includes/header.php';
 </div>
 
 <!-- Assign Modal -->
-<?php if (can('assets_edit')): ?>
+<?php if (can('assets', 'edit')): ?>
 <div class="modal-overlay" id="assignModal" style="display:none">
     <div class="modal-box">
         <div class="modal-header">
@@ -131,9 +131,9 @@ include '../../includes/header.php';
                     <select name="employee_id" class="form-control" required>
                         <option value="">Select Employee</option>
                         <?php
-                        $emps = db()->query("SELECT id, CONCAT(first_name,' ',last_name,' (',employee_id,')') AS name FROM employees WHERE status='Active' ORDER BY first_name")->fetchAll(PDO::FETCH_ASSOC);
+                        $emps = db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
                         foreach ($emps as $e): ?>
-                            <option value="<?= $e['id'] ?>"><?= h($e['name']) ?></option>
+                            <option value="<?= $e['id'] ?>"><?= h($e['label']) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>

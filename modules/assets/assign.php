@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('assets_edit');
+require_permission('assets', 'edit');
 verify_csrf($_POST['csrf_token'] ?? '');
 
 $assetId = (int)$_POST['asset_id'];

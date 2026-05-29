@@ -1,15 +1,15 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll_view');
+require_permission('payroll', 'view');
 
 $empId = (int)($_GET['employee_id'] ?? 0);
-$employees = db()->query("SELECT id, CONCAT(first_name,' ',last_name,' (',employee_id,')') AS name FROM employees WHERE status='Active' ORDER BY first_name")->fetchAll(PDO::FETCH_ASSOC);
+$employees = db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 $slips = [];
 $emp = null;
 if ($empId) {
-    $emp = db()->query("SELECT *, CONCAT(first_name,' ',last_name) AS full_name FROM employees WHERE id=$empId")->fetch(PDO::FETCH_ASSOC);
+    $emp = db()->query("SELECT * FROM employees WHERE id=$empId")->fetch(PDO::FETCH_ASSOC);
     $slips = db()->query("SELECT ss.*, pr.month, pr.year, pr.status AS run_status
         FROM salary_slips ss
         JOIN payroll_runs pr ON ss.payroll_run_id = pr.id
@@ -23,7 +23,7 @@ include '../../includes/header.php';
 <div class="page-header">
     <div>
         <h1 class="page-title">Payroll History</h1>
-        <p class="page-subtitle"><?= $emp ? h($emp['full_name']) . ' (' . h($emp['employee_id']) . ')' : 'Select an employee' ?></p>
+        <p class="page-subtitle"><?= $emp ? h($emp['name']) . ' (' . h($emp['employee_id']) . ')' : 'Select an employee' ?></p>
     </div>
     <div class="page-actions">
         <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>
@@ -40,7 +40,7 @@ include '../../includes/header.php';
                 <select name="employee_id" class="form-control">
                     <option value="">Select Employee</option>
                     <?php foreach ($employees as $e): ?>
-                        <option value="<?= $e['id'] ?>" <?= $empId==$e['id']?'selected':'' ?>><?= h($e['name']) ?></option>
+                        <option value="<?= $e['id'] ?>" <?= $empId==$e['id']?'selected':'' ?>><?= h($e['label']) ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>

@@ -1,30 +1,30 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll_view');
+require_permission('payroll', 'view');
 
 $user = current_user();
 
 // Handle save
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
-    require_permission('payroll_edit');
+    require_permission('payroll', 'edit');
 
     $empId      = (int)$_POST['employee_id'];
     $basic      = (float)$_POST['basic'];
     $hra        = (float)$_POST['hra'];
     $conveyance = (float)$_POST['conveyance'];
     $medical    = (float)$_POST['medical'];
-    $special    = (float)$_POST['special'];
-    $other      = (float)$_POST['other_allowance'];
-    $effDate    = $_POST['effective_date'] ?? date('Y-m-d');
+    $special    = (float)$_POST['special_allow'];
+    $other      = (float)$_POST['other_allow'];
+    $effDate    = $_POST['effective_from'] ?? date('Y-m-d');
 
-    // Mark old active as inactive
-    db()->prepare("UPDATE salary_structures SET is_active=0 WHERE employee_id=:eid")
+    // Mark previous structure as not current
+    db()->prepare("UPDATE salary_structures SET is_current=0 WHERE employee_id=:eid")
          ->execute([':eid'=>$empId]);
 
     $stmt = db()->prepare("INSERT INTO salary_structures
-        (employee_id,basic,hra,conveyance,medical,special_allowance,other_allowance,effective_date,is_active,created_at)
+        (employee_id,basic,hra,conveyance,medical,special_allow,other_allow,effective_from,is_current,created_at)
         VALUES (:eid,:b,:h,:c,:m,:s,:o,:ed,1,NOW())");
     $stmt->execute([':eid'=>$empId,':b'=>$basic,':h'=>$hra,':c'=>$conveyance,':m'=>$medical,':s'=>$special,':o'=>$other,':ed'=>$effDate]);
 
@@ -33,13 +33,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $empId = (int)($_GET['employee_id'] ?? 0);
-$employees = db()->query("SELECT id, CONCAT(first_name,' ',last_name,' (',employee_id,')') AS name FROM employees WHERE status='Active' ORDER BY first_name")->fetchAll(PDO::FETCH_ASSOC);
+$employees = db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 $current = null;
 $history = [];
 if ($empId) {
-    $current = db()->query("SELECT * FROM salary_structures WHERE employee_id=$empId AND is_active=1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $history = db()->query("SELECT * FROM salary_structures WHERE employee_id=$empId ORDER BY effective_date DESC")->fetchAll(PDO::FETCH_ASSOC);
+    $current = db()->query("SELECT * FROM salary_structures WHERE employee_id=$empId AND is_current=1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $history = db()->query("SELECT * FROM salary_structures WHERE employee_id=$empId ORDER BY effective_from DESC")->fetchAll(PDO::FETCH_ASSOC);
 }
 
 $page_title = 'Salary Structure';
@@ -68,7 +68,7 @@ include '../../includes/header.php';
                         <select name="employee_id" class="form-control" onchange="this.form.submit()">
                             <option value="">-- Select Employee --</option>
                             <?php foreach ($employees as $e): ?>
-                                <option value="<?= $e['id'] ?>" <?= $empId==$e['id']?'selected':'' ?>><?= h($e['name']) ?></option>
+                                <option value="<?= $e['id'] ?>" <?= $empId==$e['id']?'selected':'' ?>><?= h($e['label']) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -88,7 +88,7 @@ include '../../includes/header.php';
                 <div class="card-body">
                     <div class="form-group">
                         <label class="form-label">Effective Date</label>
-                        <input type="date" name="effective_date" class="form-control" value="<?= date('Y-m-d') ?>" required>
+                        <input type="date" name="effective_from" class="form-control" value="<?= $current['effective_from'] ?? date('Y-m-d') ?>" required>
                     </div>
                     <div class="form-row">
                         <div class="form-group col-6">
@@ -113,11 +113,11 @@ include '../../includes/header.php';
                     <div class="form-row">
                         <div class="form-group col-6">
                             <label class="form-label">Special Allowance</label>
-                            <input type="number" name="special_allowance" class="form-control salary-input" value="<?= $current['special_allowance'] ?? '' ?>" min="0" step="0.01" id="special">
+                            <input type="number" name="special_allow" class="form-control salary-input" value="<?= $current['special_allow'] ?? '' ?>" min="0" step="0.01" id="special">
                         </div>
                         <div class="form-group col-6">
                             <label class="form-label">Other Allowance</label>
-                            <input type="number" name="other_allowance" class="form-control salary-input" value="<?= $current['other_allowance'] ?? '' ?>" min="0" step="0.01" id="other">
+                            <input type="number" name="other_allow" class="form-control salary-input" value="<?= $current['other_allow'] ?? '' ?>" min="0" step="0.01" id="other">
                         </div>
                     </div>
                     <div class="card mb-3" style="background:var(--bg-secondary)">
@@ -133,7 +133,7 @@ include '../../includes/header.php';
                         </div>
                     </div>
                 </div>
-                <?php if (can('payroll_edit')): ?>
+                <?php if (can('payroll', 'edit')): ?>
                 <div class="card-footer">
                     <button type="submit" class="btn btn-primary" data-key="S"><u>S</u>ave Structure</button>
                 </div>
@@ -164,14 +164,14 @@ include '../../includes/header.php';
                     <tbody>
                         <?php foreach ($history as $h): ?>
                         <tr>
-                            <td><?= date_fmt($h['effective_date']) ?></td>
+                            <td><?= date_fmt($h['effective_from']) ?></td>
                             <td><?= money($h['basic']) ?></td>
                             <td><?= money($h['hra']) ?></td>
                             <td><?= money($h['conveyance']) ?></td>
                             <td><?= money($h['medical']) ?></td>
-                            <td><?= money($h['special_allowance']) ?></td>
-                            <td><strong><?= money($h['gross_salary']) ?></strong></td>
-                            <td><?= $h['is_active'] ? '<span class="pill pill-success">Active</span>' : '<span class="pill pill-secondary">Old</span>' ?></td>
+                            <td><?= money($h['special_allow']) ?></td>
+                            <td><strong><?= money($h['gross']) ?></strong></td>
+                            <td><?= $h['is_current'] ? '<span class="pill pill-success">Active</span>' : '<span class="pill pill-secondary">Old</span>' ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>

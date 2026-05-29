@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('roles_view');
+require_permission('roles', 'view');
 
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/roles/index.php');
@@ -27,7 +27,7 @@ $pwaEnabled = db()->query("SELECT module_key FROM pwa_module_access WHERE role_i
 
 $errors = [];
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles_edit')) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
     verify_csrf($_POST['csrf_token'] ?? '');
     $name  = trim($_POST['name'] ?? '');
     $desc  = trim($_POST['description'] ?? '');
@@ -77,7 +77,7 @@ include '../../includes/header.php';
 ?>
 <div class="page-header">
     <div>
-        <h1 class="page-title"><?= can('roles_edit') ? 'Edit Role' : 'View Role' ?>: <?= h($role['name']) ?></h1>
+        <h1 class="page-title"><?= can('roles', 'edit') ? 'Edit Role' : 'View Role' ?>: <?= h($role['name']) ?></h1>
         <?php if ($role['is_system']): ?><p class="page-subtitle">System role — name cannot be changed</p><?php endif; ?>
     </div>
     <div class="page-actions">
@@ -106,7 +106,7 @@ include '../../includes/header.php';
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="card-title">Module Permissions</h3>
-                <?php if (can('roles_edit')): ?>
+                <?php if (can('roles', 'edit')): ?>
                 <div>
                     <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAllPerms(true)">Select All</button>
                     <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAllPerms(false)">Clear All</button>
@@ -118,7 +118,7 @@ include '../../includes/header.php';
                 <div class="perm-module mb-4">
                     <div class="d-flex align-items-center gap-2 mb-2">
                         <strong style="text-transform:capitalize"><?= $module ?></strong>
-                        <?php if (can('roles_edit')): ?>
+                        <?php if (can('roles', 'edit')): ?>
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', true)">All</button>
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', false)">None</button>
                         <?php endif; ?>
@@ -130,7 +130,7 @@ include '../../includes/header.php';
                                 <input type="checkbox" name="permissions[]" value="<?= $p['id'] ?>"
                                     class="perm-check perm-<?= $p['module'] ?>"
                                     <?= in_array($p['id'], $rolePerms) ? 'checked' : '' ?>
-                                    <?= !can('roles_edit') ? 'disabled' : '' ?>>
+                                    <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
                                 <span><?= h($p['name']) ?></span>
                             </label>
                         </div>
@@ -168,7 +168,7 @@ include '../../includes/header.php';
                         <label class="form-check">
                             <input type="checkbox" name="notifications[]" value="<?= $key ?>"
                                 <?= in_array($key, $roleNotifs) ? 'checked' : '' ?>
-                                <?= !can('roles_edit') ? 'disabled' : '' ?>>
+                                <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
                             <span class="pill pill-secondary" style="font-size:.65rem"><?= $info[0] ?></span>
                             <?= $info[1] ?>
                         </label>
@@ -193,7 +193,7 @@ include '../../includes/header.php';
                                 <label class="form-check justify-content-center">
                                     <input type="checkbox" name="pwa_modules[]" value="<?= $mod ?>"
                                         <?= in_array($mod,$pwaEnabled)?'checked':'' ?>
-                                        <?= !can('roles_edit')?'disabled':'' ?>
+                                        <?= !can('roles', 'edit')?'disabled':'' ?>
                                         onchange="this.closest('.card').style.borderColor=this.checked?'var(--success)':'var(--border)'">
                                     <strong style="text-transform:capitalize;margin-left:.5rem"><?= $mod ?></strong>
                                 </label>
@@ -214,11 +214,11 @@ include '../../includes/header.php';
             <div class="card-body">
                 <div class="form-group">
                     <label class="form-label">Role Name</label>
-                    <input type="text" name="name" class="form-control" value="<?= h($role['name']) ?>" <?= !can('roles_edit')?'readonly':'' ?>>
+                    <input type="text" name="name" class="form-control" value="<?= h($role['name']) ?>" <?= !can('roles', 'edit')?'readonly':'' ?>>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Description</label>
-                    <textarea name="description" class="form-control" rows="3" <?= !can('roles_edit')?'readonly':'' ?>><?= h($role['description']) ?></textarea>
+                    <textarea name="description" class="form-control" rows="3" <?= !can('roles', 'edit')?'readonly':'' ?>><?= h($role['description']) ?></textarea>
                 </div>
             </div>
         </div>
@@ -229,7 +229,7 @@ include '../../includes/header.php';
         <input type="hidden" name="description" value="<?= h($role['description']) ?>">
     <?php endif; ?>
 
-    <?php if (can('roles_edit')): ?>
+    <?php if (can('roles', 'edit')): ?>
     <div class="mt-4">
         <button type="submit" class="btn btn-primary" data-key="S"><u>S</u>ave Changes</button>
         <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>

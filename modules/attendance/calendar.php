@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('attendance_view');
+require_permission('attendance', 'view');
 
 $user = current_user();
 $isEmployee = ($user['role'] === 'Employee');
@@ -13,7 +13,7 @@ if ($month > 12){ $month = 1;  $year++; }
 
 $empId = $isEmployee ? $user['employee_id'] : (int)($_GET['employee_id'] ?? ($user['employee_id'] ?? 0));
 
-$employees = $isEmployee ? [] : db()->query("SELECT id, CONCAT(first_name,' ',last_name,' (',employee_id,')') AS name FROM employees WHERE status='Active' ORDER BY first_name")->fetchAll(PDO::FETCH_ASSOC);
+$employees = $isEmployee ? [] : db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 // Load attendance for month
 $records = [];
@@ -64,7 +64,7 @@ include '../../includes/header.php';
                 <select name="employee_id" class="form-control">
                     <option value="">Select Employee</option>
                     <?php foreach ($employees as $e): ?>
-                        <option value="<?= $e['id'] ?>" <?= $empId==$e['id']?'selected':'' ?>><?= h($e['name']) ?></option>
+                        <option value="<?= $e['id'] ?>" <?= $empId==$e['id']?'selected':'' ?>><?= h($e['label']) ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>

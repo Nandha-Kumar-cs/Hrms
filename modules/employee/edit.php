@@ -1,325 +1,457 @@
 <?php
-require_once '../../includes/bootstrap.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('employee_edit');
+require_permission('employee', 'edit');
 
 $id = (int)($_GET['id'] ?? 0);
-if (!$id) { redirect(BASE_URL . '/modules/employee/index.php'); }
+if (!$id) {
+    flash('error', 'No employee specified.');
+    redirect(BASE_URL . '/modules/employee/index.php');
+}
 
-$emp = db()->query("SELECT e.*, d.name AS dept_name, des.name AS des_name
-    FROM employees e
-    LEFT JOIN departments d ON e.department_id = d.id
-    LEFT JOIN designations des ON e.designation_id = des.id
-    WHERE e.id = $id")->fetch(PDO::FETCH_ASSOC);
+$db = db();
 
-if (!$emp) { redirect(BASE_URL . '/modules/employee/index.php'); }
+$empStmt = $db->prepare(
+    'SELECT e.*, d.name AS dept_name, des.name AS des_name
+     FROM employees e
+     LEFT JOIN departments d   ON d.id   = e.department_id
+     LEFT JOIN designations des ON des.id = e.designation_id
+     WHERE e.id = ?'
+);
+$empStmt->execute([$id]);
+$emp = $empStmt->fetch();
 
-$departments  = db()->query("SELECT id, name FROM departments ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
-$designations = db()->query("SELECT id, name FROM designations ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
-$roles        = db()->query("SELECT id, name FROM roles WHERE name != 'Super Admin' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+if (!$emp) {
+    flash('error', 'Employee not found.');
+    redirect(BASE_URL . '/modules/employee/index.php');
+}
+
+$departments  = $db->query('SELECT id, name FROM departments  ORDER BY name')->fetchAll();
+$designations = $db->query('SELECT id, name FROM designations ORDER BY name')->fetchAll();
+$roles        = $db->query("SELECT id, name FROM roles WHERE name != 'Super Admin' ORDER BY name")->fetchAll();
 
 $errors = [];
-$success = '';
 
+// ── POST handler ──────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
 
-    $fields = ['first_name','last_name','email','phone','gender','dob','date_of_joining',
-               'department_id','designation_id','employment_type','manager_id',
-               'pan_number','aadhaar_number','bank_name','bank_account','bank_ifsc',
-               'pf_number','esi_number','emergency_contact_name','emergency_contact_phone',
-               'address','status'];
+    $name   = sanitize($_POST['name']   ?? '');
+    $email  = sanitize($_POST['email']  ?? '');
+    $phone  = sanitize($_POST['phone']  ?? '');
+    $gender = sanitize($_POST['gender'] ?? '');
+    $dob    = sanitize($_POST['dob']    ?? '');
+    $addr   = sanitize($_POST['address']  ?? '');
+    $city   = sanitize($_POST['city']     ?? '');
+    $state  = sanitize($_POST['state']    ?? '');
+    $pin    = sanitize($_POST['pincode']  ?? '');
+    $status = sanitize($_POST['status']   ?? 'Active');
+    $ename  = sanitize($_POST['emergency_name']  ?? '');
+    $ephone = sanitize($_POST['emergency_phone'] ?? '');
 
-    $data = [];
-    foreach ($fields as $f) $data[$f] = trim($_POST[$f] ?? '');
+    $jdate   = sanitize($_POST['join_date']        ?? '');
+    $etype   = sanitize($_POST['employment_type']  ?? 'Full Time');
+    $dept_id = (int)($_POST['department_id']  ?? 0) ?: null;
+    $des_id  = (int)($_POST['designation_id'] ?? 0) ?: null;
+    $mgr_id  = (int)($_POST['manager_id']     ?? 0) ?: null;
 
-    if (empty($data['first_name']))  $errors[] = 'First name is required.';
-    if (empty($data['email']))       $errors[] = 'Email is required.';
+    $bank  = sanitize($_POST['bank_name']      ?? '');
+    $bacc  = sanitize($_POST['bank_account']   ?? '');
+    $bifsc = sanitize($_POST['bank_ifsc']      ?? '');
+    $pan   = strtoupper(sanitize($_POST['pan_number']     ?? ''));
+    $aadh  = sanitize($_POST['aadhaar_number'] ?? '');
+    $uan   = sanitize($_POST['uan_number']     ?? '');
+    $esic  = sanitize($_POST['esic_number']    ?? '');
 
-    if (empty($errors)) {
-        // Handle photo upload
-        $photo = $emp['photo'];
-        if (!empty($_FILES['photo']['name'])) {
-            $up = upload_file($_FILES['photo'], 'employees');
-            if ($up['success']) $photo = $up['path'];
-            else $errors[] = $up['error'];
-        }
+    if ($name === '')  $errors[] = 'Full name is required.';
+    if ($email === '') $errors[] = 'Email address is required.';
 
-        if (empty($errors)) {
-            $stmt = db()->prepare("UPDATE employees SET
-                first_name=:fn, last_name=:ln, email=:em, phone=:ph, gender=:ge,
-                dob=:dob, date_of_joining=:doj, department_id=:dep, designation_id=:des,
-                employment_type=:et, manager_id=:mg, pan_number=:pan, aadhaar_number=:aadhaar,
-                bank_name=:bn, bank_account=:ba, bank_ifsc=:bi, pf_number=:pf,
-                esi_number=:esi, emergency_contact_name=:ecn, emergency_contact_phone=:ecp,
-                address=:addr, status=:st, photo=:photo, updated_at=NOW()
-                WHERE id=:id");
-            $stmt->execute([
-                ':fn'=>$data['first_name'],':ln'=>$data['last_name'],':em'=>$data['email'],
-                ':ph'=>$data['phone'],':ge'=>$data['gender'],':dob'=>$data['dob']?:null,
-                ':doj'=>$data['date_of_joining']?:null,':dep'=>$data['department_id']?:null,
-                ':des'=>$data['designation_id']?:null,':et'=>$data['employment_type'],
-                ':mg'=>$data['manager_id']?:null,':pan'=>$data['pan_number'],
-                ':aadhaar'=>$data['aadhaar_number'],':bn'=>$data['bank_name'],
-                ':ba'=>$data['bank_account'],':bi'=>$data['bank_ifsc'],
-                ':pf'=>$data['pf_number'],':esi'=>$data['esi_number'],
-                ':ecn'=>$data['emergency_contact_name'],':ecp'=>$data['emergency_contact_phone'],
-                ':addr'=>$data['address'],':st'=>$data['status'],':photo'=>$photo,':id'=>$id
-            ]);
-
-            // Update user email if changed
-            db()->prepare("UPDATE users SET email=:em WHERE employee_id=:eid")
-                 ->execute([':em'=>$data['email'],':eid'=>$id]);
-
-            // Update role if provided
-            if (!empty($_POST['role_id'])) {
-                $rid = (int)$_POST['role_id'];
-                $uid = db()->query("SELECT id FROM users WHERE employee_id=$id")->fetchColumn();
-                if ($uid) {
-                    db()->prepare("UPDATE users SET role_id=:rid WHERE id=:uid")
-                         ->execute([':rid'=>$rid,':uid'=>$uid]);
-                }
-            }
-
-            flash('success', 'Employee updated successfully.');
-            redirect(BASE_URL . "/modules/employee/view.php?id=$id");
+    if ($email) {
+        $dupEmail = $db->prepare('SELECT 1 FROM employees WHERE email = ? AND id != ? LIMIT 1');
+        $dupEmail->execute([$email, $id]);
+        if ($dupEmail->fetchColumn()) {
+            $errors[] = "Email '$email' is already used by another employee.";
         }
     }
-    // Re-merge POST data for redisplay
-    $emp = array_merge($emp, $data);
+
+    $validStatuses = ['Active', 'On Leave', 'Resigned', 'Terminated'];
+    if (!in_array($status, $validStatuses, true)) $status = 'Active';
+
+    $validTypes = ['Full Time', 'Part Time', 'Contract', 'Intern'];
+    if (!in_array($etype, $validTypes, true)) $etype = 'Full Time';
+
+    if (empty($errors)) {
+        $photo = $emp['photo'];
+        if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+            $uploaded = upload_file($_FILES['photo'], UPLOAD_PATH . '/photos', 'emp_');
+            if ($uploaded !== null) {
+                $photo = $uploaded;
+            } else {
+                flash('warn', 'Photo could not be saved. Other changes were saved.');
+            }
+        }
+
+        $stmt = $db->prepare(
+            "UPDATE employees SET
+                name=:name, email=:email, phone=:phone, gender=:gender,
+                dob=:dob, address=:address, city=:city, state=:state, pincode=:pincode,
+                status=:status,
+                emergency_name=:ename, emergency_phone=:ephone,
+                join_date=:jdate, employment_type=:etype,
+                department_id=:dept_id, designation_id=:des_id, manager_id=:mgr_id,
+                bank_name=:bank, bank_account=:bacc, bank_ifsc=:bifsc,
+                pan_number=:pan, aadhaar_number=:aadh, uan_number=:uan, esic_number=:esic,
+                photo=:photo, updated_at=NOW()
+             WHERE id=:id"
+        );
+        $stmt->execute([
+            ':name'    => $name,
+            ':email'   => $email,
+            ':phone'   => $phone   ?: null,
+            ':gender'  => $gender  ?: null,
+            ':dob'     => $dob     ?: null,
+            ':address' => $addr    ?: null,
+            ':city'    => $city    ?: null,
+            ':state'   => $state   ?: null,
+            ':pincode' => $pin     ?: null,
+            ':status'  => $status,
+            ':ename'   => $ename   ?: null,
+            ':ephone'  => $ephone  ?: null,
+            ':jdate'   => $jdate   ?: null,
+            ':etype'   => $etype,
+            ':dept_id' => $dept_id,
+            ':des_id'  => $des_id,
+            ':mgr_id'  => $mgr_id,
+            ':bank'    => $bank    ?: null,
+            ':bacc'    => $bacc    ?: null,
+            ':bifsc'   => $bifsc   ?: null,
+            ':pan'     => $pan     ?: null,
+            ':aadh'    => $aadh    ?: null,
+            ':uan'     => $uan     ?: null,
+            ':esic'    => $esic    ?: null,
+            ':photo'   => $photo,
+            ':id'      => $id,
+        ]);
+
+        $db->prepare("UPDATE users SET email = :email, name = :name WHERE employee_id = :eid")
+           ->execute([':email' => $email, ':name' => $name, ':eid' => $id]);
+
+        if (!empty($_POST['role_id'])) {
+            $rid = (int)$_POST['role_id'];
+            $uidStmt = $db->prepare('SELECT id FROM users WHERE employee_id = ?');
+            $uidStmt->execute([$id]);
+            $userId = $uidStmt->fetchColumn();
+            if ($userId) {
+                $db->prepare('UPDATE users SET role_id = ? WHERE id = ?')
+                   ->execute([$rid, $userId]);
+            }
+        }
+
+        flash('success', 'Employee updated successfully.');
+        redirect(BASE_URL . "/modules/employee/view.php?id=$id");
+    }
+
+    $emp = array_merge($emp, [
+        'name' => $name, 'email' => $email, 'phone' => $phone,
+        'gender' => $gender, 'dob' => $dob, 'address' => $addr,
+        'city' => $city, 'state' => $state, 'pincode' => $pin,
+        'status' => $status, 'emergency_name' => $ename, 'emergency_phone' => $ephone,
+        'join_date' => $jdate, 'employment_type' => $etype,
+        'department_id' => $dept_id, 'designation_id' => $des_id, 'manager_id' => $mgr_id,
+        'bank_name' => $bank, 'bank_account' => $bacc, 'bank_ifsc' => $bifsc,
+        'pan_number' => $pan, 'aadhaar_number' => $aadh, 'uan_number' => $uan, 'esic_number' => $esic,
+    ]);
 }
 
-$managers = db()->query("SELECT id, CONCAT(first_name,' ',last_name) AS name FROM employees WHERE status='Active' AND id != $id ORDER BY first_name")->fetchAll(PDO::FETCH_ASSOC);
+$managersStmt = $db->prepare(
+    "SELECT id, name, employee_id FROM employees WHERE status = 'Active' AND id != ? ORDER BY name"
+);
+$managersStmt->execute([$id]);
+$managers = $managersStmt->fetchAll();
 
-// Get user's current role
-$userRole = db()->query("SELECT u.role_id FROM users u WHERE u.employee_id=$id")->fetch(PDO::FETCH_ASSOC);
-$currentRoleId = $userRole['role_id'] ?? null;
+$userRoleStmt = $db->prepare('SELECT role_id FROM users WHERE employee_id = ?');
+$userRoleStmt->execute([$id]);
+$currentRoleId = $userRoleStmt->fetchColumn() ?: null;
 
 $page_title = 'Edit Employee';
-include '../../includes/header.php';
+require_once __DIR__ . '/../../includes/header.php';
+
+// sel() helper: returns 'selected' if value matches
+$sel = fn($field, $val) => (string)($emp[$field] ?? '') === (string)$val ? 'selected' : '';
+// v() helper: returns h()-escaped value
+$v = fn($field) => h($emp[$field] ?? '');
 ?>
-<div class="page-header">
+
+<div class="page-head">
     <div>
-        <h1 class="page-title">Edit Employee</h1>
-        <p class="page-subtitle"><?= h($emp['employee_id']) ?> — <?= h($emp['first_name'] . ' ' . $emp['last_name']) ?></p>
+        <h1>Edit Employee</h1>
+        <p class="muted"><?= $v('employee_id') ?> &mdash; <?= $v('name') ?></p>
     </div>
-    <div class="page-actions">
-        <a href="view.php?id=<?= $id ?>" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>
+    <div class="head-actions">
+        <a href="view.php?id=<?= $id ?>" class="btn btn-ghost">Back</a>
+        <button type="submit" form="editEmpForm" class="btn btn-primary">Save Changes</button>
     </div>
 </div>
 
-<?php render_flash(); foreach ($errors as $e): ?>
-    <div class="alert alert-danger"><?= h($e) ?></div>
-<?php endforeach; ?>
+<?php if ($errors): ?>
+<div class="alert alert-error">
+    <strong>Please fix the following:</strong>
+    <ul style="margin:.4em 0 0 1.2em;padding:0">
+        <?php foreach ($errors as $err): ?>
+        <li><?= h($err) ?></li>
+        <?php endforeach; ?>
+    </ul>
+</div>
+<?php endif; ?>
 
 <form method="POST" enctype="multipart/form-data" id="editEmpForm">
     <?= csrf_field() ?>
-    <div class="row">
-        <!-- Personal Info -->
-        <div class="col-8">
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="card-title">Personal Information</h3></div>
-                <div class="card-body">
-                    <div class="form-row">
-                        <div class="form-group col-6">
-                            <label class="form-label">First Name <span class="text-danger">*</span></label>
-                            <input type="text" name="first_name" class="form-control" value="<?= h($emp['first_name']) ?>" required>
-                        </div>
-                        <div class="form-group col-6">
-                            <label class="form-label">Last Name</label>
-                            <input type="text" name="last_name" class="form-control" value="<?= h($emp['last_name']) ?>">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-6">
-                            <label class="form-label">Email <span class="text-danger">*</span></label>
-                            <input type="email" name="email" class="form-control" value="<?= h($emp['email']) ?>" required>
-                        </div>
-                        <div class="form-group col-6">
-                            <label class="form-label">Phone</label>
-                            <input type="text" name="phone" class="form-control" value="<?= h($emp['phone']) ?>">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-4">
-                            <label class="form-label">Gender</label>
-                            <select name="gender" class="form-control">
-                                <option value="">Select</option>
-                                <?php foreach (['Male','Female','Other'] as $g): ?>
-                                    <option value="<?= $g ?>" <?= $emp['gender']==$g?'selected':'' ?>><?= $g ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="form-group col-4">
-                            <label class="form-label">Date of Birth</label>
-                            <input type="date" name="dob" class="form-control" value="<?= h($emp['dob']) ?>">
-                        </div>
-                        <div class="form-group col-4">
-                            <label class="form-label">Status</label>
-                            <select name="status" class="form-control">
-                                <?php foreach (['Active','Inactive','Terminated','On Leave'] as $s): ?>
-                                    <option value="<?= $s ?>" <?= $emp['status']==$s?'selected':'' ?>><?= $s ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Address</label>
-                        <textarea name="address" class="form-control" rows="2"><?= h($emp['address']) ?></textarea>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-6">
-                            <label class="form-label">Emergency Contact Name</label>
-                            <input type="text" name="emergency_contact_name" class="form-control" value="<?= h($emp['emergency_contact_name']) ?>">
-                        </div>
-                        <div class="form-group col-6">
-                            <label class="form-label">Emergency Contact Phone</label>
-                            <input type="text" name="emergency_contact_phone" class="form-control" value="<?= h($emp['emergency_contact_phone']) ?>">
-                        </div>
-                    </div>
+
+    <!-- ── Personal Information ────────────────────────────────────────────── -->
+    <div class="card">
+        <div class="card-head"><h3>Personal Information</h3></div>
+        <div class="card-body">
+
+            <div class="form-grid">
+
+                <div class="field span-2">
+                    <label>Full Name <span style="color:var(--danger)">*</span></label>
+                    <input type="text" name="name" value="<?= $v('name') ?>" required
+                           placeholder="e.g. Ravi Kumar">
+                </div>
+
+                <div class="field">
+                    <label>Status</label>
+                    <select name="status">
+                        <?php foreach (['Active', 'On Leave', 'Resigned', 'Terminated'] as $s): ?>
+                        <option value="<?= $s ?>" <?= $sel('status', $s) ?>><?= $s ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="field span-2">
+                    <label>Email Address <span style="color:var(--danger)">*</span></label>
+                    <input type="email" name="email" value="<?= $v('email') ?>" required>
+                </div>
+
+                <div class="field">
+                    <label>Phone</label>
+                    <input type="tel" name="phone" value="<?= $v('phone') ?>">
+                </div>
+
+                <div class="field">
+                    <label>Date of Birth</label>
+                    <input type="date" name="dob" value="<?= $v('dob') ?>">
+                </div>
+
+                <div class="field">
+                    <label>Gender</label>
+                    <select name="gender">
+                        <option value="">— Select —</option>
+                        <?php foreach (['Male', 'Female', 'Other', 'Prefer not to say'] as $g): ?>
+                        <option value="<?= $g ?>" <?= $sel('gender', $g) ?>><?= $g ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="field"><!-- spacer --></div>
+
+                <div class="field span-3">
+                    <label>Address</label>
+                    <textarea name="address" rows="2"><?= $v('address') ?></textarea>
+                </div>
+
+                <div class="field">
+                    <label>City</label>
+                    <input type="text" name="city" value="<?= $v('city') ?>">
+                </div>
+
+                <div class="field">
+                    <label>State</label>
+                    <input type="text" name="state" value="<?= $v('state') ?>">
+                </div>
+
+                <div class="field">
+                    <label>Pincode</label>
+                    <input type="text" name="pincode" maxlength="10" value="<?= $v('pincode') ?>">
+                </div>
+
+                <div class="field span-2">
+                    <label>Emergency Contact Name</label>
+                    <input type="text" name="emergency_name" value="<?= $v('emergency_name') ?>">
+                </div>
+
+                <div class="field">
+                    <label>Emergency Contact Phone</label>
+                    <input type="tel" name="emergency_phone" value="<?= $v('emergency_phone') ?>">
+                </div>
+
+            </div><!-- /.form-grid -->
+
+            <!-- Photo upload -->
+            <div class="section-title">Profile Photo</div>
+            <div style="display:flex;align-items:center;gap:14px;margin-top:8px">
+                <?php if (!empty($emp['photo'])): ?>
+                <img src="<?= BASE_URL ?>/uploads/photos/<?= $v('photo') ?>"
+                     id="photoPreview"
+                     style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid var(--border)">
+                <?php else: ?>
+                <div id="photoPreview"
+                     style="width:56px;height:56px;border-radius:50%;background:var(--primary);
+                            display:flex;align-items:center;justify-content:center;
+                            color:#fff;font-size:22px;font-weight:700">
+                    <?= strtoupper(mb_substr($emp['name'],0,1)) ?>
+                </div>
+                <?php endif; ?>
+                <div>
+                    <input type="file" name="photo" id="photoInput"
+                           accept="image/jpeg,image/png,image/webp"
+                           style="display:block;padding:6px 10px;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:13px;background:white;cursor:pointer">
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">JPG, PNG, WebP &middot; max 2 MB</div>
                 </div>
             </div>
 
-            <!-- Employment Info -->
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="card-title">Employment Details</h3></div>
-                <div class="card-body">
-                    <div class="form-row">
-                        <div class="form-group col-6">
-                            <label class="form-label">Date of Joining</label>
-                            <input type="date" name="date_of_joining" class="form-control" value="<?= h($emp['date_of_joining']) ?>">
-                        </div>
-                        <div class="form-group col-6">
-                            <label class="form-label">Employment Type</label>
-                            <select name="employment_type" class="form-control">
-                                <?php foreach (['Full-Time','Part-Time','Contract','Intern'] as $et): ?>
-                                    <option value="<?= $et ?>" <?= $emp['employment_type']==$et?'selected':'' ?>><?= $et ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-6">
-                            <label class="form-label">Department</label>
-                            <select name="department_id" class="form-control">
-                                <option value="">Select Department</option>
-                                <?php foreach ($departments as $d): ?>
-                                    <option value="<?= $d['id'] ?>" <?= $emp['department_id']==$d['id']?'selected':'' ?>><?= h($d['name']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="form-group col-6">
-                            <label class="form-label">Designation</label>
-                            <select name="designation_id" class="form-control">
-                                <option value="">Select Designation</option>
-                                <?php foreach ($designations as $d): ?>
-                                    <option value="<?= $d['id'] ?>" <?= $emp['designation_id']==$d['id']?'selected':'' ?>><?= h($d['name']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-6">
-                            <label class="form-label">Reporting Manager</label>
-                            <select name="manager_id" class="form-control">
-                                <option value="">None</option>
-                                <?php foreach ($managers as $m): ?>
-                                    <option value="<?= $m['id'] ?>" <?= $emp['manager_id']==$m['id']?'selected':'' ?>><?= h($m['name']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="form-group col-6">
-                            <label class="form-label">System Role</label>
-                            <select name="role_id" class="form-control">
-                                <option value="">No Change</option>
-                                <?php foreach ($roles as $r): ?>
-                                    <option value="<?= $r['id'] ?>" <?= $currentRoleId==$r['id']?'selected':'' ?>><?= h($r['name']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Bank & Statutory -->
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="card-title">Bank &amp; Statutory Details</h3></div>
-                <div class="card-body">
-                    <div class="form-row">
-                        <div class="form-group col-4">
-                            <label class="form-label">PAN Number</label>
-                            <input type="text" name="pan_number" class="form-control" value="<?= h($emp['pan_number']) ?>" maxlength="10" style="text-transform:uppercase">
-                        </div>
-                        <div class="form-group col-4">
-                            <label class="form-label">Aadhaar Number</label>
-                            <input type="text" name="aadhaar_number" class="form-control" value="<?= h($emp['aadhaar_number']) ?>" maxlength="12">
-                        </div>
-                        <div class="form-group col-4">
-                            <label class="form-label">UAN / PF Number</label>
-                            <input type="text" name="pf_number" class="form-control" value="<?= h($emp['pf_number']) ?>">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-4">
-                            <label class="form-label">ESI Number</label>
-                            <input type="text" name="esi_number" class="form-control" value="<?= h($emp['esi_number']) ?>">
-                        </div>
-                        <div class="form-group col-4">
-                            <label class="form-label">Bank Name</label>
-                            <input type="text" name="bank_name" class="form-control" value="<?= h($emp['bank_name']) ?>">
-                        </div>
-                        <div class="form-group col-4">
-                            <label class="form-label">Account Number</label>
-                            <input type="text" name="bank_account" class="form-control" value="<?= h($emp['bank_account']) ?>">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group col-4">
-                            <label class="form-label">IFSC Code</label>
-                            <input type="text" name="bank_ifsc" class="form-control" value="<?= h($emp['bank_ifsc']) ?>" style="text-transform:uppercase">
-                        </div>
-                    </div>
-                </div>
-            </div>
         </div>
+    </div>
 
-        <!-- Right Column -->
-        <div class="col-4">
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="card-title">Profile Photo</h3></div>
-                <div class="card-body text-center">
-                    <?php if ($emp['photo']): ?>
-                        <img src="<?= BASE_URL . '/' . $emp['photo'] ?>" class="emp-avatar-lg mb-3" style="width:120px;height:120px;border-radius:50%;object-fit:cover;">
-                    <?php else: ?>
-                        <div class="emp-avatar-lg mb-3" style="width:120px;height:120px;border-radius:50%;background:#1e3a8a;display:flex;align-items:center;justify-content:center;margin:0 auto;font-size:2.5rem;color:#fff;">
-                            <?= strtoupper(substr($emp['first_name'],0,1) . substr($emp['last_name'],0,1)) ?>
-                        </div>
-                    <?php endif; ?>
-                    <input type="file" name="photo" class="form-control" accept="image/*">
-                    <small class="text-muted">JPG, PNG up to 2MB</small>
-                </div>
-            </div>
+    <!-- ── Employment Details ──────────────────────────────────────────────── -->
+    <div class="card">
+        <div class="card-head"><h3>Employment Details</h3></div>
+        <div class="card-body">
+            <div class="form-grid">
 
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="card-title">Employee ID</h3></div>
-                <div class="card-body">
-                    <div class="stat-value" style="font-size:1.5rem;color:var(--primary)"><?= h($emp['employee_id']) ?></div>
-                    <small class="text-muted">Cannot be changed</small>
+                <div class="field">
+                    <label>Department</label>
+                    <select name="department_id">
+                        <option value="">— Select —</option>
+                        <?php foreach ($departments as $d): ?>
+                        <option value="<?= $d['id'] ?>"
+                            <?= $sel('department_id', $d['id']) ?>><?= h($d['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
-            </div>
 
-            <div class="card">
-                <div class="card-body">
-                    <button type="submit" class="btn btn-primary w-100 mb-2" data-key="S"><u>S</u>ave Changes</button>
-                    <a href="view.php?id=<?= $id ?>" class="btn btn-secondary w-100" data-key="B"><u>B</u>ack</a>
+                <div class="field">
+                    <label>Designation</label>
+                    <select name="designation_id">
+                        <option value="">— Select —</option>
+                        <?php foreach ($designations as $d): ?>
+                        <option value="<?= $d['id'] ?>"
+                            <?= $sel('designation_id', $d['id']) ?>><?= h($d['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
+
+                <div class="field">
+                    <label>Reporting Manager</label>
+                    <select name="manager_id">
+                        <option value="">— None —</option>
+                        <?php foreach ($managers as $m): ?>
+                        <option value="<?= $m['id'] ?>"
+                            <?= $sel('manager_id', $m['id']) ?>>
+                            <?= h($m['name']) ?> (<?= h($m['employee_id']) ?>)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label>Join Date</label>
+                    <input type="date" name="join_date" value="<?= $v('join_date') ?>">
+                </div>
+
+                <div class="field">
+                    <label>Employment Type</label>
+                    <select name="employment_type">
+                        <?php foreach (['Full Time', 'Part Time', 'Contract', 'Intern'] as $t): ?>
+                        <option value="<?= $t ?>" <?= $sel('employment_type', $t) ?>><?= $t ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label>System Role</label>
+                    <select name="role_id">
+                        <option value="">— No Change —</option>
+                        <?php foreach ($roles as $r): ?>
+                        <option value="<?= $r['id'] ?>"
+                            <?= $currentRoleId == $r['id'] ? 'selected' : '' ?>>
+                            <?= h($r['name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
             </div>
         </div>
     </div>
+
+    <!-- ── Bank & Statutory Details ────────────────────────────────────────── -->
+    <div class="card">
+        <div class="card-head"><h3>Bank &amp; Statutory Details</h3></div>
+        <div class="card-body">
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Bank Name</label>
+                    <input type="text" name="bank_name" value="<?= $v('bank_name') ?>">
+                </div>
+
+                <div class="field">
+                    <label>Account Number</label>
+                    <input type="text" name="bank_account" value="<?= $v('bank_account') ?>">
+                </div>
+
+                <div class="field">
+                    <label>IFSC Code</label>
+                    <input type="text" name="bank_ifsc" value="<?= $v('bank_ifsc') ?>"
+                           style="text-transform:uppercase">
+                </div>
+
+                <div class="field">
+                    <label>PAN Number</label>
+                    <input type="text" name="pan_number" maxlength="10"
+                           value="<?= $v('pan_number') ?>" style="text-transform:uppercase">
+                </div>
+
+                <div class="field">
+                    <label>Aadhaar Number</label>
+                    <input type="text" name="aadhaar_number" maxlength="12"
+                           value="<?= $v('aadhaar_number') ?>">
+                </div>
+
+                <div class="field">
+                    <label>UAN Number</label>
+                    <input type="text" name="uan_number" value="<?= $v('uan_number') ?>">
+                </div>
+
+                <div class="field">
+                    <label>ESIC Number</label>
+                    <input type="text" name="esic_number" value="<?= $v('esic_number') ?>">
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="view.php?id=<?= $id ?>" class="btn btn-ghost">Cancel</a>
+    </div>
+
 </form>
 
 <script>
-addLocalShortcut('s', () => document.getElementById('editEmpForm').submit());
-addLocalShortcut('b', () => location.href = 'view.php?id=<?= $id ?>');
+document.getElementById('photoInput').addEventListener('change', function () {
+    var file = this.files[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    var reader = new FileReader();
+    reader.onload = function (e) {
+        var prev = document.getElementById('photoPreview');
+        if (prev) { prev.src = e.target.result; prev.style.cssText += ';border-radius:50%;object-fit:cover'; }
+    };
+    reader.readAsDataURL(file);
+});
 </script>
-<?php include '../../includes/footer.php'; ?>
+
+<?php include __DIR__ . '/../../includes/footer.php'; ?>

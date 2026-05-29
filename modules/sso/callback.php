@@ -71,15 +71,15 @@ if (!$user) {
     // Auto-create from SSO if enabled
     $firstName = $userInfo['given_name'] ?? explode('@',$email)[0];
     $lastName  = $userInfo['family_name'] ?? '';
+    $fullName  = trim("$firstName $lastName") ?: $email;
     $defaultRole = db()->query("SELECT id FROM roles WHERE name='Employee' LIMIT 1")->fetchColumn();
     if (!$defaultRole) {
         flash('danger', 'No matching account found for this SSO identity.');
         redirect(BASE_URL . '/login.php');
     }
-    db()->prepare("INSERT INTO users (email,first_name,last_name,role_id,is_active,sso_provider,sso_id,created_at)
-        VALUES (:em,:fn,:ln,:rid,1,:prov,:sid,NOW())")
-        ->execute([':em'=>$email,':fn'=>$firstName,':ln'=>$lastName,':rid'=>$defaultRole,
-                   ':prov'=>'sso',':sid'=>$userInfo['sub']??'']);
+    db()->prepare("INSERT INTO users (email,name,role_id,is_active,sso_uid,created_at)
+        VALUES (:em,:nm,:rid,1,:sid,NOW())")
+        ->execute([':em'=>$email,':nm'=>$fullName,':rid'=>$defaultRole,':sid'=>$userInfo['sub']??'']);
     $uid = db()->lastInsertId();
     $user = db()->query("SELECT u.*, r.name AS role FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.id=$uid")->fetch(PDO::FETCH_ASSOC);
 }
@@ -88,5 +88,5 @@ if (!$user) {
 login_user($user);
 db()->prepare("UPDATE users SET last_login=NOW() WHERE id=:id")->execute([':id'=>$user['id']]);
 
-flash('success', 'Welcome back, ' . $user['first_name'] . '! (SSO Login)');
+flash('success', 'Welcome back, ' . ($user['name'] ?? $user['email']) . '! (SSO Login)');
 redirect(BASE_URL . '/index.php');
