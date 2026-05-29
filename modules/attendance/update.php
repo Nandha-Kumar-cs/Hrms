@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('attendance_edit');
+require_permission('attendance', 'edit');
 verify_csrf($_POST['csrf_token'] ?? '');
 
 $id     = (int)($_POST['id'] ?? 0);

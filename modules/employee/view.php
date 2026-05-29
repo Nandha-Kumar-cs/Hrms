@@ -86,9 +86,9 @@ $letter_rows = $letters->fetchAll();
         <?php
         $fields = [
             'Phone'          => $e['phone'],
-            'Date of Birth'  => date_fmt($e['dob']) . ' (' . age($e['dob']) . ' yrs)',
+            'Date of Birth'  => $e['dob'] ? date_fmt($e['dob']) . ' (' . age($e['dob']) . ' yrs)' : '—',
             'Gender'         => $e['gender'],
-            'Address'        => trim($e['address'] . ', ' . $e['city'] . ' ' . $e['pincode']),
+            'Address'        => implode(', ', array_filter([$e['address'], $e['city'], $e['state'], $e['pincode']])) ?: '—',
         ];
         foreach ($fields as $lbl => $val): ?>
         <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">
@@ -100,7 +100,7 @@ $letter_rows = $letters->fetchAll();
         <div class="section-title" style="margin-top:14px">Employment</div>
         <?php
         $efields = [
-            'Join Date'  => date_fmt($e['join_date']) . ' (' . tenure($e['join_date']) . ')',
+            'Join Date'  => $e['join_date'] ? date_fmt($e['join_date']) . ' (' . tenure($e['join_date']) . ')' : '—',
             'Manager'    => $e['manager_name'] ?? '—',
             'Department' => $e['dept_name'] ?? '—',
             'Designation'=> $e['desig_name'] ?? '—',
@@ -134,7 +134,7 @@ $letter_rows = $letters->fetchAll();
             <div class="card-head">
                 <h3>Current Salary</h3>
                 <?php if (can('payroll','process')): ?>
-                <a href="../payroll/salary_structure.php?emp_id=<?= $id ?>" class="link">Edit →</a>
+                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="link">Edit →</a>
                 <?php endif; ?>
             </div>
             <div style="padding:14px 18px">
@@ -154,7 +154,7 @@ $letter_rows = $letters->fetchAll();
             <?php else: ?>
                 <p class="muted small">No salary structure defined.</p>
                 <?php if (can('payroll','process')): ?>
-                <a href="../payroll/salary_structure.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary" style="margin-top:8px">Set Salary</a>
+                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-sm btn-primary" style="margin-top:8px">Set Salary</a>
                 <?php endif; ?>
             <?php endif; ?>
             </div>

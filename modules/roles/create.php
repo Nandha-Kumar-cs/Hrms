@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('roles_edit');
+require_permission('roles', 'edit');
 
 $allPerms = db()->query("SELECT * FROM permissions ORDER BY module, name")->fetchAll(PDO::FETCH_ASSOC);
 $grouped  = [];

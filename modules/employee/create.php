@@ -1,241 +1,230 @@
 <?php
-$page_title = 'New Employee';
-require_once __DIR__ . '/../../includes/header.php';
+/**
+ * Employee write handler — add / delete
+ *
+ * ── Why the FK error happened ────────────────────────────────────────────────
+ * The old code did:  $dept_id = (int)($_POST['department_id'] ?? 0);
+ * When the user left the "— Select —" option chosen, $_POST['department_id']
+ * was "" which cast to 0. MySQL then tried to find departments.id = 0, which
+ * does not exist → SQLSTATE[23000] FK constraint violation.
+ *
+ * The fix (line marked ★ below): treat 0 / empty as NULL.
+ * departments.id is UNSIGNED, so 0 is never a valid PK. NULL is allowed
+ * by the schema (department_id has no NOT NULL constraint) but we also
+ * validate that a real department was chosen before touching the DB.
+ */
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 require_permission('employee', 'create');
 
-$db      = db();
-$depts   = $db->query('SELECT * FROM departments ORDER BY name')->fetchAll();
-$designs = $db->query('SELECT * FROM designations ORDER BY name')->fetchAll();
-$managers= $db->query('SELECT id, name, employee_id FROM employees WHERE status="Active" ORDER BY name')->fetchAll();
+// ── CSRF ─────────────────────────────────────────────────────────────────────
+verify_csrf($_POST['csrf_token'] ?? '');
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    redirect(BASE_URL . '/modules/employee/index.php');
+}
+
+$action = sanitize($_POST['action'] ?? '');
+$db     = db();
+
+// ============================================================================
+// DELETE
+// ============================================================================
+if ($action === 'delete') {
+    require_permission('employee', 'delete');
+    $id = (int)($_POST['id'] ?? 0);
+    if (!$id) {
+        flash('error', 'Invalid employee ID.');
+        redirect(BASE_URL . '/modules/employee/index.php');
+    }
+
+    // Soft-check: don't delete if they have unprocessed payroll runs
+    $hasPayroll = $db->prepare(
+        "SELECT 1 FROM salary_slips WHERE employee_id = ? LIMIT 1"
+    );
+    $hasPayroll->execute([$id]);
+    if ($hasPayroll->fetchColumn()) {
+        flash('error', 'Cannot delete an employee who has salary slips. Terminate them instead.');
+        redirect(BASE_URL . '/modules/employee/index.php');
+    }
+
+    // Delete associated user account first (FK)
+    $db->prepare("DELETE FROM users WHERE employee_id = ?")->execute([$id]);
+    $db->prepare("DELETE FROM employees WHERE id = ?")->execute([$id]);
+
+    flash('success', 'Employee deleted.');
+    redirect(BASE_URL . '/modules/employee/index.php');
+}
+
+// ============================================================================
+// ADD — input collection
+// ============================================================================
+if ($action !== 'add') {
+    flash('error', 'Unknown action.');
+    redirect(BASE_URL . '/modules/employee/index.php');
+}
+
+// ── Collect & sanitise POST values ───────────────────────────────────────────
+$name   = sanitize($_POST['name']  ?? '');
+$email  = sanitize($_POST['email'] ?? '');
+$phone  = sanitize($_POST['phone'] ?? '');
+$dob    = sanitize($_POST['dob']   ?? '');
+$gender = sanitize($_POST['gender'] ?? '');
+$addr   = sanitize($_POST['address'] ?? '');
+$city   = sanitize($_POST['city']    ?? '');
+$state  = sanitize($_POST['state']   ?? '');
+$pin    = sanitize($_POST['pincode'] ?? '');
+
+$jdate = sanitize($_POST['join_date'] ?? '');
+$etype = sanitize($_POST['employment_type'] ?? 'Full Time');
+$ename = sanitize($_POST['emergency_name']  ?? '');
+$ephone= sanitize($_POST['emergency_phone'] ?? '');
+
+$bank  = sanitize($_POST['bank_name']    ?? '');
+$bacc  = sanitize($_POST['bank_account'] ?? '');
+$bifsc = sanitize($_POST['bank_ifsc']    ?? '');
+$pan   = strtoupper(sanitize($_POST['pan_number']     ?? ''));
+$aadh  = sanitize($_POST['aadhaar_number'] ?? '');
+$uan   = sanitize($_POST['uan_number']     ?? '');
+
+// ★ FK FIX: cast to int then turn 0 → NULL so the FK check is satisfied.
+//   An empty <select> posts "" → (int)"" = 0 → stored as NULL (allowed).
+//   A real choice posts "3"  → (int)"3" = 3 → stored as 3 (valid FK).
+$dept_id = (int)($_POST['department_id']  ?? 0) ?: null;
+$des_id  = (int)($_POST['designation_id'] ?? 0) ?: null;
+$mgr_id  = (int)($_POST['manager_id']     ?? 0) ?: null;
+
+// ── Validation ───────────────────────────────────────────────────────────────
 $errors = [];
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!csrf_verify()) { $errors[] = 'Invalid request.'; }
-    else {
-        $emp_id  = generate_employee_id();
-        $name    = sanitize($_POST['name'] ?? '');
-        $email   = sanitize($_POST['email'] ?? '');
-        $phone   = sanitize($_POST['phone'] ?? '');
-        $dob     = sanitize($_POST['dob'] ?? '');
-        $gender  = sanitize($_POST['gender'] ?? '');
-        $dept_id = (int)($_POST['department_id'] ?? 0);
-        $des_id  = (int)($_POST['designation_id'] ?? 0);
-        $mgr_id  = (int)($_POST['manager_id'] ?? 0) ?: null;
-        $jdate   = sanitize($_POST['join_date'] ?? '');
-        $etype   = sanitize($_POST['employment_type'] ?? 'Full Time');
-        $addr    = sanitize($_POST['address'] ?? '');
-        $city    = sanitize($_POST['city'] ?? '');
-        $state   = sanitize($_POST['state'] ?? '');
-        $pin     = sanitize($_POST['pincode'] ?? '');
-        $bank    = sanitize($_POST['bank_name'] ?? '');
-        $bacc    = sanitize($_POST['bank_account'] ?? '');
-        $bifsc   = sanitize($_POST['bank_ifsc'] ?? '');
-        $pan     = strtoupper(sanitize($_POST['pan_number'] ?? ''));
-        $aadh    = sanitize($_POST['aadhaar_number'] ?? '');
-        $uan     = sanitize($_POST['uan_number'] ?? '');
-        $ename   = sanitize($_POST['emergency_name'] ?? '');
-        $ephone  = sanitize($_POST['emergency_phone'] ?? '');
 
-        if (!$name)  $errors[] = 'Name is required.';
-        if (!$email) $errors[] = 'Email is required.';
-        if (!$jdate) $errors[] = 'Join date is required.';
+if ($name === '')  $errors[] = 'Full name is required.';
+if ($email === '') $errors[] = 'Email address is required.';
+if ($jdate === '') $errors[] = 'Join date is required.';
 
-        if (!$errors) {
-            // Handle photo upload
-            $photo = null;
-            if (!empty($_FILES['photo']['name'])) {
-                $photo = upload_file($_FILES['photo'], UPLOAD_PATH . '/photos', 'emp_');
-            }
-            $stmt = $db->prepare(
-                'INSERT INTO employees (employee_id,name,email,phone,dob,gender,address,city,state,pincode,
-                 department_id,designation_id,manager_id,join_date,employment_type,
-                 bank_name,bank_account,bank_ifsc,pan_number,aadhaar_number,uan_number,
-                 emergency_name,emergency_phone,photo,status)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"Active")'
-            );
-            $stmt->execute([
-                $emp_id,$name,$email,$phone,$dob,$gender,$addr,$city,$state,$pin,
-                $dept_id,$des_id,$mgr_id,$jdate,$etype,
-                $bank,$bacc,$bifsc,$pan,$aadh,$uan,
-                $ename,$ephone,$photo
-            ]);
-            $new_id = $db->lastInsertId();
-
-            // Create user account
-            $tmp_pass = password_hash('Hrms@' . substr($emp_id,-4), PASSWORD_DEFAULT);
-            $ucheck   = $db->prepare('SELECT id FROM users WHERE email=? LIMIT 1');
-            $ucheck->execute([$email]);
-            if (!$ucheck->fetchColumn()) {
-                $db->prepare('INSERT INTO users (email,name,password_hash,role_id,employee_id) VALUES(?,?,?,6,?)')
-                   ->execute([$email,$name,$tmp_pass,$new_id]);
-            }
-
-            flash('success', 'Employee ' . $name . ' (' . $emp_id . ') created successfully.');
-            redirect(BASE_URL . '/modules/employee/view.php?id=' . $new_id);
-        }
+// Department is required — a NULL dept_id means the user left it unselected
+if ($dept_id === null) {
+    $errors[] = 'Please select a department.';
+} else {
+    // Verify the submitted ID actually exists (guards against tampered POSTs)
+    $deptCheck = $db->prepare('SELECT 1 FROM departments WHERE id = ? LIMIT 1');
+    $deptCheck->execute([$dept_id]);
+    if (!$deptCheck->fetchColumn()) {
+        $errors[] = 'Selected department is invalid. Please choose one from the list.';
+        $dept_id  = null;
     }
 }
-?>
 
-<div class="page-head">
-    <div>
-        <h1>New Employee</h1>
-        <p class="muted">Add a new employee record</p>
-    </div>
-    <div class="head-actions">
-        <a href="index.php" class="btn btn-ghost" accesskey="b" data-shortcut data-key="B"><u>B</u>ack</a>
-    </div>
-</div>
+// Designation optional, but verify if submitted
+if ($des_id !== null) {
+    $desCheck = $db->prepare('SELECT 1 FROM designations WHERE id = ? LIMIT 1');
+    $desCheck->execute([$des_id]);
+    if (!$desCheck->fetchColumn()) {
+        $errors[] = 'Selected designation is invalid.';
+        $des_id = null;
+    }
+}
 
-<?php if ($errors): ?>
-<div class="alert alert-error"><?= implode('<br>', array_map('htmlspecialchars', $errors)) ?></div>
-<?php endif; ?>
+// Email uniqueness
+if ($email) {
+    $emailCheck = $db->prepare('SELECT 1 FROM employees WHERE email = ? LIMIT 1');
+    $emailCheck->execute([$email]);
+    if ($emailCheck->fetchColumn()) {
+        $errors[] = "An employee with email '$email' already exists.";
+    }
+}
 
-<form method="POST" enctype="multipart/form-data">
-<?= csrf_field() ?>
-<div class="card form-card">
-    <div class="section-title">Personal Information</div>
-    <div class="form-grid">
-        <div class="field span-2">
-            <label>Full <u>N</u>ame *</label>
-            <input type="text" name="name" accesskey="n" required value="<?= h($_POST['name']??'') ?>" placeholder="John Doe">
-        </div>
-        <div class="field">
-            <label>Photo</label>
-            <input type="file" name="photo" accept="image/*">
-        </div>
-        <div class="field">
-            <label><u>E</u>mail *</label>
-            <input type="email" name="email" accesskey="e" required value="<?= h($_POST['email']??'') ?>" placeholder="john@company.com">
-        </div>
-        <div class="field">
-            <label><u>P</u>hone</label>
-            <input type="tel" name="phone" accesskey="p" value="<?= h($_POST['phone']??'') ?>" placeholder="+91 98765 43210">
-        </div>
-        <div class="field">
-            <label>Date of Birth</label>
-            <input type="date" name="dob" value="<?= h($_POST['dob']??'') ?>">
-        </div>
-        <div class="field">
-            <label>Gender</label>
-            <select name="gender">
-                <option value="">— Select —</option>
-                <?php foreach (['Male','Female','Other','Prefer not to say'] as $g): ?>
-                <option <?= ($_POST['gender']??'')===$g?'selected':'' ?>><?= $g ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="field span-3">
-            <label>Address</label>
-            <textarea name="address" rows="2"><?= h($_POST['address']??'') ?></textarea>
-        </div>
-        <div class="field">
-            <label>City</label>
-            <input type="text" name="city" value="<?= h($_POST['city']??'') ?>">
-        </div>
-        <div class="field">
-            <label>State</label>
-            <input type="text" name="state" value="<?= h($_POST['state']??'') ?>">
-        </div>
-        <div class="field">
-            <label>Pincode</label>
-            <input type="text" name="pincode" maxlength="10" value="<?= h($_POST['pincode']??'') ?>">
-        </div>
-    </div>
+// Employment type whitelist
+$validTypes = ['Full Time', 'Part Time', 'Contract', 'Intern'];
+if (!in_array($etype, $validTypes, true)) $etype = 'Full Time';
 
-    <div class="section-title">Employment Details</div>
-    <div class="form-grid">
-        <div class="field">
-            <label><u>D</u>epartment</label>
-            <select name="department_id" accesskey="d">
-                <option value="">— Select —</option>
-                <?php foreach ($depts as $d): ?>
-                <option value="<?= $d['id'] ?>" <?= ($_POST['department_id']??'')==$d['id']?'selected':'' ?>><?= h($d['name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="field">
-            <label>Designation</label>
-            <select name="designation_id">
-                <option value="">— Select —</option>
-                <?php foreach ($designs as $d): ?>
-                <option value="<?= $d['id'] ?>" <?= ($_POST['designation_id']??'')==$d['id']?'selected':'' ?>><?= h($d['name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="field">
-            <label>Reporting Manager</label>
-            <select name="manager_id">
-                <option value="">— None —</option>
-                <?php foreach ($managers as $m): ?>
-                <option value="<?= $m['id'] ?>"><?= h($m['name']) ?> (<?= h($m['employee_id']) ?>)</option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="field">
-            <label>Join Date *</label>
-            <input type="date" name="join_date" required value="<?= h($_POST['join_date']??'') ?>">
-        </div>
-        <div class="field">
-            <label>Employment Type</label>
-            <select name="employment_type">
-                <?php foreach (['Full Time','Part Time','Contract','Intern'] as $t): ?>
-                <option <?= ($_POST['employment_type']??'Full Time')===$t?'selected':'' ?>><?= $t ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="field">
-            <label>Emergency Contact</label>
-            <input type="text" name="emergency_name" value="<?= h($_POST['emergency_name']??'') ?>" placeholder="Name">
-        </div>
-        <div class="field">
-            <label>Emergency Phone</label>
-            <input type="tel" name="emergency_phone" value="<?= h($_POST['emergency_phone']??'') ?>">
-        </div>
-    </div>
+if ($errors) {
+    $_SESSION['errors']   = $errors;
+    $_SESSION['form_old'] = $_POST;
+    redirect(BASE_URL . '/modules/employee/add_form.php');
+}
 
-    <div class="section-title">Bank & Statutory Details</div>
-    <div class="form-grid">
-        <div class="field">
-            <label>Bank Name</label>
-            <input type="text" name="bank_name" value="<?= h($_POST['bank_name']??'') ?>">
-        </div>
-        <div class="field">
-            <label>Account Number</label>
-            <input type="text" name="bank_account" value="<?= h($_POST['bank_account']??'') ?>">
-        </div>
-        <div class="field">
-            <label>IFSC Code</label>
-            <input type="text" name="bank_ifsc" value="<?= h($_POST['bank_ifsc']??'') ?>">
-        </div>
-        <div class="field">
-            <label>PAN Number</label>
-            <input type="text" name="pan_number" maxlength="10" style="text-transform:uppercase" value="<?= h($_POST['pan_number']??'') ?>">
-        </div>
-        <div class="field">
-            <label>Aadhaar Number</label>
-            <input type="text" name="aadhaar_number" maxlength="12" value="<?= h($_POST['aadhaar_number']??'') ?>">
-        </div>
-        <div class="field">
-            <label>UAN Number</label>
-            <input type="text" name="uan_number" value="<?= h($_POST['uan_number']??'') ?>">
-        </div>
-    </div>
+// ── Photo upload ──────────────────────────────────────────────────────────────
+$photo = null;
+if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+    $photo = upload_file($_FILES['photo'], UPLOAD_PATH . '/photos', 'emp_');
+    if ($photo === null) {
+        // upload_file returns null if type/size not allowed — non-fatal
+        flash('warn', 'Photo could not be saved (unsupported type or size). Employee was created without a photo.');
+    }
+}
 
-    <div class="form-actions">
-        <button type="submit" class="btn btn-primary" accesskey="s" data-shortcut data-key="S">
-            ✓ <u>S</u>ave Employee
-        </button>
-        <a href="index.php" class="btn btn-ghost">Cancel</a>
-    </div>
-</div>
-</form>
+// ── Generate employee ID ──────────────────────────────────────────────────────
+$emp_code = generate_employee_id();
 
-<script>
-window.BASE_URL = '<?= BASE_URL ?>';
-window.PAGE_SHORTCUTS = {
-    's': () => document.querySelector('form').submit(),
-    'b': () => window.location.href = '<?= BASE_URL ?>/modules/employee/index.php'
-};
-</script>
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+// ── INSERT using named PDO placeholders ──────────────────────────────────────
+//   Named placeholders (:department_id, :designation_id, etc.) make the
+//   mapping explicit — no accidental column/value position mismatch.
+$stmt = $db->prepare(
+    "INSERT INTO employees
+        (employee_id, name, email, phone, dob, gender,
+         address, city, state, pincode,
+         department_id, designation_id, manager_id,
+         join_date, employment_type,
+         bank_name, bank_account, bank_ifsc,
+         pan_number, aadhaar_number, uan_number,
+         emergency_name, emergency_phone,
+         photo, status, created_at)
+     VALUES
+        (:employee_id, :name, :email, :phone, :dob, :gender,
+         :address, :city, :state, :pincode,
+         :department_id, :designation_id, :manager_id,
+         :join_date, :employment_type,
+         :bank_name, :bank_account, :bank_ifsc,
+         :pan_number, :aadhaar_number, :uan_number,
+         :emergency_name, :emergency_phone,
+         :photo, 'Active', NOW())"
+);
+
+$stmt->execute([
+    ':employee_id'    => $emp_code,
+    ':name'           => $name,
+    ':email'          => $email,
+    ':phone'          => $phone    ?: null,
+    ':dob'            => $dob      ?: null,
+    ':gender'         => $gender   ?: null,
+    ':address'        => $addr     ?: null,
+    ':city'           => $city     ?: null,
+    ':state'          => $state    ?: null,
+    ':pincode'        => $pin      ?: null,
+    ':department_id'  => $dept_id,      // ★ NULL-safe — never 0
+    ':designation_id' => $des_id,       // ★ NULL-safe
+    ':manager_id'     => $mgr_id,       // ★ NULL-safe
+    ':join_date'      => $jdate,
+    ':employment_type'=> $etype,
+    ':bank_name'      => $bank    ?: null,
+    ':bank_account'   => $bacc    ?: null,
+    ':bank_ifsc'      => $bifsc   ?: null,
+    ':pan_number'     => $pan     ?: null,
+    ':aadhaar_number' => $aadh    ?: null,
+    ':uan_number'     => $uan     ?: null,
+    ':emergency_name' => $ename   ?: null,
+    ':emergency_phone'=> $ephone  ?: null,
+    ':photo'          => $photo,
+]);
+
+$new_id = (int)$db->lastInsertId();
+
+// ── Auto-create login account (role 6 = Employee) ────────────────────────────
+$ucheck = $db->prepare('SELECT 1 FROM users WHERE email = ? LIMIT 1');
+$ucheck->execute([$email]);
+if (!$ucheck->fetchColumn()) {
+    // Temporary password: Hrms@ + last 4 chars of employee code (e.g. Hrms@0012)
+    $tmp_pass = password_hash('Hrms@' . substr($emp_code, -4), PASSWORD_BCRYPT);
+    $db->prepare(
+        'INSERT INTO users (email, name, password_hash, role_id, employee_id, is_active)
+         VALUES (:email, :name, :pass, 6, :emp_id, 1)'
+    )->execute([
+        ':email'  => $email,
+        ':name'   => $name,
+        ':pass'   => $tmp_pass,
+        ':emp_id' => $new_id,
+    ]);
+}
+
+flash('success', "Employee $name ($emp_code) created successfully.");
+redirect(BASE_URL . '/modules/employee/view.php?id=' . $new_id);

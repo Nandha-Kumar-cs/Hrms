@@ -5,7 +5,7 @@
  */
 
 // ─── Base URL (no trailing slash) ────────────────────────────────────────────
-define('BASE_URL',  'http://localhost/hrms');
+define('BASE_URL',  'http://192.168.1.33/hrms');
 define('APP_URL',   BASE_URL);           // alias used in PWA / Settings views
 define('BASE_PATH', dirname(__DIR__));   // absolute path to project root
 
