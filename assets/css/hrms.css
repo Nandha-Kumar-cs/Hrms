@@ -1,0 +1,231 @@
+/* ============================================================
+   MagDyn HRMS — App-specific styles (extends magdyn-base.css)
+   ============================================================ */
+
+/* ─── Sidebar footer ──────────────────────────────────────── */
+.sidebar-footer {
+    border-top: 1px solid var(--sidebar-border);
+    padding: 8px;
+    flex-shrink: 0;
+}
+.nav-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--sidebar-text-very-dim);
+    letter-spacing: 0.1em;
+    padding: 8px 12px 4px;
+    text-transform: uppercase;
+}
+.nav-item {
+    border-radius: var(--radius);
+    color: var(--sidebar-text);
+    text-decoration: none;
+    transition: background 0.12s;
+    white-space: nowrap;
+}
+.nav-item:hover { background: var(--sidebar-bg-hover); color: white; text-decoration: none; }
+.nav-item.active { background: var(--sidebar-bg-active); color: white; }
+.nav-icon { font-size: 16px; flex-shrink: 0; }
+.nav-label { font-size: 13px; }
+.sidebar.collapsed .nav-label { display: none; }
+.sidebar.collapsed .nav-section-label { display: none; }
+
+/* ─── Notification badge ─────────────────────────────────── */
+.notif-badge {
+    background: var(--danger);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 1px 5px;
+    margin-left: auto;
+}
+
+/* ─── Notification panel ─────────────────────────────────── */
+.notif-panel {
+    position: fixed;
+    top: 60px;
+    right: 20px;
+    width: 340px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    z-index: 500;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.notif-item {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+.notif-item:last-child { border-bottom: none; }
+.notif-item.unread { background: var(--primary-light); }
+.notif-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+/* ─── Shortcut highlighting (Alt key active) ─────────────── */
+.shortcut-bar {
+    background: var(--warn-bg);
+    color: var(--warn);
+    border: 1px solid #fde68a;
+    border-radius: var(--radius);
+    padding: 8px 14px;
+    font-size: 13px;
+    margin-bottom: 14px;
+}
+body.alt-active [data-shortcut]::after {
+    content: ' [' attr(data-key) ']';
+    font-size: 10px;
+    background: var(--warn-bg);
+    color: var(--warn);
+    border: 1px solid #fde68a;
+    border-radius: 3px;
+    padding: 1px 4px;
+    margin-left: 4px;
+    font-weight: 700;
+}
+/* Underline the shortcut character in buttons/labels */
+.btn u, .nav-item u, .tab u, label u { text-decoration: underline; }
+
+/* ─── Status pills extra ─────────────────────────────────── */
+.pill-on-time  { background: var(--success-bg); color: var(--success); }
+.pill-late     { background: var(--warn-bg);    color: var(--warn); }
+.pill-absent   { background: var(--danger-bg);  color: var(--danger); }
+.pill-od       { background: var(--info-bg);    color: var(--info); }
+.pill-comp-off { background: #f3e8ff;           color: #7c3aed; }
+.pill-half     { background: #fff7ed;           color: #c2410c; }
+
+/* ─── Employee avatar ────────────────────────────────────── */
+.emp-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--primary-light);
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+/* ─── Document preview card ──────────────────────────────── */
+.doc-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface);
+}
+.doc-icon { font-size: 28px; }
+.doc-meta { flex: 1; min-width: 0; }
+.doc-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.doc-size { font-size: 12px; color: var(--text-muted); }
+
+/* ─── Salary slip ────────────────────────────────────────── */
+.slip-header {
+    text-align: center;
+    padding: 18px;
+    border-bottom: 2px solid var(--border-strong);
+    margin-bottom: 18px;
+}
+.slip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.slip-col { padding: 6px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.slip-col.head { background: var(--surface-alt); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.slip-total-row { font-weight: 700; background: var(--primary-light); }
+
+/* ─── Checklist ──────────────────────────────────────────── */
+.checklist-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.checklist-item:last-child { border-bottom: none; }
+.checklist-item.returned .item-name { text-decoration: line-through; color: var(--text-muted); }
+
+/* ─── Training progress bar ──────────────────────────────── */
+.progress-bar-wrap { background: #e5e7eb; border-radius: 999px; height: 8px; overflow: hidden; }
+.progress-bar-fill { height: 100%; border-radius: 999px; background: var(--primary); transition: width 0.3s; }
+
+/* ─── Calendar grid (attendance) ────────────────────────── */
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-day {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 6px;
+    text-align: center;
+    font-size: 12px;
+    min-height: 52px;
+    cursor: pointer;
+    background: var(--surface);
+}
+.cal-day:hover { background: var(--surface-alt); }
+.cal-day.on-time  { background: var(--success-bg); border-color: #a7f3d0; }
+.cal-day.late     { background: var(--warn-bg);    border-color: #fde68a; }
+.cal-day.absent   { background: var(--danger-bg);  border-color: #fecaca; }
+.cal-day.od       { background: var(--info-bg);    border-color: #bfdbfe; }
+.cal-day.comp-off { background: #f3e8ff;           border-color: #e9d5ff; }
+.cal-day.holiday  { background: #f0fdf4;           border-color: #bbf7d0; }
+.cal-day.future   { opacity: 0.4; cursor: default; }
+.cal-day .cal-date { font-weight: 700; font-size: 13px; }
+.cal-day .cal-status { font-size: 10px; margin-top: 2px; color: var(--text-muted); }
+
+/* ─── No-due clearance ───────────────────────────────────── */
+.clearance-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+}
+.clearance-step.cleared { border-color: #a7f3d0; background: var(--success-bg); }
+.clearance-step.pending { border-color: #fde68a; background: var(--warn-bg); }
+
+/* ─── Mobile / PWA overrides ─────────────────────────────── */
+@media (max-width: 768px) {
+    .sidebar { position: fixed; z-index: 300; transform: translateX(-240px); transition: transform 0.2s; }
+    .sidebar.mobile-open { transform: translateX(0); }
+    .main { padding: 14px 16px; }
+    .form-grid { grid-template-columns: 1fr; }
+    .field.span-2, .field.span-3 { grid-column: span 1; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    .cal-grid { grid-template-columns: repeat(7, 1fr); gap: 2px; }
+    .data-table { font-size: 12px; }
+    .data-table td, .data-table th { padding: 8px; }
+    .btn { padding: 7px 12px; }
+    .page-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .head-actions { flex-wrap: wrap; }
+}
+
+/* ─── Print overrides ────────────────────────────────────── */
+@media print {
+    .shortcut-bar, #sidebarToggle, .btn-ghost, .head-actions .btn:not(.btn-print) { display: none !important; }
+    .slip-grid { font-size: 12px; }
+}
+
+/* ─── DataTables custom ──────────────────────────────────── */
+.dataTables_wrapper { padding-bottom: 10px; }
+.dataTables_filter input { padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); font-size: 13px; }
+.dataTables_length select { padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.dataTables_paginate .paginate_button { padding: 4px 10px !important; border-radius: var(--radius) !important; font-size: 13px; }
+.dataTables_paginate .paginate_button.current { background: var(--primary) !important; color: white !important; border-color: var(--primary) !important; }
+table.dataTable thead th { background: var(--surface-alt); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; }
+
+/* ─── Mobile hamburger ───────────────────────────────────── */
+.mobile-toggle {
+    display: none;
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 18px;
+    cursor: pointer;
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 400;
+}
+@media (max-width: 768px) { .mobile-toggle { display: flex; } }

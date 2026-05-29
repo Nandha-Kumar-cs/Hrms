@@ -1,0 +1,33 @@
+{
+  "name": "MagDyn HRMS",
+  "short_name": "HRMS",
+  "description": "MagDyn Human Resource Management System",
+  "start_url": "./index.php",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#1e3a8a",
+  "lang": "en",
+  "scope": "./",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "./assets/icons/icon-72.png",  "sizes": "72x72",   "type": "image/png", "purpose": "maskable any" },
+    { "src": "./assets/icons/icon-96.png",  "sizes": "96x96",   "type": "image/png", "purpose": "maskable any" },
+    { "src": "./assets/icons/icon-128.png", "sizes": "128x128", "type": "image/png", "purpose": "maskable any" },
+    { "src": "./assets/icons/icon-144.png", "sizes": "144x144", "type": "image/png", "purpose": "maskable any" },
+    { "src": "./assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable any" },
+    { "src": "./assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable any" }
+  ],
+  "screenshots": [
+    { "src": "./assets/screenshots/dashboard.png", "sizes": "1280x720", "type": "image/png", "form_factor": "wide",   "label": "Dashboard Overview" },
+    { "src": "./assets/screenshots/employees.png", "sizes": "1280x720", "type": "image/png", "form_factor": "wide",   "label": "Employee Directory" },
+    { "src": "./assets/screenshots/mobile.png",    "sizes": "390x844",  "type": "image/png", "form_factor": "narrow", "label": "Mobile PWA View" }
+  ],
+  "shortcuts": [
+    { "name": "Dashboard",  "url": "./index.php",                        "icons": [{ "src": "./assets/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Attendance", "url": "./modules/attendance/index.php",     "icons": [{ "src": "./assets/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Payroll",    "url": "./modules/payroll/index.php",        "icons": [{ "src": "./assets/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Employees",  "url": "./modules/employee/index.php",       "icons": [{ "src": "./assets/icons/icon-96.png", "sizes": "96x96" }] }
+  ],
+  "prefer_related_applications": false
+}
