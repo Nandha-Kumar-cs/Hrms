@@ -223,8 +223,8 @@ $_settActive = _sb_active('/settings/', '/roles/', '/pwa/');
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/index.php"
-                           class="nav-link <?= _sb_active('/attendance/index', '/attendance/export', '/attendance/calendar') ?>">
+                        <a href="<?= BASE_URL ?>/modules/attendance/report.php"
+                           class="nav-link <?= _sb_active('/attendance/report') ?>">
                             Attendance Report
                         </a>
                     </li>
