@@ -1,28 +1,28 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('training_view');
+require_permission('training', 'view');
 
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/training/index.php');
 
-$course = db()->query("SELECT tc.*, CONCAT(u.first_name,' ',u.last_name) AS created_by_name
+$course = db()->query("SELECT tc.*, u.name AS created_by_name
     FROM training_courses tc LEFT JOIN users u ON tc.created_by = u.id WHERE tc.id=$id")->fetch(PDO::FETCH_ASSOC);
 
 if (!$course) redirect(BASE_URL . '/modules/training/index.php');
 
 $courseRoles = db()->query("SELECT r.id, r.name FROM training_course_roles tcr JOIN roles r ON tcr.role_id = r.id WHERE tcr.course_id=$id")->fetchAll(PDO::FETCH_ASSOC);
 
-$enrollments = db()->query("SELECT te.*, CONCAT(e.first_name,' ',e.last_name) AS emp_name, e.employee_id AS emp_code,
+$enrollments = db()->query("SELECT te.*, e.name AS emp_name, e.employee_id AS emp_code,
     r.name AS role_name, d.name AS dept_name,
-    CONCAT(u2.first_name,' ',u2.last_name) AS enrolled_by_name
+    u2.name AS enrolled_by_name
     FROM training_enrollments te
     JOIN employees e ON te.employee_id = e.id
     LEFT JOIN users u ON u.employee_id = e.id
     LEFT JOIN roles r ON u.role_id = r.id
     LEFT JOIN departments d ON e.department_id = d.id
     LEFT JOIN users u2 ON te.enrolled_by = u2.id
-    WHERE te.course_id=$id ORDER BY e.first_name")->fetchAll(PDO::FETCH_ASSOC);
+    WHERE te.course_id=$id ORDER BY e.name")->fetchAll(PDO::FETCH_ASSOC);
 
 $completedCount = count(array_filter($enrollments, fn($e) => $e['status'] === 'Completed'));
 
@@ -35,7 +35,7 @@ include '../../includes/header.php';
         <p class="page-subtitle"><?= h($course['training_type']) ?> &mdash; <?= $course['is_mandatory'] ? '<span class="pill pill-danger">Mandatory</span>' : 'Optional' ?></p>
     </div>
     <div class="page-actions">
-        <?php if (can('training_edit')): ?>
+        <?php if (can('training', 'edit')): ?>
             <a href="enroll.php?course_id=<?= $id ?>" class="btn btn-primary" data-key="E"><u>E</u>nroll</a>
         <?php endif; ?>
         <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>
@@ -101,7 +101,7 @@ include '../../includes/header.php';
                 <table class="table datatable">
                     <thead>
                         <tr><th>Employee</th><th>Department</th><th>Role</th><th>Status</th><th>Score</th><th>Completed</th>
-                        <?php if (can('training_edit')): ?><th>Action</th><?php endif; ?></tr>
+                        <?php if (can('training', 'edit')): ?><th>Action</th><?php endif; ?></tr>
                     </thead>
                     <tbody>
                         <?php foreach ($enrollments as $en):
@@ -114,7 +114,7 @@ include '../../includes/header.php';
                             <td><span class="pill <?= $sc[$en['status']]??'' ?>"><?= $en['status'] ?></span></td>
                             <td><?= $en['score'] !== null ? $en['score'].'%' : '—' ?></td>
                             <td><?= $en['completion_date'] ? date_fmt($en['completion_date']) : '—' ?></td>
-                            <?php if (can('training_edit')): ?>
+                            <?php if (can('training', 'edit')): ?>
                             <td>
                                 <button onclick="updateStatus(<?= $en['id'] ?>)" class="btn btn-xs btn-primary">Update</button>
                             </td>

@@ -5,7 +5,7 @@
  */
 
 // ─── Base URL (no trailing slash) ────────────────────────────────────────────
-define('BASE_URL',  'http://localhost/hrms');
+define('BASE_URL',  'http://192.168.1.33/hrms');
 define('APP_URL',   BASE_URL);           // alias used in PWA / Settings views
 define('BASE_PATH', dirname(__DIR__));   // absolute path to project root
 
@@ -57,9 +57,12 @@ define('PAYROLL_ESI_EMPLOYER',  0.0325); // 3.25%
 define('PAYROLL_ESI_WAGE_LIMIT',21000);  // ESI only applies below this gross
 
 // ─── Attendance ───────────────────────────────────────────────────────────────
-define('ATTENDANCE_GRACE_MINUTES', 15);  // late threshold
+define('ATTENDANCE_GRACE_MINUTES', 15);    // daily late grace (minutes)
 define('WORK_START_TIME',          '09:00');
 define('WORK_END_TIME',            '18:00');
+define('MONTHLY_GRACE_MINUTES',    90);    // total late allowed per month (1h 30m); 2× deduction if exceeded
+define('OT_TRIGGER_TIME',          '20:30'); // checkout must reach this time to trigger auto OT
+define('OT_BASELINE_TIME',         '18:15'); // OT hours counted from this time onwards
 
 // ─── PWA ─────────────────────────────────────────────────────────────────────
 define('PWA_APP_NAME',       APP_NAME);

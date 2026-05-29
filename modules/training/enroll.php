@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('training_edit');
+require_permission('training', 'edit');
 
 // Handle enrollment status update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_enrollment'])) {
@@ -50,13 +50,13 @@ if (!$course) redirect(BASE_URL . '/modules/training/index.php');
 $enrolled = db()->query("SELECT employee_id FROM training_enrollments WHERE course_id=$courseId")->fetchAll(PDO::FETCH_COLUMN);
 
 // Get employees (optionally filtered by course roles)
-$employees = db()->query("SELECT e.id, e.employee_id AS emp_code, CONCAT(e.first_name,' ',e.last_name) AS emp_name,
+$employees = db()->query("SELECT e.id, e.employee_id AS emp_code, e.name AS emp_name,
     d.name AS dept, r.name AS role_name
     FROM employees e
     LEFT JOIN departments d ON e.department_id = d.id
     LEFT JOIN users u ON u.employee_id = e.id
     LEFT JOIN roles r ON u.role_id = r.id
-    WHERE e.status='Active' ORDER BY e.first_name")->fetchAll(PDO::FETCH_ASSOC);
+    WHERE e.status='Active' ORDER BY e.name")->fetchAll(PDO::FETCH_ASSOC);
 
 $page_title = 'Enroll Employees';
 include '../../includes/header.php';

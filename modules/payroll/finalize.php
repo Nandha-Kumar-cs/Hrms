@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll_edit');
+require_permission('payroll', 'edit');
 
 $runId = (int)($_GET['run_id'] ?? 0);
 if (!$runId) redirect(BASE_URL . '/modules/payroll/index.php');
@@ -17,13 +17,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect(BASE_URL . '/modules/payroll/index.php');
 }
 
-$slips = db()->query("SELECT ss.*, CONCAT(e.first_name,' ',e.last_name) AS emp_name, e.employee_id AS emp_code,
+$slips = db()->query("SELECT ss.*, e.name AS emp_name, e.employee_id AS emp_code,
     d.name AS dept_name
     FROM salary_slips ss
     JOIN employees e ON ss.employee_id = e.id
     LEFT JOIN departments d ON e.department_id = d.id
     WHERE ss.payroll_run_id=$runId
-    ORDER BY e.first_name")->fetchAll(PDO::FETCH_ASSOC);
+    ORDER BY e.name")->fetchAll(PDO::FETCH_ASSOC);
 
 $totals = ['gross'=>0,'deductions'=>0,'net'=>0,'pf'=>0,'esi'=>0];
 foreach ($slips as $s) {

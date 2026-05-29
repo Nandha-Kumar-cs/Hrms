@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('settings_view');
+require_permission('settings', 'view');
 
 $page_title = 'Settings';
 include '../../includes/header.php';

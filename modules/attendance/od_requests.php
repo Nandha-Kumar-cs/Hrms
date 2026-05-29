@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('attendance_view');
+require_permission('attendance', 'view');
 
 $user = current_user();
 $isEmployee = ($user['role'] === 'Employee');
@@ -11,7 +11,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     verify_csrf($_POST['csrf_token'] ?? '');
     $rid    = (int)$_POST['request_id'];
     $action = $_POST['action'];
-    if (in_array($action, ['Approved','Rejected']) && can('attendance_edit')) {
+    if (in_array($action, ['Approved','Rejected']) && can('attendance', 'edit')) {
         db()->prepare("UPDATE od_requests SET status=:s, reviewed_by=:rb, reviewed_at=NOW() WHERE id=:id")
              ->execute([':s'=>$action,':rb'=>$user['id'],':id'=>$rid]);
         // If approved, update attendance for those dates
@@ -55,15 +55,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
 }
 
 $where = $isEmployee ? "WHERE od.employee_id = {$user['employee_id']}" : '';
-$requests = db()->query("SELECT od.*, CONCAT(e.first_name,' ',e.last_name) AS emp_name, e.employee_id AS emp_code,
-    CONCAT(u.first_name,' ',u.last_name) AS reviewer_name
+$requests = db()->query("SELECT od.*, e.name AS emp_name, e.employee_id AS emp_code,
+    u.name AS reviewer_name
     FROM od_requests od
     JOIN employees e ON od.employee_id = e.id
     LEFT JOIN users u ON od.reviewed_by = u.id
     $where
     ORDER BY od.requested_at DESC")->fetchAll(PDO::FETCH_ASSOC);
 
-$employees = $isEmployee ? [] : db()->query("SELECT id, CONCAT(first_name,' ',last_name,' (',employee_id,')') AS name FROM employees WHERE status='Active' ORDER BY first_name")->fetchAll(PDO::FETCH_ASSOC);
+$employees = $isEmployee ? [] : db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 $page_title = 'On Duty Requests';
 include '../../includes/header.php';
@@ -95,7 +95,7 @@ include '../../includes/header.php';
                     <th>Reason</th>
                     <th>Requested</th>
                     <th>Status</th>
-                    <?php if (can('attendance_edit') && !$isEmployee): ?><th>Action</th><?php endif; ?>
+                    <?php if (can('attendance', 'edit') && !$isEmployee): ?><th>Action</th><?php endif; ?>
                 </tr>
             </thead>
             <tbody>
@@ -117,7 +117,7 @@ include '../../includes/header.php';
                         echo '<span class="pill ' . ($cls[$r['status']]??'') . '">' . $r['status'] . '</span>';
                         ?>
                     </td>
-                    <?php if (can('attendance_edit') && !$isEmployee): ?>
+                    <?php if (can('attendance', 'edit') && !$isEmployee): ?>
                     <td>
                         <?php if ($r['status'] === 'Pending'): ?>
                         <form method="POST" class="d-inline">
@@ -153,7 +153,7 @@ include '../../includes/header.php';
                     <select name="employee_id" class="form-control" required>
                         <option value="">Select Employee</option>
                         <?php foreach ($employees as $e): ?>
-                            <option value="<?= $e['id'] ?>"><?= h($e['name']) ?></option>
+                            <option value="<?= $e['id'] ?>"><?= h($e['label']) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>

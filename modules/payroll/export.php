@@ -1,19 +1,19 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll_view');
+require_permission('payroll', 'view');
 
 $runId = (int)($_GET['run_id'] ?? 0);
 if (!$runId) exit('Invalid run');
 
 $run = db()->query("SELECT * FROM payroll_runs WHERE id=$runId")->fetch(PDO::FETCH_ASSOC);
-$slips = db()->query("SELECT ss.*, CONCAT(e.first_name,' ',e.last_name) AS emp_name, e.employee_id AS emp_code,
+$slips = db()->query("SELECT ss.*, e.name AS emp_name, e.employee_id AS emp_code,
     d.name AS dept_name, des.name AS designation, e.bank_name, e.bank_account, e.bank_ifsc
     FROM salary_slips ss
     JOIN employees e ON ss.employee_id = e.id
     LEFT JOIN departments d ON e.department_id = d.id
     LEFT JOIN designations des ON e.designation_id = des.id
-    WHERE ss.payroll_run_id=$runId ORDER BY e.first_name")->fetchAll(PDO::FETCH_ASSOC);
+    WHERE ss.payroll_run_id=$runId ORDER BY e.name")->fetchAll(PDO::FETCH_ASSOC);
 
 $filename = "payroll_{$run['year']}_{$run['month']}.csv";
 header('Content-Type: text/csv');

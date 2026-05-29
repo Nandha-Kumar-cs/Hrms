@@ -1,179 +1,261 @@
 <?php
-$page_title = 'Asset Management';
+$page_title = 'Assets';
 require_once __DIR__ . '/../../includes/header.php';
 require_permission('assets');
 
 $db = db();
-$tab = sanitize($_GET['tab'] ?? 'assets');
 
+// ── Status counts for the 4 metric cards ─────────────────────────────────────
+$counts = $db->query(
+    "SELECT
+        SUM(status = 'Available')    AS available,
+        SUM(status = 'Assigned')     AS assigned,
+        SUM(status = 'Under Repair') AS under_repair,
+        SUM(status = 'Retired')      AS retired
+     FROM assets"
+)->fetch();
+
+// ── Full asset list with category + currently assigned employee ───────────────
 $assets = $db->query(
-    'SELECT a.*, c.name AS cat_name,
-            (SELECT e.name FROM asset_assignments aa JOIN employees e ON e.id=aa.employee_id
-             WHERE aa.asset_id=a.id AND aa.is_returned=0 LIMIT 1) AS assigned_to
+    "SELECT a.*,
+            c.name  AS cat_name,
+            e.name  AS assigned_to,
+            e.employee_id AS emp_code
      FROM assets a
-     LEFT JOIN asset_categories c ON c.id=a.category_id
-     ORDER BY a.asset_code'
+     LEFT JOIN asset_categories c  ON c.id = a.category_id
+     LEFT JOIN asset_assignments aa ON aa.asset_id = a.id AND aa.is_returned = 0
+     LEFT JOIN employees e          ON e.id = aa.employee_id
+     ORDER BY a.asset_code"
 )->fetchAll();
-
-$categories = $db->query('SELECT * FROM asset_categories ORDER BY name')->fetchAll();
-
-$statusCount = [];
-foreach ($assets as $a) $statusCount[$a['status']] = ($statusCount[$a['status']] ?? 0) + 1;
 ?>
 
-<div class="page-head">
+<!-- Page header -->
+<div class="d-flex align-items-center justify-content-between mb-4">
     <div>
-        <h1>Assets</h1>
-        <p class="muted"><?= count($assets) ?> total assets</p>
+        <h4 class="mb-0 fw-semibold">Company Assets</h4>
+        <p class="text-muted small mb-0"><?= count($assets) ?> total assets registered</p>
     </div>
-    <div class="head-actions">
-        <?php if (can('assets','assign')): ?>
-        <button class="btn btn-primary" onclick="openModal('addAssetModal')" accesskey="n" data-shortcut data-key="N">
-            + <u>N</u>ew Asset
-        </button>
-        <a href="assign.php" class="btn" accesskey="a" data-shortcut data-key="A">
-            <u>A</u>ssign
+    <?php if (can('assets', 'assign')): ?>
+    <a href="<?= BASE_URL ?>/modules/assets/add_asset.php" class="btn btn-primary">
+        <i class="fa fa-plus me-1"></i> Add Asset
+    </a>
+    <?php endif; ?>
+</div>
+
+<!-- ── 4 Status Metric Cards ─────────────────────────────────────────────────── -->
+<div class="row g-3 mb-4">
+
+    <div class="col-xl-3 col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body d-flex align-items-center justify-content-between">
+                <div>
+                    <div class="text-muted small fw-semibold text-uppercase mb-1">Available</div>
+                    <div class="h3 mb-0 fw-bold text-success"><?= (int)($counts['available'] ?? 0) ?></div>
+                </div>
+                <div style="width:50px;height:50px;border-radius:50%;background:rgba(25,135,84,.12);
+                            color:#198754;display:flex;align-items:center;justify-content:center;font-size:1.3rem">
+                    <i class="fa fa-circle-check"></i>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent border-0 pt-0">
+                <small class="text-success">Ready to assign</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body d-flex align-items-center justify-content-between">
+                <div>
+                    <div class="text-muted small fw-semibold text-uppercase mb-1">Assigned</div>
+                    <div class="h3 mb-0 fw-bold text-primary"><?= (int)($counts['assigned'] ?? 0) ?></div>
+                </div>
+                <div style="width:50px;height:50px;border-radius:50%;background:rgba(13,110,253,.12);
+                            color:#0d6efd;display:flex;align-items:center;justify-content:center;font-size:1.3rem">
+                    <i class="fa fa-user-check"></i>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent border-0 pt-0">
+                <small class="text-primary">Currently in use</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body d-flex align-items-center justify-content-between">
+                <div>
+                    <div class="text-muted small fw-semibold text-uppercase mb-1">Under Repair</div>
+                    <div class="h3 mb-0 fw-bold text-warning"><?= (int)($counts['under_repair'] ?? 0) ?></div>
+                </div>
+                <div style="width:50px;height:50px;border-radius:50%;background:rgba(255,193,7,.12);
+                            color:#ffc107;display:flex;align-items:center;justify-content:center;font-size:1.3rem">
+                    <i class="fa fa-screwdriver-wrench"></i>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent border-0 pt-0">
+                <small class="text-warning">Being serviced</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body d-flex align-items-center justify-content-between">
+                <div>
+                    <div class="text-muted small fw-semibold text-uppercase mb-1">Retired</div>
+                    <div class="h3 mb-0 fw-bold text-secondary"><?= (int)($counts['retired'] ?? 0) ?></div>
+                </div>
+                <div style="width:50px;height:50px;border-radius:50%;background:rgba(108,117,125,.12);
+                            color:#6c757d;display:flex;align-items:center;justify-content:center;font-size:1.3rem">
+                    <i class="fa fa-box-archive"></i>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent border-0 pt-0">
+                <small class="text-secondary">Decommissioned</small>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- ── Assets DataTable ───────────────────────────────────────────────────────── -->
+<div class="card border-0 shadow-sm">
+    <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
+        <h6 class="mb-0 fw-semibold"><i class="fa fa-laptop me-2 text-primary"></i>All Assets</h6>
+        <a href="<?= BASE_URL ?>/modules/assets/clearance.php" class="btn btn-sm btn-outline-secondary">
+            <i class="fa fa-certificate me-1"></i> No-Due Clearance
         </a>
-        <?php endif; ?>
+    </div>
+    <div class="card-body">
+        <table id="assetsTable" class="table table-hover align-middle" style="width:100%">
+            <thead class="table-light">
+                <tr>
+                    <th>Asset Code</th>
+                    <th>Name</th>
+                    <th>Category</th>
+                    <th>Serial No</th>
+                    <th>Condition</th>
+                    <th>Status</th>
+                    <th>Assigned To</th>
+                    <th class="text-center">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php foreach ($assets as $a):
+                // Status badge classes
+                $statusBadge = match($a['status']) {
+                    'Available'    => 'success',
+                    'Assigned'     => 'primary',
+                    'Under Repair' => 'warning',
+                    'Retired'      => 'secondary',
+                    default        => 'light',
+                };
+                // Condition badge classes
+                $condBadge = match($a['condition'] ?? '') {
+                    'New'  => 'success',
+                    'Good' => 'info',
+                    'Fair' => 'warning',
+                    'Poor' => 'danger',
+                    default => 'secondary',
+                };
+            ?>
+            <tr>
+                <td><code class="text-primary"><?= h($a['asset_code']) ?></code></td>
+                <td>
+                    <div class="fw-semibold"><?= h($a['name']) ?></div>
+                    <?php if ($a['brand'] || $a['model']): ?>
+                    <div class="text-muted small"><?= h(trim($a['brand'] . ' ' . $a['model'])) ?></div>
+                    <?php endif; ?>
+                </td>
+                <td><?= h($a['cat_name'] ?? '—') ?></td>
+                <td class="font-monospace small"><?= h($a['serial_no'] ?? '—') ?></td>
+                <td><span class="badge bg-<?= $condBadge ?>"><?= h($a['condition'] ?? '—') ?></span></td>
+                <td><span class="badge bg-<?= $statusBadge ?>"><?= h($a['status']) ?></span></td>
+                <td>
+                    <?php if ($a['assigned_to']): ?>
+                    <div><?= h($a['assigned_to']) ?></div>
+                    <div class="text-muted small"><?= h($a['emp_code']) ?></div>
+                    <?php else: ?>
+                    <span class="text-muted">—</span>
+                    <?php endif; ?>
+                </td>
+                <td class="text-center text-nowrap">
+                    <?php if (can('assets', 'assign')): ?>
+                    <a href="<?= BASE_URL ?>/modules/assets/edit_asset.php?id=<?= $a['id'] ?>"
+                       class="btn btn-xs btn-outline-primary" title="Edit">
+                        <i class="fa fa-pen"></i>
+                    </a>
+                    <?php if ($a['status'] === 'Available'): ?>
+                    <a href="<?= BASE_URL ?>/modules/assets/assign.php?asset_id=<?= $a['id'] ?>"
+                       class="btn btn-xs btn-outline-success" title="Assign to employee">
+                        <i class="fa fa-user-plus"></i>
+                    </a>
+                    <?php endif; ?>
+                    <?php if ($a['status'] === 'Assigned'): ?>
+                    <a href="<?= BASE_URL ?>/modules/assets/view.php?id=<?= $a['id'] ?>"
+                       class="btn btn-xs btn-outline-warning" title="Process return">
+                        <i class="fa fa-rotate-left"></i>
+                    </a>
+                    <?php endif; ?>
+                    <button type="button"
+                            class="btn btn-xs btn-outline-danger btn-delete"
+                            data-id="<?= $a['id'] ?>"
+                            data-name="<?= h($a['name']) ?>"
+                            title="Delete">
+                        <i class="fa fa-trash"></i>
+                    </button>
+                    <?php endif; ?>
+                </td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
     </div>
 </div>
 
-<!-- Stats -->
-<div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
-    <?php foreach (['Available'=>'stat-success','Assigned'=>'stat-info','Under Repair'=>'stat-warn','Retired'=>''] as $s => $c): ?>
-    <div class="stat-card <?= $c ?>">
-        <div class="stat-label"><?= $s ?></div>
-        <div class="stat-value"><?= $statusCount[$s] ?? 0 ?></div>
-    </div>
-    <?php endforeach; ?>
-</div>
+<!-- Delete confirmation form (hidden, submitted by JS) -->
+<form id="deleteForm" method="POST" action="<?= BASE_URL ?>/modules/assets/save_asset.php" style="display:none">
+    <?= csrf_field() ?>
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="id" id="deleteId">
+</form>
 
-<!-- Assets table -->
-<div class="card">
-    <div class="card-head">
-        <h3>All Assets</h3>
-        <div class="search"><input type="search" placeholder="Search..." data-search></div>
-    </div>
-    <table class="data-table datatable">
-        <thead><tr>
-            <th>Asset Code</th>
-            <th>Name</th>
-            <th>Category</th>
-            <th>Serial No</th>
-            <th>Status</th>
-            <th>Assigned To</th>
-            <th>Condition</th>
-            <th class="r">Actions</th>
-        </tr></thead>
-        <tbody>
-        <?php foreach ($assets as $a): ?>
-        <tr>
-            <td><code><?= h($a['asset_code']) ?></code></td>
-            <td>
-                <div style="font-weight:500"><?= h($a['name']) ?></div>
-                <div class="small muted"><?= h($a['brand']??'') ?> <?= h($a['model']??'') ?></div>
-            </td>
-            <td><?= h($a['cat_name']) ?></td>
-            <td class="mono small"><?= h($a['serial_no'] ?? '—') ?></td>
-            <td>
-                <?php
-                $sp = ['Available'=>'pill-success','Assigned'=>'pill-info','Under Repair'=>'pill-warn','Retired'=>'pill-cancelled'];
-                echo '<span class="pill '.($sp[$a['status']]??'pill-neutral').'">'.h($a['status']).'</span>';
-                ?>
-            </td>
-            <td><?= h($a['assigned_to'] ?? '—') ?></td>
-            <td><span class="pill pill-<?= strtolower($a['condition']) === 'new' ? 'success' : (strtolower($a['condition']) === 'poor' ? 'danger' : 'neutral') ?>"><?= h($a['condition']) ?></span></td>
-            <td class="r nowrap">
-                <a href="view.php?id=<?= $a['id'] ?>" class="btn btn-sm">View</a>
-                <?php if ($a['status'] === 'Available' && can('assets','assign')): ?>
-                <a href="assign.php?asset_id=<?= $a['id'] ?>" class="btn btn-sm btn-success">Assign</a>
-                <?php endif; ?>
-            </td>
-        </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-</div>
-
-<!-- No-due clearance section -->
-<div class="card" style="margin-top:18px">
-    <div class="card-head">
-        <h3>No-Due Clearance</h3>
-        <a href="clearance.php" class="link">Manage →</a>
-    </div>
-    <div style="padding:14px 18px;color:var(--text-muted);font-size:13px">
-        Generate no-due clearance certificates verifying all assets have been returned by departing employees.
-        <a href="clearance.php" class="btn btn-sm" style="margin-left:12px">View Clearance</a>
-    </div>
-</div>
-
-<!-- Add Asset Modal -->
-<div class="modal" id="addAssetModal">
-    <div class="modal-content" style="max-width:560px">
-        <h3>Add New Asset</h3>
-        <form method="POST" action="save_asset.php">
-            <?= csrf_field() ?>
-            <div class="form-grid-2" style="margin-top:12px">
-                <div class="field">
-                    <label>Asset Name *</label>
-                    <input type="text" name="name" required placeholder="Dell Laptop XPS 15">
-                </div>
-                <div class="field">
-                    <label>Category</label>
-                    <select name="category_id">
-                        <?php foreach ($categories as $c): ?>
-                        <option value="<?= $c['id'] ?>"><?= h($c['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="field">
-                    <label>Asset Code *</label>
-                    <input type="text" name="asset_code" required placeholder="AST-001">
-                </div>
-                <div class="field">
-                    <label>Serial Number</label>
-                    <input type="text" name="serial_no" placeholder="SN123456">
-                </div>
-                <div class="field">
-                    <label>Brand</label>
-                    <input type="text" name="brand" placeholder="Dell">
-                </div>
-                <div class="field">
-                    <label>Model</label>
-                    <input type="text" name="model" placeholder="XPS 15">
-                </div>
-                <div class="field">
-                    <label>Purchase Date</label>
-                    <input type="date" name="purchase_date">
-                </div>
-                <div class="field">
-                    <label>Purchase Cost</label>
-                    <input type="number" name="purchase_cost" step="0.01" placeholder="0.00">
-                </div>
-                <div class="field">
-                    <label>Condition</label>
-                    <select name="condition">
-                        <?php foreach (['New','Good','Fair','Poor'] as $c): ?><option><?= $c ?></option><?php endforeach; ?>
-                    </select>
-                </div>
-            </div>
-            <div class="field span-3" style="margin-top:8px">
-                <label>Notes</label>
-                <textarea name="notes" rows="2"></textarea>
-            </div>
-            <div style="display:flex;gap:8px;margin-top:16px">
-                <button type="submit" class="btn btn-primary">Save Asset</button>
-                <button type="button" class="btn btn-ghost" onclick="closeModal('addAssetModal')">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-
+<?php
+$page_scripts = <<<'JS'
 <script>
-window.BASE_URL = '<?= BASE_URL ?>';
-window.PAGE_SHORTCUTS = {
-    'n': () => openModal('addAssetModal'),
-    'a': () => window.location.href = BASE_URL + '/modules/assets/assign.php'
-};
+$(function () {
+
+    // ── DataTables init ──────────────────────────────────────────────────────
+    $('#assetsTable').DataTable({
+        pageLength: 25,
+        lengthMenu: [[10, 25, 50, 100, -1], ['10', '25', '50', '100', 'All']],
+        order: [[0, 'asc']],
+        columnDefs: [
+            { orderable: false, targets: 7 }   // Actions column not sortable
+        ],
+        language: {
+            search:         'Search assets:',
+            lengthMenu:     'Show _MENU_ assets',
+            info:           'Showing _START_ to _END_ of _TOTAL_ assets',
+            infoEmpty:      'No assets found',
+            emptyTable:     'No assets registered yet'
+        }
+    });
+
+    // ── Delete confirmation ──────────────────────────────────────────────────
+    $(document).on('click', '.btn-delete', function () {
+        const id   = $(this).data('id');
+        const name = $(this).data('name');
+        if (confirm('Delete asset "' + name + '"?\nThis cannot be undone.')) {
+            $('#deleteId').val(id);
+            $('#deleteForm').submit();
+        }
+    });
+
+});
 </script>
+JS;
+?>
+
 <?php include __DIR__ . '/../../includes/footer.php'; ?>
