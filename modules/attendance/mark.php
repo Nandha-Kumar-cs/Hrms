@@ -640,32 +640,49 @@ $(function () {
     });
 
     /* ── Time inputs: live status update ───────────────────────────────────
-     * - 'input'  : fires when value changes via the browser time picker
-     * - 'change' : fires when the field loses focus with a new value
-     * - 'blur'   : belt-and-suspenders fallback in case change doesn't fire
+     * Chrome's native <input type="time"> widget (AM/PM toggle, spinners)
+     * does NOT reliably fire 'input' or 'change' while the user is
+     * interacting with it — events only fire after blur in many cases.
+     *
+     * Fix: poll every 200 ms, compare each row's time values to their
+     * last-known state, and call updateRow() only when something changed.
+     * Events are kept as a fallback for non-Chrome / non-native pickers.
      * -------------------------------------------------------------------- */
     function _onTimeChange($tr) {
         updateRow($tr);
-        if ($tr.find('.checkout-input').val() && parseInt($tr.data('ot-enabled'))) {
-            calcAutoOT($tr, $tr.find('.checkout-input').val());
+        var co = $tr.find('.checkout-input').val();
+        if (co && parseInt($tr.data('ot-enabled'))) {
+            calcAutoOT($tr, co);
         }
     }
 
+    /* Store snapshot of time values per row so the poll can diff cheaply */
+    $('tbody tr').each(function () {
+        var $tr = $(this);
+        $tr.data('_ci', $tr.find('.checkin-input').val());
+        $tr.data('_co', $tr.find('.checkout-input').val());
+    });
+
+    /* Poll every 200 ms — detects AM/PM clicks, spinner arrows, paste, etc. */
+    setInterval(function () {
+        $('tbody tr').each(function () {
+            var $tr = $(this);
+            var ci  = $tr.find('.checkin-input').val();
+            var co  = $tr.find('.checkout-input').val();
+            if (ci !== $tr.data('_ci') || co !== $tr.data('_co')) {
+                $tr.data('_ci', ci);
+                $tr.data('_co', co);
+                _onTimeChange($tr);
+            }
+        });
+    }, 200);
+
+    /* Keep event listeners as fallback (keyboard typing, non-Chrome) */
     $(document).on('input change blur', '.checkin-input, .checkout-input', function () {
         _onTimeChange($(this).closest('tr'));
     });
 
-    /* When the user clicks INTO the checkout field and check-in is already
-     * set, show the status badge immediately (before checkout is typed). */
-    $(document).on('focus', '.checkout-input', function () {
-        var $tr = $(this).closest('tr');
-        if ($tr.find('.checkin-input').val()) {
-            updateRow($tr);
-        }
-    });
-
-    /* Safety pass: recalculate every row right before the form submits so
-     * the hidden status inputs always reflect the current times. */
+    /* Safety pass before form submit */
     $('#attendanceForm').on('submit', function () {
         $('tbody tr').each(function () { updateRow($(this)); });
     });
