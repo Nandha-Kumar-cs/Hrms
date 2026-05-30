@@ -115,8 +115,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
         $outTime  = trim($data['out_time'] ?? '');
         $remarks  = sanitize($data['remarks'] ?? '');
 
-        // Auto-classify status from check-in times (skip manual-only statuses)
-        if ($inTime && !in_array($status, ['Absent','OD','Comp Off','Half Day','On Leave'], true)) {
+        // Auto-classify whenever check-in is present; only skip truly manual statuses
+        if ($inTime && !in_array($status, ['OD','Comp Off','On Leave'], true)) {
             $inParts = explode(':', $inTime);
             $inMins  = (int)$inParts[0] * 60 + (int)($inParts[1] ?? 0);
             if ($inMins >= $halfDayCutoff) {
@@ -631,8 +631,8 @@ $(function () {
         }
     });
 
-    /* ── On time change: recalculate status + OT ────────────────────────── */
-    $(document).on('change', '.checkin-input, .checkout-input', function () {
+    /* ── On time change: recalculate status + OT (real-time + on blur) ──── */
+    $(document).on('input change', '.checkin-input, .checkout-input', function () {
         var $tr = $(this).closest('tr');
         updateRow($tr);
         // Auto OT only for ot_enabled employees
