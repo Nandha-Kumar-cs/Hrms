@@ -518,6 +518,27 @@ require_once __DIR__ . '/../../includes/header.php';
 </div>
 <?php endif; ?>
 
+<!-- Bulk status confirmation modal -->
+<div class="modal fade" id="bulkStatusConfirmModal" tabindex="-1" aria-labelledby="bulkStatusConfirmLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:420px">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-0">
+                <h6 class="modal-title fw-semibold" id="bulkStatusConfirmLabel">
+                    <i class="fa fa-triangle-exclamation text-warning me-2"></i>Confirm Bulk Update
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body pt-2 pb-1">
+                <p class="mb-0" id="bulkStatusConfirmMsg"></p>
+            </div>
+            <div class="modal-footer border-0 pt-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm" id="bulkStatusConfirmBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <?php include __DIR__ . '/modals.php'; ?>
 
 <script>
@@ -687,36 +708,43 @@ $(function () {
         $('tbody tr').each(function () { updateRow($(this)); });
     });
 
-    /* ── Mark All Absent ─────────────────────────────────────────────────── */
-    $('#markAllAbsent').on('click', function () {
+    /* ── Mark All Absent / On Leave — with confirmation ─────────────────── */
+    var _bulkStatus = null;
+    var _bulkModal  = new bootstrap.Modal(document.getElementById('bulkStatusConfirmModal'));
+
+    function _applyBulkStatus(status) {
         $('tbody tr').each(function () {
             var $tr  = $(this);
             var $sel = $tr.find('.status-manual-select');
             $tr.find('.checkin-input, .checkout-input').val('');
             if (!$sel.hasClass('d-none')) {
-                $sel.val('Absent').trigger('change');
+                $sel.val(status).trigger('change');
             } else {
-                $tr.find('.status-value').val('Absent');
+                $tr.find('.status-value').val(status);
                 $tr.find('.status-auto-display').addClass('d-none');
-                $sel.val('Absent').removeClass('d-none');
+                $sel.val(status).removeClass('d-none');
             }
         });
+    }
+
+    $('#markAllAbsent').on('click', function () {
+        _bulkStatus = 'Absent';
+        $('#bulkStatusConfirmMsg').text('Do you want to mark all employees as Absent? Check-in and check-out times will be cleared.');
+        $('#bulkStatusConfirmBtn').removeClass('btn-secondary').addClass('btn-danger').text('Yes, Mark All Absent');
+        _bulkModal.show();
     });
 
-    /* ── Mark All On Leave ───────────────────────────────────────────────── */
     $('#markAllLeave').on('click', function () {
-        $('tbody tr').each(function () {
-            var $tr  = $(this);
-            var $sel = $tr.find('.status-manual-select');
-            $tr.find('.checkin-input, .checkout-input').val('');
-            if (!$sel.hasClass('d-none')) {
-                $sel.val('On Leave').trigger('change');
-            } else {
-                $tr.find('.status-value').val('On Leave');
-                $tr.find('.status-auto-display').addClass('d-none');
-                $sel.val('On Leave').removeClass('d-none');
-            }
-        });
+        _bulkStatus = 'On Leave';
+        $('#bulkStatusConfirmMsg').text('Do you want to mark all employees as On Leave? Check-in and check-out times will be cleared.');
+        $('#bulkStatusConfirmBtn').removeClass('btn-danger').addClass('btn-secondary').text('Yes, Mark All On Leave');
+        _bulkModal.show();
+    });
+
+    $('#bulkStatusConfirmBtn').on('click', function () {
+        _bulkModal.hide();
+        if (_bulkStatus) _applyBulkStatus(_bulkStatus);
+        _bulkStatus = null;
     });
 
     /* ── Initialise all rows on page load ───────────────────────────────── */
