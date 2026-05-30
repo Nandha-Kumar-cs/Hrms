@@ -639,14 +639,35 @@ $(function () {
         }
     });
 
-    /* ── On time change: recalculate status + OT (real-time + on blur) ──── */
-    $(document).on('input change', '.checkin-input, .checkout-input', function () {
-        var $tr = $(this).closest('tr');
+    /* ── Time inputs: live status update ───────────────────────────────────
+     * - 'input'  : fires when value changes via the browser time picker
+     * - 'change' : fires when the field loses focus with a new value
+     * - 'blur'   : belt-and-suspenders fallback in case change doesn't fire
+     * -------------------------------------------------------------------- */
+    function _onTimeChange($tr) {
         updateRow($tr);
-        // Auto OT only for ot_enabled employees
-        if ($(this).hasClass('checkout-input') && parseInt($tr.data('ot-enabled'))) {
-            calcAutoOT($tr, $(this).val());
+        if ($tr.find('.checkout-input').val() && parseInt($tr.data('ot-enabled'))) {
+            calcAutoOT($tr, $tr.find('.checkout-input').val());
         }
+    }
+
+    $(document).on('input change blur', '.checkin-input, .checkout-input', function () {
+        _onTimeChange($(this).closest('tr'));
+    });
+
+    /* When the user clicks INTO the checkout field and check-in is already
+     * set, show the status badge immediately (before checkout is typed). */
+    $(document).on('focus', '.checkout-input', function () {
+        var $tr = $(this).closest('tr');
+        if ($tr.find('.checkin-input').val()) {
+            updateRow($tr);
+        }
+    });
+
+    /* Safety pass: recalculate every row right before the form submits so
+     * the hidden status inputs always reflect the current times. */
+    $('#attendanceForm').on('submit', function () {
+        $('tbody tr').each(function () { updateRow($(this)); });
     });
 
     /* ── Mark All Absent ─────────────────────────────────────────────────── */
