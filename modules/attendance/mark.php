@@ -372,9 +372,13 @@ require_once __DIR__ . '/../../includes/header.php';
                 $allStatuses = array_merge(array_keys($manualOpts), array_keys($autoLabels));
 
                 foreach ($employees as $i => $e):
-                    $savedStat = $e['att_status'] ?? 'Absent';
-                    $hasTime   = !empty($e['in_time']) || !empty($e['out_time']);
-                    $isAutoMode = $hasTime && array_key_exists($savedStat, $autoLabels);
+                    $savedStat   = $e['att_status'] ?? 'Absent';
+                    $hasTime     = !empty($e['in_time']) || !empty($e['out_time']);
+                    // Auto mode whenever times are present — status is always derived from times, not DB
+                    $isAutoMode  = $hasTime;
+                    // In manual mode, only preserve special statuses; everything else defaults to Absent
+                    $specialStatuses = ['Comp Off', 'On Leave', 'OD'];
+                    $manualDefault   = in_array($savedStat, $specialStatuses) ? $savedStat : 'Absent';
                     $isOtEnabled = (bool)$e['ot_enabled'];
                 ?>
                 <tr class="att-row"
@@ -397,27 +401,21 @@ require_once __DIR__ . '/../../includes/header.php';
                         <input type="hidden"
                                name="attendance[<?= $e['id'] ?>][status]"
                                class="status-value"
-                               value="<?= h($savedStat) ?>">
+                               value="<?= h($isAutoMode ? '' : $manualDefault) ?>">
 
                         <select class="form-select form-select-sm status-manual-select <?= $isAutoMode ? 'd-none' : '' ?>">
                             <?php foreach ($manualOpts as $val => $label): ?>
                             <option value="<?= $val ?>"
-                                <?= (!$isAutoMode && $savedStat === $val) ? 'selected' : '' ?>>
+                                <?= (!$isAutoMode && $manualDefault === $val) ? 'selected' : '' ?>>
                                 <?= $label ?>
                             </option>
                             <?php endforeach; ?>
                         </select>
 
                         <div class="status-auto-display <?= $isAutoMode ? '' : 'd-none' ?>">
-                            <?php
-                            // Badge classes for auto-detected statuses
-                            $badgeCls = ['On Time'=>'bg-success','Late'=>'bg-info','Half Day'=>'bg-warning text-dark'];
-                            $bc  = $badgeCls[$savedStat] ?? 'bg-secondary';
-                            $lbl = $autoLabels[$savedStat] ?? ucfirst($savedStat);
-                            ?>
-                            <span class="badge status-auto-badge <?= $bc ?>"
+                            <span class="badge status-auto-badge bg-secondary"
                                   style="font-size:.78rem;padding:.35em .65em;letter-spacing:.3px">
-                                <?= $lbl ?>
+                                —
                             </span>
                             <small class="text-muted d-block mt-1" style="font-size:.6rem;white-space:nowrap">
                                 <i class="fa fa-lock me-1"></i>Auto-calculated
@@ -616,14 +614,9 @@ $(function () {
             $autoDsp.removeClass('d-none');
         } else {
             /* ── Manual mode ────────────────────────────────────────────── */
-            var cur = $hidden.val();
-            // Auto-statuses (On Time/Late/Half Day) are not dropdown options —
-            // reset to Absent when falling back to manual mode
-            if (AUTO_STATUSES.includes(cur) || !MANUAL_STATUSES.includes(cur)) {
-                cur = 'Absent';
-                $hidden.val('Absent');
-            }
-            $manual.val(cur);
+            // Read the dropdown's current value (already set to Absent or special status by PHP)
+            var cur = $manual.val() || 'Absent';
+            $hidden.val(cur);
             $autoDsp.addClass('d-none');
             $manual.removeClass('d-none');
         }
@@ -661,32 +654,38 @@ $(function () {
     });
 
     /* ── Time inputs: live status update ───────────────────────────────────
-     * Chrome's native <input type="time"> widget (AM/PM toggle, spinners)
-     * does NOT reliably fire 'input' or 'change' while the user is
-     * interacting with it — events only fire after blur in many cases.
-     *
-     * Fix: poll every 200 ms, compare each row's time values to their
-     * last-known state, and call updateRow() only when something changed.
-     * Events are kept as a fallback for non-Chrome / non-native pickers.
+     * Chrome's native <input type="time"> widget fires events unreliably
+     * during AM/PM toggle, spinner arrows, and mid-entry.
+     * Strategy:
+     *  1. Direct (non-delegated) event binding on every time input at init.
+     *  2. 100 ms poll as safety net for any missed native-picker interactions.
      * -------------------------------------------------------------------- */
     function _onTimeChange($tr) {
         updateRow($tr);
         var co = $tr.find('.checkout-input').val();
-        if (co && parseInt($tr.data('ot-enabled'))) {
+        if (parseInt($tr.data('ot-enabled'))) {
             calcAutoOT($tr, co);
         }
     }
 
-    /* Store snapshot of time values per row so the poll can diff cheaply */
-    $('tbody tr').each(function () {
+    /* Store initial time snapshots for the poll diff */
+    $('tbody tr.att-row').each(function () {
         var $tr = $(this);
         $tr.data('_ci', $tr.find('.checkin-input').val());
         $tr.data('_co', $tr.find('.checkout-input').val());
     });
 
-    /* Poll every 200 ms — detects AM/PM clicks, spinner arrows, paste, etc. */
+    /* Direct event binding on every time input — catches keyboard & paste */
+    $('tbody tr.att-row').each(function () {
+        var $tr = $(this);
+        $tr.find('.checkin-input, .checkout-input').on('input change blur keyup', function () {
+            _onTimeChange($tr);
+        });
+    });
+
+    /* 100 ms poll — catches AM/PM toggle, spinner arrows, autofill, etc. */
     setInterval(function () {
-        $('tbody tr').each(function () {
+        $('tbody tr.att-row').each(function () {
             var $tr = $(this);
             var ci  = $tr.find('.checkin-input').val();
             var co  = $tr.find('.checkout-input').val();
@@ -696,16 +695,11 @@ $(function () {
                 _onTimeChange($tr);
             }
         });
-    }, 200);
-
-    /* Keep event listeners as fallback (keyboard typing, non-Chrome) */
-    $(document).on('input change blur', '.checkin-input, .checkout-input', function () {
-        _onTimeChange($(this).closest('tr'));
-    });
+    }, 100);
 
     /* Safety pass before form submit */
     $('#attendanceForm').on('submit', function () {
-        $('tbody tr').each(function () { updateRow($(this)); });
+        $('tbody tr.att-row').each(function () { updateRow($(this)); });
     });
 
     /* ── Mark All Absent / On Leave — with confirmation ─────────────────── */
@@ -713,7 +707,7 @@ $(function () {
     var _bulkModal  = new bootstrap.Modal(document.getElementById('bulkStatusConfirmModal'));
 
     function _applyBulkStatus(status) {
-        $('tbody tr').each(function () {
+        $('tbody tr.att-row').each(function () {
             var $tr  = $(this);
             var $sel = $tr.find('.status-manual-select');
             $tr.find('.checkin-input, .checkout-input').val('');
@@ -748,7 +742,7 @@ $(function () {
     });
 
     /* ── Initialise all rows on page load ───────────────────────────────── */
-    $('tbody tr').each(function () { updateRow($(this)); });
+    $('tbody tr.att-row').each(function () { updateRow($(this)); });
 
     /* ── Auto-open non-working day modal ────────────────────────────────── */
     <?php if ($isNonWorking): ?>
