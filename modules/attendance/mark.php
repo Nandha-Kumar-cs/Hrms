@@ -11,7 +11,7 @@
  *   • Check-in > WORK_START + 2h (11 AM)  → Half Day
  *   • Present/Late with NO checkout        → saved as Absent (no-checkout rule)
  *
- * Auto OT:
+ * Auto OT (ot_enabled employees only):
  *   • Checkout ≥ OT_TRIGGER_TIME           → OT hours = (checkout − OT_BASELINE_TIME) / 60
  */
 
@@ -40,7 +40,6 @@ $isWorkingHoliday = (bool)($holRow['is_working_day'] ?? false);
 $dateObj = new DateTime($selDate);
 $dow     = (int)$dateObj->format('N'); // 1=Mon…7=Sun
 
-// Determine if it's a non-working day
 function _mark_is13Sat(DateTime $d): bool {
     if ((int)$d->format('N') !== 6) return false;
     $n = 0; $t = (clone $d)->modify('first day of this month');
@@ -50,10 +49,9 @@ function _mark_is13Sat(DateTime $d): bool {
 
 $isNonWorking    = false;
 $nonWorkingLabel = null;
-$compOffWorkingDay = null; // working-holiday row if admin declared it
+$compOffWorkingDay = null;
 
 if ($isWorkingHoliday) {
-    // Admin declared it working — show as comp-off earner banner
     $compOffWorkingDay = $holRow;
     $compOffWorkingDay['day_type_label'] = 'Working Holiday';
 } elseif ($dow === 7) {
@@ -73,12 +71,19 @@ if ($isWorkingHoliday) {
 $officeStartMins = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; })(WORK_START_TIME);
 $dailyGraceMins  = ATTENDANCE_GRACE_MINUTES;
 $lateThreshMins  = $officeStartMins + $dailyGraceMins;
-$halfDayCutoff   = $officeStartMins + 120; // 11:00 if start is 09:00
+$halfDayCutoff   = $officeStartMins + 120;
 
 $otTriggerTime  = OT_TRIGGER_TIME;
 $otBaselineTime = OT_BASELINE_TIME;
 $otTriggerMins  = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; })($otTriggerTime);
 $otBaselineMins = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; })($otBaselineTime);
+
+/* ── OT format helper ─────────────────────────────────────────────────────── */
+function _mark_fmtOtHrs(float $dec): string {
+    $total = (int)round($dec * 60);
+    $h = intdiv($total, 60); $m = $total % 60;
+    return ($h > 0 ? $h . 'h ' : '') . $m . 'm';
+}
 
 /* ── POST: save attendance ────────────────────────────────────────────────── */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
@@ -86,6 +91,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
 
     $rows   = $_POST['attendance'] ?? [];
     $marked = 0;
+
+    // Pre-fetch ot_enabled map for server-side OT calculation
+    $otStmt = $db->query("SELECT id, ot_enabled FROM employees WHERE status='Active'");
+    $otEnabledMap = array_column($otStmt->fetchAll(), 'ot_enabled', 'id');
 
     $upsert = $db->prepare(
         "INSERT INTO attendance
@@ -104,14 +113,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
         $status   = $data['status']   ?? 'Absent';
         $inTime   = trim($data['in_time']  ?? '');
         $outTime  = trim($data['out_time'] ?? '');
-        $otHours  = ($data['ot_hours'] ?? '') !== '' ? (float)($data['ot_hours']) : null;
         $remarks  = sanitize($data['remarks'] ?? '');
 
-        // Auto-classify status from check-in if times are provided
-        if ($inTime && !in_array($status, ['Absent','OD','Comp Off','Half Day','Holiday'], true)) {
+        // Auto-classify status from check-in times (skip manual-only statuses)
+        if ($inTime && !in_array($status, ['Absent','OD','Comp Off','Half Day','On Leave'], true)) {
             $inParts = explode(':', $inTime);
             $inMins  = (int)$inParts[0] * 60 + (int)($inParts[1] ?? 0);
-
             if ($inMins >= $halfDayCutoff) {
                 $status = 'Half Day';
             } elseif ($inMins > $lateThreshMins) {
@@ -121,23 +128,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
             }
         }
 
-        // No checkout on Present/Late → mark Absent
+        // No checkout on On Time/Late → mark Absent
         if (in_array($status, ['On Time','Late'], true) && !$outTime) {
             $status = 'Absent';
         }
 
-        // Auto OT from checkout time
-        if ($outTime && $otHours === null) {
-            $outParts  = explode(':', $outTime);
-            $outMins   = (int)$outParts[0] * 60 + (int)($outParts[1] ?? 0);
-            if ($outMins >= $otTriggerMins) {
-                $otCalc   = round(($outMins - $otBaselineMins) / 60, 2);
-                if ($otCalc > 0) $otHours = $otCalc;
+        // OT hours: auto-calculate for ot_enabled employees, manual for others
+        $isOtEnabled = (bool)($otEnabledMap[(int)$empId] ?? false);
+        if ($isOtEnabled) {
+            $otHours = null;
+            if ($outTime) {
+                $outParts = explode(':', $outTime);
+                $outMins  = (int)$outParts[0] * 60 + (int)($outParts[1] ?? 0);
+                if ($outMins >= $otTriggerMins) {
+                    $otCalc = round(($outMins - $otBaselineMins) / 60, 2);
+                    if ($otCalc > 0) $otHours = $otCalc;
+                }
             }
+        } else {
+            $otHours = ($data['ot_hours'] ?? '') !== '' ? (float)($data['ot_hours']) : null;
         }
 
-        // Clear times for non-time-based statuses
-        if (in_array($status, ['Absent','Holiday','Comp Off'], true)) {
+        // Clear times for non-time statuses
+        if (in_array($status, ['Absent','Comp Off','On Leave'], true)) {
             $inTime  = null;
             $outTime = null;
             $otHours = null;
@@ -164,6 +177,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
 $employees = $db->prepare(
     "SELECT e.id, e.name, e.employee_id AS emp_code,
             COALESCE(d.name, '—') AS dept_name,
+            COALESCE(e.ot_enabled, 0) AS ot_enabled,
             a.id        AS att_id,
             a.status    AS att_status,
             a.in_time,
@@ -179,12 +193,12 @@ $employees = $db->prepare(
 $employees->execute([$selDate]);
 $employees = $employees->fetchAll();
 
-/* ── Build a date-range for the previous/next date navigation ────────────── */
+/* ── Misc vars ───────────────────────────────────────────────────────────── */
 $yesterday = date('Y-m-d', strtotime($selDate . ' -1 day'));
 $tomorrow  = date('Y-m-d', strtotime($selDate . ' +1 day'));
 $todayDate = date('Y-m-d');
 
-$month = substr($selDate, 0, 7); // for modals.php monthly default
+$month = substr($selDate, 0, 7);
 $dailyResult   = $_SESSION['att_daily_result']   ?? null;
 $monthlyResult = $_SESSION['att_monthly_result'] ?? null;
 unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
@@ -195,7 +209,24 @@ require_once __DIR__ . '/../../includes/header.php';
 <?php if ($monthlyResult): ?>
 <div class="alert alert-<?= $monthlyResult['success'] ? 'success' : 'danger' ?> alert-dismissible fade show" role="alert">
     <i class="fa fa-<?= $monthlyResult['success'] ? 'check-circle' : 'exclamation-triangle' ?> me-2"></i>
-    <?= h($monthlyResult['message']) ?>
+    <?php if ($monthlyResult['success'] && !empty($monthlyResult['message'])): ?>
+        <div class="d-flex align-items-center gap-2 mb-1">
+            <i class="fa fa-calendar-check fs-5 text-success"></i>
+            <strong>Monthly Attendance Import Complete</strong>
+        </div>
+        <div class="d-flex gap-4 flex-wrap">
+            <?php if (isset($monthlyResult['employees'])): ?>
+                <span><i class="fa fa-users text-primary me-1"></i><strong><?= (int)$monthlyResult['employees'] ?></strong> employees processed</span>
+                <span><i class="fa fa-plus-circle text-success me-1"></i><strong><?= (int)$monthlyResult['saved'] ?></strong> new records</span>
+                <span><i class="fa fa-pen text-primary me-1"></i><strong><?= (int)$monthlyResult['updated'] ?></strong> updated</span>
+                <span><i class="fa fa-ban text-warning me-1"></i><strong><?= (int)$monthlyResult['skipped'] ?></strong> employees not matched</span>
+            <?php else: ?>
+                <?= h($monthlyResult['message']) ?>
+            <?php endif; ?>
+        </div>
+    <?php else: ?>
+        <?= h($monthlyResult['message'] ?? '') ?>
+    <?php endif; ?>
     <?php if (!empty($monthlyResult['details'])): ?>
     <ul class="mb-0 mt-1 small">
         <?php foreach ($monthlyResult['details'] as $d): ?><li><?= h($d) ?></li><?php endforeach; ?>
@@ -206,8 +237,24 @@ require_once __DIR__ . '/../../includes/header.php';
 <?php endif; ?>
 <?php if ($dailyResult): ?>
 <div class="alert alert-<?= $dailyResult['success'] ? 'success' : 'danger' ?> alert-dismissible fade show" role="alert">
-    <i class="fa fa-<?= $dailyResult['success'] ? 'check-circle' : 'exclamation-triangle' ?> me-2"></i>
-    <?= h($dailyResult['message']) ?>
+    <?php if ($dailyResult['success']): ?>
+        <div class="d-flex align-items-center gap-2 mb-1">
+            <i class="fa fa-file-excel fs-5"></i>
+            <strong>Attendance Import Complete</strong>
+            <span class="text-muted small ms-1">for <?= date('d M Y', strtotime($selDate)) ?></span>
+        </div>
+        <div class="d-flex gap-4 flex-wrap">
+            <?php if (isset($dailyResult['saved'])): ?>
+                <span><i class="fa fa-plus-circle text-success me-1"></i><strong><?= (int)$dailyResult['saved'] ?></strong> new records</span>
+                <span><i class="fa fa-pen text-primary me-1"></i><strong><?= (int)$dailyResult['updated'] ?></strong> updated</span>
+                <span><i class="fa fa-ban text-danger me-1"></i><strong><?= (int)$dailyResult['skipped'] ?></strong> skipped (emp not found)</span>
+            <?php else: ?>
+                <?= h($dailyResult['message'] ?? '') ?>
+            <?php endif; ?>
+        </div>
+    <?php else: ?>
+        <i class="fa fa-exclamation-triangle me-2"></i><?= h($dailyResult['message'] ?? '') ?>
+    <?php endif; ?>
     <?php if (!empty($dailyResult['details'])): ?>
     <ul class="mb-0 mt-1 small">
         <?php foreach ($dailyResult['details'] as $d): ?><li><?= h($d) ?></li><?php endforeach; ?>
@@ -217,250 +264,218 @@ require_once __DIR__ . '/../../includes/header.php';
 </div>
 <?php endif; ?>
 
-<div class="page-head">
-    <div>
-        <h1>Mark Attendance</h1>
-        <p class="muted"><?= date('l, d F Y', strtotime($selDate)) ?>
-            <?php if ($holidayName && !$isWorkingHoliday): ?>
-            &nbsp;— <span class="pill pill-danger"><?= h($holidayName) ?></span>
-            <?php elseif ($isWorkingHoliday): ?>
-            &nbsp;— <span class="pill pill-success"><i class="fa fa-briefcase me-1"></i><?= h($holidayName) ?> (Working)</span>
-            <?php endif; ?>
-        </p>
-    </div>
-    <div class="head-actions">
-        <!-- Import + Report actions -->
-        <button type="button" class="btn btn-sm btn-outline-success" onclick="openModal('dailyImportModal')">
-            <i class="fa fa-file-excel me-1"></i>Daily Import
-        </button>
-        <button type="button" class="btn btn-sm btn-success" onclick="openModal('monthlyImportModal')">
-            <i class="fa fa-calendar-arrow-up me-1"></i>Monthly Import
-        </button>
-        <a href="report.php?month=<?= date('n', strtotime($selDate)) ?>&year=<?= date('Y', strtotime($selDate)) ?>"
-           class="btn btn-sm btn-outline-secondary">
-            <i class="fa fa-chart-bar me-1"></i>Monthly Report
-        </a>
-        <!-- Date navigation -->
-        <a href="mark.php?date=<?= $yesterday ?>&prev_date=<?= $selDate ?>" class="btn btn-sm btn-ghost"
-           title="Previous day">‹</a>
-        <form method="GET" style="display:inline-flex;gap:4px;align-items:center">
-            <input type="date" name="date" value="<?= $selDate ?>"
-                   max="<?= $todayDate ?>"
-                   style="padding:5px 8px;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:12px"
-                   onchange="this.form.submit()">
-            <button type="submit" class="btn btn-sm btn-primary" style="padding:5px 10px">
-                <i class="fa fa-search"></i> Load
+<div class="card page-card">
+    <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <h5 class="mb-0 fw-semibold">
+            <i class="fa fa-calendar-check me-2 text-primary"></i>Daily Attendance Mark Sheet
+        </h5>
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-sm btn-outline-success" onclick="openModal('dailyImportModal')">
+                <i class="fa fa-file-excel me-1"></i>Daily Import
             </button>
-        </form>
-        <?php if ($selDate < $todayDate): ?>
-        <a href="mark.php?date=<?= $tomorrow ?>&prev_date=<?= $selDate ?>" class="btn btn-sm btn-ghost"
-           title="Next day">›</a>
-        <?php endif; ?>
-        <a href="index.php?month=<?= substr($selDate,0,7) ?>" class="btn btn-ghost">
-            <i class="fa fa-arrow-left"></i> Back
-        </a>
-    </div>
-</div>
-
-<?php if ($compOffWorkingDay): ?>
-<!-- Working Holiday banner -->
-<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:var(--radius);
-            padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start">
-    <i class="fa fa-briefcase fa-lg" style="color:#16a34a;margin-top:2px"></i>
-    <div style="font-size:13px">
-        <strong>Company Working Day</strong> —
-        <?= date('l, d M Y', strtotime($selDate)) ?>
-        (<?= h($compOffWorkingDay['day_type_label']) ?>
-        <?php if ($holidayName): ?>: <?= h($holidayName) ?><?php endif; ?>)
-        <br>
-        <span style="color:var(--text-muted);font-size:12px">
-            <i class="fa fa-rotate-left me-1" style="color:#16a34a"></i>
-            Employees marked <strong>Present / Late / Half Day</strong> may earn
-            <strong>1 Comp Off credit</strong> — record manually in Comp Off Requests.
-        </span>
-    </div>
-</div>
-<?php endif; ?>
-
-<!-- Quick set all -->
-<div class="card form-card" style="margin-bottom:14px">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="font-weight:600;font-size:13px;color:var(--text-muted)">Set all to:</span>
-        <?php
-        $quickStatuses = ['On Time','Late','Absent','OD','Comp Off','Half Day'];
-        if ($holidayName) array_unshift($quickStatuses, 'Holiday');
-        foreach ($quickStatuses as $qs):
-        ?>
-        <button type="button" class="btn btn-sm" onclick="setAll('<?= $qs ?>')"><?= $qs ?></button>
-        <?php endforeach; ?>
-        <span style="color:var(--text-muted);font-size:11.5px;margin-left:auto">
-            <i class="fa fa-clock"></i> Start: <?= WORK_START_TIME ?>
-            &nbsp;·&nbsp; Grace: <?= ATTENDANCE_GRACE_MINUTES ?> min
-            &nbsp;·&nbsp; OT trigger: ≥ <?= OT_TRIGGER_TIME ?>
-        </span>
-    </div>
-</div>
-
-<form method="POST" id="attendanceForm">
-<?= csrf_field() ?>
-<input type="hidden" name="prev_date" value="<?= $selDate ?>">
-
-<div class="card">
-    <div class="card-head">
-        <h3>
-            <i class="fa fa-calendar-check" style="color:var(--primary);margin-right:6px"></i>
-            <?= count($employees) ?> employees — <?= date('d M Y', strtotime($selDate)) ?>
-        </h3>
-        <div class="search">
-            <input type="search" placeholder="Filter employee…" id="empSearch"
-                   oninput="filterRows(this.value)" data-search>
+            <button type="button" class="btn btn-sm btn-success" onclick="openModal('monthlyImportModal')">
+                <i class="fa fa-calendar-arrow-up me-1"></i>Monthly Import
+            </button>
+            <a href="report.php?month=<?= date('n', strtotime($selDate)) ?>&year=<?= date('Y', strtotime($selDate)) ?>"
+               class="btn btn-sm btn-outline-secondary">
+                <i class="fa fa-chart-bar me-1"></i>Monthly Report
+            </a>
         </div>
     </div>
-    <div style="overflow-x:auto">
-    <table class="table table-bordered table-hover align-middle" id="attTable" style="font-size:13px">
-        <thead class="table-dark">
-            <tr>
-                <th style="width:36px">#</th>
-                <th style="min-width:180px">Employee</th>
-                <th>Department</th>
-                <th style="min-width:160px">
-                    Status
-                    <small class="fw-normal text-warning d-block" style="font-size:.65rem">
-                        Auto-calculated when times are set
-                    </small>
-                </th>
-                <th style="min-width:110px">Check In</th>
-                <th style="min-width:110px">Check Out</th>
-                <th style="min-width:90px">
-                    OT Hrs
-                    <small class="fw-normal text-warning d-block" style="font-size:.65rem"
-                           title="Auto OT: checkout must reach trigger time. Hours counted from baseline.">
-                        ≥<?= OT_TRIGGER_TIME ?> / from <?= OT_BASELINE_TIME ?>
-                    </small>
-                </th>
-                <th>Remarks</th>
-            </tr>
-        </thead>
-        <tbody>
-        <?php
-        $manualStatuses = ['Absent', 'OD', 'Comp Off', 'Holiday'];
-        $autoStatuses   = ['On Time', 'Late', 'Half Day'];
-        $badgeColors    = [
-            'On Time'  => 'bg-success',
-            'Late'     => 'bg-info',
-            'Half Day' => 'bg-warning text-dark',
-            'Absent'   => 'bg-danger',
-            'OD'       => '',
-            'Comp Off' => '',
-            'Holiday'  => 'bg-secondary',
-        ];
-        $badgeStyles = [
-            'OD'       => 'background:#c8a96e',
-            'Comp Off' => 'background:#6f42c1',
-        ];
 
-        foreach ($employees as $i => $e):
-            $hasTime   = !empty($e['in_time']) || !empty($e['out_time']);
-            $savedStat = $e['att_status'] ?? 'Absent';
-            // Determine initial display state
-            $isAutoMode = $hasTime && in_array($savedStat, $autoStatuses, true);
-        ?>
-        <tr class="att-row"
-            data-name="<?= strtolower(h($e['name'])) ?> <?= strtolower(h($e['emp_code'])) ?>">
-            <td class="text-muted"><?= $i + 1 ?></td>
-            <td>
-                <div style="display:flex;align-items:center;gap:8px">
-                    <div class="emp-avatar" style="flex-shrink:0"><?= strtoupper(substr($e['name'],0,1)) ?></div>
-                    <div>
-                        <div style="font-weight:500"><?= h($e['name']) ?></div>
-                        <small style="color:var(--text-muted)"><?= h($e['emp_code']) ?></small>
-                    </div>
-                </div>
-            </td>
-            <td><small><?= h($e['dept_name']) ?></small></td>
-            <td style="min-width:150px">
-                <!-- Hidden input: always carries the active status value on submit -->
-                <input type="hidden"
-                       name="attendance[<?= $e['id'] ?>][status]"
-                       class="status-value"
-                       value="<?= h($savedStat) ?>">
+    <div class="card-body">
 
-                <!-- Manual select: shown when no times are set -->
-                <select class="form-select form-select-sm status-manual-select <?= $isAutoMode ? 'd-none' : '' ?>"
-                        style="font-size:12px">
-                    <?php foreach (['On Time','Late','Absent','OD','Comp Off','Half Day','Holiday'] as $sv): ?>
-                    <option value="<?= $sv ?>" <?= (!$isAutoMode && $savedStat === $sv) ? 'selected' : '' ?>>
-                        <?= $sv ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
+        <form method="GET" class="row g-2 mb-3 align-items-end">
+            <input type="hidden" name="prev_date" value="<?= $selDate ?>">
+            <div class="col-auto">
+                <label class="form-label fw-semibold mb-1">Date</label>
+                <input type="date" name="date" class="form-control" value="<?= $selDate ?>"
+                       max="<?= $todayDate ?>">
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary">
+                    <i class="fa fa-search me-1"></i>Load
+                </button>
+            </div>
+        </form>
 
-                <!-- Auto badge: shown when check-in or check-out is filled -->
-                <div class="status-auto-display <?= $isAutoMode ? '' : 'd-none' ?>">
-                    <?php
-                    $bc  = $badgeColors[$savedStat] ?? 'bg-secondary';
-                    $bs  = $badgeStyles[$savedStat] ?? '';
-                    ?>
-                    <span class="badge status-auto-badge <?= $bc ?>"
-                          style="<?= $bs ?>;font-size:.78rem;padding:.35em .65em;letter-spacing:.3px">
-                        <?= h($savedStat) ?>
-                    </span>
-                    <small class="d-block mt-1" style="font-size:.6rem;color:var(--text-muted);white-space:nowrap">
-                        <i class="fa fa-lock me-1"></i>Auto-calculated
-                    </small>
-                </div>
-            </td>
-            <td>
-                <input type="time"
-                       name="attendance[<?= $e['id'] ?>][in_time]"
-                       class="form-control form-control-sm checkin-input"
-                       value="<?= $e['in_time'] ? substr($e['in_time'], 0, 5) : '' ?>">
-            </td>
-            <td>
-                <input type="time"
-                       name="attendance[<?= $e['id'] ?>][out_time]"
-                       class="form-control form-control-sm checkout-input"
-                       value="<?= $e['out_time'] ? substr($e['out_time'], 0, 5) : '' ?>">
-            </td>
-            <td>
-                <!-- OT hours: manual number input + auto-display span -->
-                <div style="display:flex;align-items:center;gap:4px">
-                    <input type="number"
-                           name="attendance[<?= $e['id'] ?>][ot_hours]"
-                           class="form-control form-control-sm ot-input"
-                           min="0" max="16" step="0.25" placeholder="0"
-                           value="<?= $e['ot_hours'] !== null ? (float)$e['ot_hours'] : '' ?>"
-                           style="width:70px">
-                    <small class="ot-display text-success fw-semibold"
-                           style="font-size:.75rem;display:none"></small>
-                </div>
-            </td>
-            <td>
-                <input type="text"
-                       name="attendance[<?= $e['id'] ?>][remarks]"
-                       class="form-control form-control-sm"
-                       placeholder="Optional"
-                       value="<?= h($e['remarks'] ?? '') ?>">
-            </td>
-        </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-    </div>
+        <?php if ($compOffWorkingDay): ?>
+        <div class="alert alert-success d-flex align-items-start gap-2 mb-3 py-2">
+            <i class="fa fa-briefcase fa-lg text-success mt-1"></i>
+            <div>
+                <strong>Company Working Day</strong> —
+                <?= date('l, d M Y', strtotime($selDate)) ?>
+                (<?= h($compOffWorkingDay['day_type_label']) ?>
+                <?php if ($holidayName): ?>: <?= h($holidayName) ?><?php endif; ?>)
+                <br>
+                <span class="small">
+                    <i class="fa fa-rotate-left me-1 text-success"></i>
+                    Employees marked <strong>Present / Late / Half Day</strong> may earn
+                    <strong>1 Comp Off credit</strong> — record manually in Comp Off Requests.
+                </span>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <form action="mark.php?date=<?= $selDate ?>" method="POST" id="attendanceForm">
+            <?= csrf_field() ?>
+            <input type="hidden" name="date" value="<?= $selDate ?>">
+
+            <?php if (empty($employees)): ?>
+                <p class="text-muted text-center py-4">No active employees found.</p>
+            <?php else: ?>
+            <div class="table-responsive">
+            <table class="table table-bordered table-hover align-middle" id="attTable" style="font-size:13px">
+                <thead class="table-dark">
+                    <tr>
+                        <th style="width:40px">#</th>
+                        <th>Employee</th>
+                        <th>Department</th>
+                        <th style="min-width:160px">
+                            Status
+                            <small class="fw-normal text-warning d-block" style="font-size:.65rem">
+                                Auto-calculated when times are set
+                            </small>
+                        </th>
+                        <th style="min-width:110px">Check In</th>
+                        <th style="min-width:110px">Check Out</th>
+                        <th style="min-width:90px">
+                            OT Hrs
+                            <br><small class="fw-normal text-warning" style="font-size:.65rem"
+                                 title="Auto OT: checkout must reach trigger time. Hours counted from baseline.">
+                                &#9201; &ge;<?= OT_TRIGGER_TIME ?> / from <?= OT_BASELINE_TIME ?>
+                            </small>
+                        </th>
+                        <th>Remarks</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php
+                // Manual-only statuses (no time input needed)
+                $manualOpts = [
+                    'Absent'   => 'Absent',
+                    'On Leave' => 'On Leave',
+                    'Comp Off' => 'Comp Off',
+                    'OD'       => 'On Duty',
+                ];
+                // Auto statuses (shown as badge when check-in/out is set)
+                $autoLabels = [
+                    'On Time'  => 'Present',
+                    'Late'     => 'Late',
+                    'Half Day' => 'Half Day',
+                ];
+                $allStatuses = array_merge(array_keys($manualOpts), array_keys($autoLabels));
+
+                foreach ($employees as $i => $e):
+                    $savedStat = $e['att_status'] ?? 'Absent';
+                    $hasTime   = !empty($e['in_time']) || !empty($e['out_time']);
+                    $isAutoMode = $hasTime && array_key_exists($savedStat, $autoLabels);
+                    $isOtEnabled = (bool)$e['ot_enabled'];
+                ?>
+                <tr class="att-row"
+                    data-emp-id="<?= $e['id'] ?>"
+                    data-ot-enabled="<?= $isOtEnabled ? '1' : '0' ?>"
+                    data-name="<?= strtolower(h($e['name'])) ?> <?= strtolower(h($e['emp_code'])) ?>">
+                    <td class="text-muted"><?= $i + 1 ?></td>
+                    <td>
+                        <strong><?= h($e['name']) ?></strong><br>
+                        <small class="text-muted"><?= h($e['emp_code']) ?></small>
+                        <?php if ($isOtEnabled): ?>
+                        <br><span class="badge mt-1"
+                                  style="background:#fef9c3;color:#92400e;font-size:.65rem;border:1px solid #fde68a">
+                            <i class="fa fa-clock me-1"></i>Auto OT
+                        </span>
+                        <?php endif; ?>
+                    </td>
+                    <td><small><?= h($e['dept_name']) ?></small></td>
+                    <td style="min-width:130px">
+                        <input type="hidden"
+                               name="attendance[<?= $e['id'] ?>][status]"
+                               class="status-value"
+                               value="<?= h($savedStat) ?>">
+
+                        <select class="form-select form-select-sm status-manual-select <?= $isAutoMode ? 'd-none' : '' ?>">
+                            <?php foreach ($manualOpts as $val => $label): ?>
+                            <option value="<?= $val ?>"
+                                <?= (!$isAutoMode && $savedStat === $val) ? 'selected' : '' ?>>
+                                <?= $label ?>
+                            </option>
+                            <?php endforeach; ?>
+                        </select>
+
+                        <div class="status-auto-display <?= $isAutoMode ? '' : 'd-none' ?>">
+                            <?php
+                            // Badge classes for auto-detected statuses
+                            $badgeCls = ['On Time'=>'bg-success','Late'=>'bg-info','Half Day'=>'bg-warning text-dark'];
+                            $bc  = $badgeCls[$savedStat] ?? 'bg-secondary';
+                            $lbl = $autoLabels[$savedStat] ?? ucfirst($savedStat);
+                            ?>
+                            <span class="badge status-auto-badge <?= $bc ?>"
+                                  style="font-size:.78rem;padding:.35em .65em;letter-spacing:.3px">
+                                <?= $lbl ?>
+                            </span>
+                            <small class="text-muted d-block mt-1" style="font-size:.6rem;white-space:nowrap">
+                                <i class="fa fa-lock me-1"></i>Auto-calculated
+                            </small>
+                        </div>
+                    </td>
+                    <td>
+                        <input type="time"
+                               name="attendance[<?= $e['id'] ?>][in_time]"
+                               class="form-control form-control-sm checkin-input"
+                               value="<?= $e['in_time'] ? substr($e['in_time'], 0, 5) : '' ?>">
+                    </td>
+                    <td>
+                        <input type="time"
+                               name="attendance[<?= $e['id'] ?>][out_time]"
+                               class="form-control form-control-sm checkout-input"
+                               value="<?= $e['out_time'] ? substr($e['out_time'], 0, 5) : '' ?>">
+                    </td>
+                    <td>
+                        <?php if ($isOtEnabled): ?>
+                            <input type="hidden"
+                                   name="attendance[<?= $e['id'] ?>][ot_hours]"
+                                   class="ot-hours-input"
+                                   value="<?= $e['ot_hours'] !== null ? (float)$e['ot_hours'] : '' ?>">
+                            <span class="ot-hours-display fw-semibold"
+                                  style="font-size:.85rem;color:#16a34a">
+                                <?= $e['ot_hours'] !== null ? _mark_fmtOtHrs((float)$e['ot_hours']) : '—' ?>
+                            </span>
+                        <?php else: ?>
+                            <input type="number"
+                                   name="attendance[<?= $e['id'] ?>][ot_hours]"
+                                   class="form-control form-control-sm ot-input"
+                                   min="0" max="24" step="0.01" placeholder="0"
+                                   value="<?= $e['ot_hours'] !== null ? (float)$e['ot_hours'] : '' ?>">
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <input type="text"
+                               name="attendance[<?= $e['id'] ?>][remarks]"
+                               class="form-control form-control-sm"
+                               placeholder="Optional"
+                               value="<?= h($e['remarks'] ?? '') ?>">
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            </div>
+
+            <div class="mt-3 d-flex gap-2">
+                <button type="submit" name="bulk_save" value="1" class="btn btn-success">
+                    <i class="fa fa-save me-1"></i>Save Attendance
+                </button>
+                <button type="button" id="markAllAbsent" class="btn btn-outline-danger">Mark All Absent</button>
+                <button type="button" id="markAllLeave"  class="btn btn-outline-secondary">Mark All On Leave</button>
+            </div>
+            <?php endif; ?>
+        </form>
+
+    </div><!-- /card-body -->
 </div><!-- /card -->
 
-<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
-    <button type="submit" name="bulk_save" value="1" class="btn btn-primary">
-        <i class="fa fa-save"></i> Save Attendance
-    </button>
-    <button type="button" id="markAllAbsent" class="btn btn-outline-danger">Mark All Absent</button>
-    <button type="button" id="markAllLeave"  class="btn btn-outline-secondary">Mark All Comp Off</button>
-    <a href="index.php?month=<?= substr($selDate,0,7) ?>" class="btn btn-ghost">Cancel</a>
-</div>
-</form>
-
 <?php if ($isNonWorking): ?>
-<!-- ── Non-working day alert modal ───────────────────────────────────────── -->
 <?php
     $isDayHoliday = (bool)$holidayName;
     $popupName  = $isDayHoliday ? $holidayName : $nonWorkingLabel;
@@ -468,25 +483,31 @@ require_once __DIR__ . '/../../includes/header.php';
     $popupIcon  = $isDayHoliday ? 'fa-calendar-xmark' : 'fa-moon';
     $popupColor = $isDayHoliday ? '#f59e0b' : '#64748b';
 ?>
-<div class="modal" id="holidayAlertModal">
-    <div class="modal-content" style="max-width:460px;text-align:center;border-radius:14px;overflow:hidden">
-        <div style="padding:32px 40px 28px">
-            <div style="width:60px;height:60px;border-radius:50%;background:<?= $popupColor ?>1a;
-                        display:flex;align-items:center;justify-content:center;margin:0 auto 14px">
-                <i class="fa <?= $popupIcon ?> fa-xl" style="color:<?= $popupColor ?>"></i>
+<div class="modal fade" id="holidayAlertModal" tabindex="-1"
+     data-bs-backdrop="static" data-bs-keyboard="false" aria-labelledby="holidayModalLabel">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:520px">
+        <div class="modal-content border-0 shadow-lg" style="border-radius:14px;overflow:hidden">
+            <div class="modal-body text-center px-5 py-4">
+                <div class="mx-auto mb-3 d-flex align-items-center justify-content-center"
+                     style="width:60px;height:60px;border-radius:50%;background:<?= $popupColor ?>1a">
+                    <i class="fa <?= $popupIcon ?> fa-xl" style="color:<?= $popupColor ?>"></i>
+                </div>
+                <div class="badge mb-2 px-3 py-1"
+                     style="background:<?= $popupColor ?>22;color:<?= $popupColor ?>;font-size:.75rem;font-weight:600;border-radius:20px">
+                    <?= $popupType ?>
+                </div>
+                <h5 class="fw-bold mb-1 mt-1" id="holidayModalLabel" style="font-size:1.15rem">
+                    <?= h($popupName) ?>
+                </h5>
+                <p class="text-muted mb-4" style="font-size:.85rem">
+                    <?= date('l, d F Y', strtotime($selDate)) ?>
+                </p>
+                <a href="mark.php?date=<?= $prevDate ?>"
+                   class="btn btn-primary px-5 fw-semibold"
+                   style="border-radius:8px;min-width:140px">
+                    OK
+                </a>
             </div>
-            <span style="display:inline-block;background:<?= $popupColor ?>22;color:<?= $popupColor ?>;
-                         font-size:.75rem;font-weight:600;border-radius:20px;padding:3px 12px;margin-bottom:10px">
-                <?= $popupType ?>
-            </span>
-            <h4 style="font-size:1.1rem;font-weight:700;margin:6px 0"><?= h($popupName) ?></h4>
-            <p style="color:var(--text-muted);font-size:.85rem;margin-bottom:24px">
-                <?= date('l, d F Y', strtotime($selDate)) ?>
-            </p>
-            <a href="mark.php?date=<?= $prevDate ?>"
-               class="btn btn-primary" style="min-width:130px;border-radius:8px">
-                OK
-            </a>
         </div>
     </div>
 </div>
@@ -498,58 +519,56 @@ require_once __DIR__ . '/../../includes/header.php';
 $(function () {
 
     /* ── Settings from PHP ──────────────────────────────────────────────── */
-    var OFFICE_START    = <?= $officeStartMins ?>;
-    var GRACE_MINS      = <?= $dailyGraceMins ?>;
-    var LATE_THRESHOLD  = <?= $lateThreshMins ?>;
-    var HALF_DAY_CUTOFF = <?= $halfDayCutoff ?>;   // in minutes (e.g. 660 = 11:00)
-    var OT_TRIGGER_MINS = <?= $otTriggerMins ?>;
-    var OT_BASE_MINS    = <?= $otBaselineMins ?>;
+    var OFFICE_START_MINS = <?= $officeStartMins ?>;
+    var DAILY_GRACE_MINS  = <?= $dailyGraceMins ?>;
+    var LATE_THRESHOLD    = <?= $lateThreshMins ?>;
+    var HALF_DAY_CHECKIN  = <?= $halfDayCutoff ?>;
+    var OT_TRIGGER_MINS   = <?= $otTriggerMins ?>;
+    var OT_BASELINE_MINS  = <?= $otBaselineMins ?>;
 
-    var BADGE_CLASS = {
-        'On Time'  : 'badge bg-success',
-        'Late'     : 'badge bg-info',
-        'Half Day' : 'badge bg-warning text-dark',
-        'Absent'   : 'badge bg-danger',
-        'OD'       : 'badge',
-        'Comp Off' : 'badge',
-        'Holiday'  : 'badge bg-secondary',
-    };
-    var BADGE_STYLE = {
-        'OD'       : 'background:#c8a96e;',
-        'Comp Off' : 'background:#6f42c1;',
-    };
-    var MANUAL_STATUSES = ['Absent', 'OD', 'Comp Off', 'Holiday'];
+    // Status definitions matching the old Payroll app behaviour
+    var MANUAL_STATUSES = ['Absent', 'On Leave', 'Comp Off', 'OD'];
     var AUTO_STATUSES   = ['On Time', 'Late', 'Half Day'];
 
-    /* ── Auto-calculate status from check-in / check-out ────────────────── */
+    // Labels for auto-mode badge (On Time stored in DB, displayed as "Present")
+    var AUTO_LABELS = {
+        'On Time'  : 'Present',
+        'Late'     : 'Late',
+        'Half Day' : 'Half Day',
+    };
+    var BADGE_CLASS = {
+        'On Time'  : 'bg-success',
+        'Late'     : 'bg-info',
+        'Half Day' : 'bg-warning text-dark',
+        'Absent'   : 'bg-danger',
+    };
+
+    /* ── Auto-calculate status from check-in / check-out ─────────────────── */
     function calcAutoStatus(checkIn, checkOut) {
         if (!checkIn) return 'Absent';
 
         var parts  = checkIn.split(':');
         var inMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
 
-        // Check-in after half-day cutoff → always Half Day
-        if (inMins >= HALF_DAY_CUTOFF) return 'Half Day';
+        if (inMins >= HALF_DAY_CHECKIN) return 'Half Day';
 
-        // Has checkout AND worked < 4h → Half Day
         if (checkOut) {
-            var op     = checkOut.split(':');
-            var outM   = parseInt(op[0], 10) * 60 + parseInt(op[1] || '0', 10);
-            var worked = outM - inMins;
-            if (worked > 0 && worked < 240) return 'Half Day';
+            var op   = checkOut.split(':');
+            var outM = parseInt(op[0], 10) * 60 + parseInt(op[1] || '0', 10);
+            if (outM - inMins > 0 && outM - inMins < 240) return 'Half Day';
         }
 
         return inMins > LATE_THRESHOLD ? 'Late' : 'On Time';
     }
 
     /* ── Format decimal OT hours as "Xh Ym" ─────────────────────────────── */
-    function fmtOtHours(dec) {
+    function fmtOtHrs(dec) {
         var total = Math.round(dec * 60);
         var h = Math.floor(total / 60), m = total % 60;
         return (h > 0 ? h + 'h ' : '') + m + 'm';
     }
 
-    /* ── Update a single row ────────────────────────────────────────────── */
+    /* ── Update a single row's status cell ──────────────────────────────── */
     function updateRow($tr) {
         var checkIn  = $tr.find('.checkin-input').val();
         var checkOut = $tr.find('.checkout-input').val();
@@ -559,16 +578,18 @@ $(function () {
         var $badge   = $tr.find('.status-auto-badge');
 
         if (checkIn || checkOut) {
-            /* ── Auto mode ─────────────────────────────────────────────── */
+            /* ── Auto mode ──────────────────────────────────────────────── */
             var status = calcAutoStatus(checkIn, checkOut);
-            var bc = BADGE_CLASS[status] || 'badge bg-secondary';
-            var bs = (BADGE_STYLE[status] || '') + 'font-size:.78rem;padding:.35em .65em;letter-spacing:.3px';
-            $badge.attr('class', bc).attr('style', bs).text(status);
+            var bc = BADGE_CLASS[status] || 'bg-secondary';
+            var lbl = AUTO_LABELS[status] || status;
+            $badge.attr('class', 'badge status-auto-badge ' + bc)
+                  .attr('style', 'font-size:.78rem;padding:.35em .65em;letter-spacing:.3px')
+                  .text(lbl);
             $hidden.val(status);
             $manual.addClass('d-none');
             $autoDsp.removeClass('d-none');
         } else {
-            /* ── Manual mode ───────────────────────────────────────────── */
+            /* ── Manual mode ────────────────────────────────────────────── */
             var cur = $hidden.val();
             if (!MANUAL_STATUSES.includes(cur) && !AUTO_STATUSES.includes(cur)) {
                 cur = 'Absent'; $hidden.val(cur);
@@ -577,82 +598,93 @@ $(function () {
             $autoDsp.addClass('d-none');
             $manual.removeClass('d-none');
         }
-
-        /* ── Auto OT ───────────────────────────────────────────────────── */
-        var $otInput  = $tr.find('.ot-input');
-        var $otDisp   = $tr.find('.ot-display');
-        if (checkOut) {
-            var op2    = checkOut.split(':');
-            var outM2  = parseInt(op2[0],10)*60 + parseInt(op2[1]||'0',10);
-            if (outM2 >= OT_TRIGGER_MINS) {
-                var otH = Math.round((outM2 - OT_BASE_MINS) / 60 * 100) / 100;
-                if (otH > 0) {
-                    $otInput.val(otH.toFixed(2));
-                    $otDisp.text(fmtOtHours(otH)).show();
-                    return;
-                }
-            }
-        }
-        // No OT trigger met
-        if ($otInput.val() === '' || $otInput.data('auto')) {
-            $otInput.val('');
-            $otDisp.hide();
-        }
     }
 
-    /* ── Sync manual select → hidden ────────────────────────────────────── */
+    /* ── Auto OT (ot_enabled employees only) ────────────────────────────── */
+    function calcAutoOT($tr, checkoutVal) {
+        var $hoursInput = $tr.find('.ot-hours-input');
+        var $hoursDisp  = $tr.find('.ot-hours-display');
+        if (!checkoutVal) {
+            $hoursInput.val('');
+            $hoursDisp.html('<span class="text-muted">—</span>');
+            return;
+        }
+        var parts   = checkoutVal.split(':');
+        var outMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
+        if (outMins < OT_TRIGGER_MINS) {
+            $hoursInput.val('');
+            $hoursDisp.html('<span class="text-muted">—</span>');
+            return;
+        }
+        var otHours = Math.round((outMins - OT_BASELINE_MINS) / 60 * 100) / 100;
+        $hoursInput.val(otHours.toFixed(2));
+        $hoursDisp.text(fmtOtHrs(otHours));
+    }
+
+    /* ── Sync manual select → hidden input ──────────────────────────────── */
     $(document).on('change', '.status-manual-select', function () {
         var $tr  = $(this).closest('tr');
         var stat = $(this).val();
         $tr.find('.status-value').val(stat);
-        // Clear times if switching to no-time status
-        if (['Absent','Holiday','Comp Off'].includes(stat)) {
+        if (['Absent', 'Comp Off', 'On Leave'].includes(stat)) {
             $tr.find('.checkin-input, .checkout-input').val('');
         }
     });
 
-    /* ── On time change: recalculate ─────────────────────────────────────── */
+    /* ── On time change: recalculate status + OT ────────────────────────── */
     $(document).on('change', '.checkin-input, .checkout-input', function () {
-        updateRow($(this).closest('tr'));
+        var $tr = $(this).closest('tr');
+        updateRow($tr);
+        // Auto OT only for ot_enabled employees
+        if ($(this).hasClass('checkout-input') && parseInt($tr.data('ot-enabled'))) {
+            calcAutoOT($tr, $(this).val());
+        }
     });
 
-    /* ── Mark All buttons ────────────────────────────────────────────────── */
+    /* ── Mark All Absent ─────────────────────────────────────────────────── */
     $('#markAllAbsent').on('click', function () {
         $('tbody tr').each(function () {
             var $tr  = $(this);
             var $sel = $tr.find('.status-manual-select');
             $tr.find('.checkin-input, .checkout-input').val('');
-            if (!$sel.hasClass('d-none')) { $sel.val('Absent').trigger('change'); }
-            else {
+            if (!$sel.hasClass('d-none')) {
+                $sel.val('Absent').trigger('change');
+            } else {
                 $tr.find('.status-value').val('Absent');
                 $tr.find('.status-auto-display').addClass('d-none');
                 $sel.val('Absent').removeClass('d-none');
             }
         });
     });
+
+    /* ── Mark All On Leave ───────────────────────────────────────────────── */
     $('#markAllLeave').on('click', function () {
         $('tbody tr').each(function () {
             var $tr  = $(this);
             var $sel = $tr.find('.status-manual-select');
             $tr.find('.checkin-input, .checkout-input').val('');
-            if (!$sel.hasClass('d-none')) { $sel.val('Comp Off').trigger('change'); }
-            else {
-                $tr.find('.status-value').val('Comp Off');
+            if (!$sel.hasClass('d-none')) {
+                $sel.val('On Leave').trigger('change');
+            } else {
+                $tr.find('.status-value').val('On Leave');
                 $tr.find('.status-auto-display').addClass('d-none');
-                $sel.val('Comp Off').removeClass('d-none');
+                $sel.val('On Leave').removeClass('d-none');
             }
         });
     });
 
-    /* ── Init all rows on load ───────────────────────────────────────────── */
+    /* ── Initialise all rows on page load ───────────────────────────────── */
     $('tbody tr').each(function () { updateRow($(this)); });
 
-    /* ── Auto-open holiday modal ────────────────────────────────────────── */
+    /* ── Auto-open non-working day modal ────────────────────────────────── */
     <?php if ($isNonWorking): ?>
-    openModal('holidayAlertModal');
+    var holidayModal = new bootstrap.Modal(document.getElementById('holidayAlertModal'), {
+        backdrop: 'static', keyboard: false
+    });
+    holidayModal.show();
     <?php endif; ?>
 
-    /* ── Pre-set daily import date to current selected date ─────────────── */
+    /* ── Pre-set daily import date field ────────────────────────────────── */
     var _df = document.getElementById('daily_att_date');
     if (_df) _df.value = '<?= $selDate ?>';
 });
@@ -666,30 +698,6 @@ function validateImportFile(input) {
         return false;
     }
     return true;
-}
-
-/* ── setAll helper ────────────────────────────────────────────────────────── */
-function setAll(status) {
-    var noTime = ['Absent','Holiday','Comp Off'];
-    document.querySelectorAll('.att-row').forEach(function(tr) {
-        var $tr  = $(tr);
-        var $sel = $tr.find('.status-manual-select');
-        // Clear times if needed
-        if (noTime.includes(status)) {
-            $tr.find('.checkin-input, .checkout-input').val('');
-        }
-        // Reset to manual mode
-        $tr.find('.status-auto-display').addClass('d-none');
-        $sel.removeClass('d-none').val(status).trigger('change');
-    });
-}
-
-/* ── Filter rows ──────────────────────────────────────────────────────────── */
-function filterRows(q) {
-    q = q.toLowerCase();
-    document.querySelectorAll('.att-row').forEach(function(tr) {
-        tr.style.display = tr.dataset.name.includes(q) ? '' : 'none';
-    });
 }
 
 window.BASE_URL = '<?= BASE_URL ?>';
