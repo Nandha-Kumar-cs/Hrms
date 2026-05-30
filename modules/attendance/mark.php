@@ -170,7 +170,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
     }
 
     flash('success', "Attendance saved for $marked employees on " . date('d M Y', strtotime($selDate)) . '.');
-    redirect(BASE_URL . '/modules/attendance/index.php?month=' . substr($selDate, 0, 7));
+    redirect(BASE_URL . '/modules/attendance/mark.php?date=' . $selDate);
 }
 
 /* ── Load employees + existing records for selected date ─────────────────── */
