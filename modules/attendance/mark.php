@@ -149,11 +149,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
             $otHours = ($data['ot_hours'] ?? '') !== '' ? (float)($data['ot_hours']) : null;
         }
 
-        // Clear times for non-time statuses
-        if (in_array($status, ['Absent','Comp Off','On Leave'], true)) {
+        // Clear times only for truly manual no-time statuses
+        // Absent intentionally keeps in_time so the report can show orange A
+        // (checked in but no checkout) vs red A (no data at all)
+        if (in_array($status, ['Comp Off', 'On Leave'], true)) {
             $inTime  = null;
             $outTime = null;
             $otHours = null;
+        }
+        if ($status === 'Absent') {
+            $outTime = null; // ensure no stale checkout on absent record
         }
 
         $upsert->execute([
@@ -591,8 +596,11 @@ $(function () {
         } else {
             /* ── Manual mode ────────────────────────────────────────────── */
             var cur = $hidden.val();
-            if (!MANUAL_STATUSES.includes(cur) && !AUTO_STATUSES.includes(cur)) {
-                cur = 'Absent'; $hidden.val(cur);
+            // Auto-statuses (On Time/Late/Half Day) are not dropdown options —
+            // reset to Absent when falling back to manual mode
+            if (AUTO_STATUSES.includes(cur) || !MANUAL_STATUSES.includes(cur)) {
+                cur = 'Absent';
+                $hidden.val('Absent');
             }
             $manual.val(cur);
             $autoDsp.addClass('d-none');

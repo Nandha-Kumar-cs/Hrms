@@ -151,7 +151,10 @@ foreach ($employees as $emp) {
         $dateStr    = "$reqYear-$padMonth-" . str_pad($dayNum, 2, '0', STR_PAD_LEFT);
         $isNonWrk   = isset($nwDateSet[$dateStr]);
         $status     = $rec['status'];
-        $noCheckout = in_array($status, ['On Time', 'Late'], true) && empty($rec['out_time']);
+        // Orange A: had check-in but no checkout (saved as Absent by no-checkout rule,
+        // or legacy On Time/Late records with missing checkout)
+        $noCheckout = (in_array($status, ['On Time', 'Late'], true) && empty($rec['out_time']))
+                   || ($status === 'Absent' && !empty($rec['in_time']) && empty($rec['out_time']));
 
         // Man Hours (midnight-crossing safe) — count on working days only
         if (!$isNonWrk && !empty($rec['in_time']) && !empty($rec['out_time'])) {
@@ -421,8 +424,10 @@ foreach ($employees as $emp) {
                         $isFuture     = ($cellDateStr > $todayStr);
                         $dailyLateMins = $lateMap[$d] ?? 0;
 
-                        // No checkout: On Time / Late with empty out_time → orange A (counts as absent)
-                        $noCheckout = in_array($status, ['On Time', 'Late'], true) && empty($rec['out_time'] ?? '');
+                        // Orange A: had check-in but no checkout (saved as Absent by server,
+                        // or legacy On Time/Late records missing checkout)
+                        $noCheckout = (in_array($status, ['On Time', 'Late'], true) && empty($rec['out_time'] ?? ''))
+                                   || ($status === 'Absent' && !empty($rec['in_time'] ?? '') && empty($rec['out_time'] ?? ''));
 
                         // OD override (only on working, non-comp-off days)
                         $isOnDuty = (!$isNonWrk && !$isCompOffDay && $status === 'OD');
