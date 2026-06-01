@@ -246,6 +246,24 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     UNIQUE KEY uk_month (payroll_month)
 ) ENGINE=InnoDB;
 
+-- ─── Application Settings ─────────────────────────────────────────────────────
+-- Key/value store for runtime-configurable settings (OT timing, grace periods).
+-- Mirrors Laravel `settings` table; `key` is reserved so columns are prefixed.
+CREATE TABLE IF NOT EXISTS app_settings (
+    id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    setting_key   VARCHAR(100) NOT NULL UNIQUE,
+    setting_value VARCHAR(255) NULL,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO app_settings (setting_key, setting_value) VALUES
+ ('office_start_time',     '09:00'),
+ ('ot_trigger_time',       '20:30'),
+ ('ot_baseline_time',      '18:15'),
+ ('daily_grace_minutes',   '15'),
+ ('monthly_grace_minutes', '90')
+ON DUPLICATE KEY UPDATE setting_value = setting_value;
+
 -- ─── Salary Components ────────────────────────────────────────────────────────
 -- Dynamic allowance/deduction components used in individual payroll calculation.
 CREATE TABLE IF NOT EXISTS salary_components (

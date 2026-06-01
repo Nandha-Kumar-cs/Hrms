@@ -363,24 +363,74 @@ $extra_head = '<style>
             <?php if (($attSummary['ot_hours'] ?? 0) > 0): ?>
             <div style="background:var(--bg-subtle);border-radius:var(--radius);padding:10px 12px;font-size:12px;border:1px solid var(--border)">
                 <strong>Overtime Details</strong>
-                <div style="margin-top:6px;color:var(--muted)">Hours: <strong style="color:var(--success)"><?= number_format((float)$attSummary['ot_hours'], 2) ?> hrs</strong></div>
+                <div style="margin-top:6px;color:var(--muted)">OT Hours: <strong style="color:var(--success)"><?= number_format((float)$attSummary['ot_hours'], 2) ?> hrs</strong></div>
                 <div style="color:var(--muted)">Rate: 2× hourly (₹<?= number_format((float)($attSummary['per_hour_rate'] ?? 0), 2) ?>/hr × 2)</div>
-                <div style="color:var(--muted)">OT Amount: <strong style="color:var(--success)"><?= money($attSummary['ot_amount'] ?? 0) ?></strong></div>
+                <div style="color:var(--muted)">OT Pay Added: <strong style="color:var(--success)"><?= money($attSummary['ot_amount'] ?? 0) ?></strong></div>
             </div>
             <?php endif; ?>
-            <?php if (($attSummary['late_minutes'] ?? 0) > 0): ?>
+            <?php if (($attSummary['late_minutes'] ?? 0) > 0):
+                $lateMins   = (int)$attSummary['late_minutes'];
+                $lateGrace  = (int)($attSummary['late_grace_minutes']    ?? 90);
+                $lateDed    = (int)($attSummary['deductable_late_mins']  ?? 0);
+                $lateRemain = max(0, $lateGrace - $lateMins);
+                $exceeded   = $lateMins > $lateGrace;
+                $fmtMin     = function (int $m): string {
+                    return ($m >= 60 ? intdiv($m, 60) . 'h ' : '') . ($m % 60) . 'm';
+                };
+            ?>
             <div style="background:var(--bg-subtle);border-radius:var(--radius);padding:10px 12px;font-size:12px;border:1px solid var(--border)">
-                <strong>Late Arrival Details</strong>
-                <div style="margin-top:6px;color:var(--muted)">Total Late: <strong><?= $attSummary['late_minutes'] ?> min</strong></div>
-                <div style="color:var(--muted)">Monthly Grace: <?= $attSummary['late_grace_minutes'] ?? 90 ?> min</div>
-                <div style="color:var(--muted)">Deductable: <strong style="color:<?= ($attSummary['deductable_late_mins'] ?? 0) > 0 ? 'var(--danger)' : 'var(--success)' ?>"><?= $attSummary['deductable_late_mins'] ?? 0 ?> min</strong></div>
-                <?php if (($attSummary['late_deduction'] ?? 0) > 0): ?>
-                <div style="color:var(--danger)">Deduction (2×): <strong><?= money($attSummary['late_deduction']) ?></strong></div>
+                <strong><i class="fa fa-clock me-1"></i>Late Arrival Breakdown</strong>
+                <div style="margin-top:6px;color:var(--muted)">
+                    Total Late: <strong><?= $fmtMin($lateMins) ?></strong>
+                    <span style="color:var(--muted);font-size:11px">(<?= $attSummary['late_days'] ?? 0 ?> day<?= ($attSummary['late_days'] ?? 0) === 1 ? '' : 's' ?>)</span>
+                </div>
+                <div style="color:var(--muted)">Monthly Grace: <strong><?= $fmtMin($lateGrace) ?></strong></div>
+                <?php if ($exceeded): ?>
+                    <div style="color:var(--danger);font-weight:600">Exceeded! Deducting <?= $fmtMin($lateDed) ?> (2×)</div>
+                    <?php if (($attSummary['late_deduction'] ?? 0) > 0): ?>
+                    <div style="color:var(--danger)"><?= money($attSummary['late_deduction']) ?> deducted</div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div style="color:var(--success)">Remaining grace: <strong><?= $fmtMin($lateRemain) ?></strong></div>
+                    <div style="color:var(--success)"><i class="fa fa-check-circle me-1"></i>No deduction</div>
                 <?php endif; ?>
             </div>
             <?php endif; ?>
         </div>
         <?php endif; ?>
+
+        <!-- ── Bottom: per-day / per-hour rates and calculation breakdown (matches Laravel) -->
+        <?php
+            $perDay   = (float)($attSummary['per_day_salary'] ?? 0);
+            $perHour  = (float)($attSummary['per_hour_rate']  ?? 0);
+            $calDays  = (int)($attSummary['calendar_days']    ?? 30);
+            $workDays = $attSummary['total_working_days']     ?? '—';
+            $absDays  = (float)($attSummary['absent_days']    ?? 0);
+            $basicVal = (float)($attSummary['basic_salary']   ?? 0);
+            $ctcVal   = (float)($attSummary['ctc_per_month']  ?? 0);
+            $absDed   = (float)($attSummary['absent_deduction'] ?? ($absDays * $perDay));
+        ?>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--border);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:16px;line-height:1.7">
+            <span>Working Days: <strong style="color:var(--text)"><?= $workDays ?></strong>
+                <span style="font-size:10px">(actual working)</span>
+            </span>
+            <span>Calendar Days: <strong style="color:var(--text)"><?= $calDays ?></strong>
+                <span style="font-size:10px">(month total)</span>
+            </span>
+            <span>Per Day Rate: <strong style="color:var(--text)">₹<?= number_format($perDay, 2) ?></strong>
+                <span style="font-size:10px">(₹<?= number_format($ctcVal, 0) ?> &divide; <?= $calDays ?> days)</span>
+            </span>
+            <span>Per Hour Rate: <strong style="color:var(--text)">₹<?= number_format($perHour, 2) ?></strong>
+                <span style="font-size:10px">(per day &divide; 8 hrs)</span>
+            </span>
+            <?php if ($absDays > 0): ?>
+            <span style="color:var(--danger)">Absent Deduction: <strong>₹<?= number_format($absDed, 2) ?></strong>
+                <span style="font-size:10px">(<?= number_format($absDays, 1) ?> days &times; ₹<?= number_format($perDay, 2) ?>)</span>
+            </span>
+            <?php endif; ?>
+            <span>Basic Salary: <strong style="color:var(--text)">₹<?= number_format($basicVal, 2) ?></strong></span>
+            <span>CTC/Month: <strong style="color:var(--text)">₹<?= number_format($ctcVal, 2) ?></strong></span>
+        </div>
     </div>
     <?php endif; ?>
 

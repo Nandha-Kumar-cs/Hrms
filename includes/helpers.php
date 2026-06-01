@@ -116,6 +116,69 @@ function csrf_field(): string {
     return '<input type="hidden" name="csrf_token" value="' . csrf_token() . '">';
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   APP SETTINGS (key/value) — mirrors Laravel App\Helpers\AppSettings
+   Backed by the `app_settings` table.  In-request static cache avoids repeat hits.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+$GLOBALS['__settings_cache'] = [];
+
+function setting_get(string $key, mixed $default = null): mixed {
+    if (!array_key_exists($key, $GLOBALS['__settings_cache'])) {
+        try {
+            $st = db()->prepare('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1');
+            $st->execute([$key]);
+            $val = $st->fetchColumn();
+            $GLOBALS['__settings_cache'][$key] = ($val === false) ? null : $val;
+        } catch (Throwable $e) {
+            $GLOBALS['__settings_cache'][$key] = null;   // table may not exist yet
+        }
+    }
+    $v = $GLOBALS['__settings_cache'][$key];
+    return ($v !== null && $v !== '') ? $v : $default;
+}
+
+function setting_set(string $key, mixed $value): void {
+    $st = db()->prepare(
+        'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+    );
+    $st->execute([$key, (string)$value]);
+    $GLOBALS['__settings_cache'][$key] = (string)$value;
+}
+
+function settings_flush(): void {
+    $GLOBALS['__settings_cache'] = [];
+}
+
+/** Convert "HH:MM" (or "HH:MM:SS") to minutes-since-midnight. */
+function time_to_mins(string $time): int {
+    $p = explode(':', $time);
+    return (int)($p[0] ?? 0) * 60 + (int)($p[1] ?? 0);
+}
+
+// ── Grace / Late permission ──────────────────────────────────────────────────
+function setting_daily_grace_mins(): int   { return (int) setting_get('daily_grace_minutes', 15); }
+function setting_monthly_grace_mins(): int { return (int) setting_get('monthly_grace_minutes', 90); }
+
+// ── Office hours ──────────────────────────────────────────────────────────────
+function setting_office_start(): string    { return (string) setting_get('office_start_time', '09:00'); }
+function setting_office_start_mins(): int   { return time_to_mins(setting_office_start()); }
+
+// ── OT timing ─────────────────────────────────────────────────────────────────
+function setting_ot_trigger(): string      { return (string) setting_get('ot_trigger_time', '20:30'); }
+function setting_ot_baseline(): string      { return (string) setting_get('ot_baseline_time', '18:15'); }
+function setting_ot_trigger_mins(): int     { return time_to_mins(setting_ot_trigger()); }
+function setting_ot_baseline_mins(): int    { return time_to_mins(setting_ot_baseline()); }
+
+/** Format decimal OT hours as "Xh Ym" (e.g. 2.78 → "2h 47m"). */
+function fmt_ot_hours(float $decimalHours): string {
+    $totalMins = (int) round($decimalHours * 60);
+    $h = intdiv($totalMins, 60);
+    $m = $totalMins % 60;
+    return ($h > 0 ? $h . 'h ' : '') . $m . 'm';
+}
+
 function send_push_notification(int $userId, string $title, string $body, string $type = 'info'): void {
     // Store in notifications table for in-app display
     db()->prepare('INSERT INTO notifications (user_id, title, body, type, is_read, created_at) VALUES (?,?,?,?,0,NOW())')

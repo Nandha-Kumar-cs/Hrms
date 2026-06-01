@@ -55,7 +55,7 @@ $_attActive  = _sb_active('/modules/attendance/');
 $_repActive  = _sb_active('report=');
 // Include salary_components in settings group so the Settings accordion opens on that page.
 $_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/',
-                           '/payroll/salary_components');
+                           '/payroll/salary_components', '/settings/ot.php', '/settings/grace.php');
 
 // ── Navbar: role badge colour map ─────────────────────────────────────────────
 $_roleColours = [
@@ -661,14 +661,14 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=ot"
-                           class="nav-link <?= _sb_active('tab=ot') ?>">
+                        <a href="<?= BASE_URL ?>/modules/settings/ot.php"
+                           class="nav-link <?= _sb_active('/settings/ot.php') ?>">
                             OT Settings
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=grace"
-                           class="nav-link <?= _sb_active('tab=grace') ?>">
+                        <a href="<?= BASE_URL ?>/modules/settings/grace.php"
+                           class="nav-link <?= _sb_active('/settings/grace.php') ?>">
                             Grace Settings
                         </a>
                     </li>

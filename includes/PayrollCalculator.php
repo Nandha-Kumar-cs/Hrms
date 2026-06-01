@@ -89,13 +89,32 @@ class PayrollCalculator
         $monthEnd    = date('Y-m-t', strtotime($monthStart));
         $calDays     = (int)date('t', strtotime($monthStart));   // calendar days
 
-        // ── Working days (calendar days minus holidays) ───────────────────────
-        $holSt = $this->db->prepare(
-            'SELECT COUNT(*) FROM holidays WHERE h_date BETWEEN ? AND ?'
-        );
-        $holSt->execute([$monthStart, $monthEnd]);
-        $holidays    = (int)$holSt->fetchColumn();
-        $workingDays = PAYROLL_WORKING_DAYS - $holidays;
+        // ── Working days (actual weekdays in month − weekly offs − holidays) ──
+        // Weekly off rule:
+        //   • Every Sunday is off.
+        //   • The 1st and 3rd Saturday of the month are off.
+        //   • 2nd / 4th / 5th Saturdays are WORKING days.
+        // Plus any declared holiday is excluded.  The figure therefore reflects
+        // the real month (varies Jan/Feb/etc.) rather than a flat constant.
+        $holRows = $this->db->prepare('SELECT h_date FROM holidays WHERE h_date BETWEEN ? AND ?');
+        $holRows->execute([$monthStart, $monthEnd]);
+        $holidayDates = array_flip($holRows->fetchAll(PDO::FETCH_COLUMN));
+
+        $workingDays = 0;
+        $satCount    = 0;                            // counts Saturdays as we pass them
+        for ($d = 1; $d <= $calDays; $d++) {
+            $ts  = mktime(0, 0, 0, $month, $d, $year);
+            $dow = (int)date('N', $ts);              // 1 = Mon … 6 = Sat … 7 = Sun
+            $ds  = date('Y-m-d', $ts);
+
+            if ($dow === 7) continue;                // Sunday — weekly off
+            if ($dow === 6) {                        // Saturday
+                $satCount++;
+                if ($satCount === 1 || $satCount === 3) continue; // 1st & 3rd Sat off
+            }
+            if (isset($holidayDates[$ds])) continue; // declared holiday
+            $workingDays++;
+        }
 
         // ── Attendance counts ─────────────────────────────────────────────────
         $att = $this->getAttendance($empId, $monthStart, $monthEnd);
@@ -111,6 +130,8 @@ class PayrollCalculator
 
         foreach ($components as $comp) {
             if (strtolower($comp['type']) !== 'allowance') continue;
+            // PF/ESI are deductions only — never treat them as earnings
+            if (in_array(strtolower(trim($comp['name'])), ['pf', 'esi'], true)) continue;
             $amount = $this->applyComponent($comp, $fixedSalary);
             if ($amount <= 0) continue;
 
@@ -149,8 +170,9 @@ class PayrollCalculator
         }
 
         // ── Step 5: OT ────────────────────────────────────────────────────────
+        // Per-day rate = CTC ÷ calendar days (drives OT, absent & late deductions).
         $otHours  = $att['ot_hours'];
-        $perDay   = $calDays > 0 ? round($basicSalary / $calDays, 4) : 0;
+        $perDay   = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
         $perHour  = round($perDay / 8, 4);
         $otRate   = $perHour * 2;
         $otAmount = round($otHours * $otRate, 2);
@@ -168,8 +190,11 @@ class PayrollCalculator
         $deductions = [];
 
         // Component deductions
+        // Skip PF/ESI rows — those are calculated authoritatively in Steps 8 & 9
+        // (matches Laravel SalarySlipController::computePayroll behaviour)
         foreach ($components as $comp) {
             if (strtolower($comp['type']) !== 'deduction') continue;
+            if (in_array(strtolower(trim($comp['name'])), ['pf', 'esi'], true)) continue;
             $amount = $this->applyComponent($comp, $fixedSalary);
             if ($amount <= 0) continue;
             $deductions[$comp['name']] = $amount;
@@ -203,14 +228,18 @@ class PayrollCalculator
             $absentDeduction = 0.0;
         }
 
-        // Late penalty: if late_minutes > grace, deduct 2× per-hour for deductable minutes
+        // Late penalty: once total late for the month exceeds the grace allowance,
+        // charge the FULL total late doubled (NOT just the minutes beyond grace).
+        //   deductable minutes = total late × 2
+        //   deduction          = deductable minutes × per-hour rate ÷ 60
+        // (matches Laravel SalarySlipController behaviour.)
         $lateDeduction     = 0.0;
-        $graceMins         = defined('ATTENDANCE_GRACE_MINUTES') ? ATTENDANCE_GRACE_MINUTES : 15;
-        $monthlyGrace      = 90; // minutes — consistent with Laravel default
+        $monthlyGrace      = setting_monthly_grace_mins(); // from Grace Settings (default 90)
         $totalLateMinutes  = $att['late_minutes'];
-        $deductableLateMin = max(0, $totalLateMinutes - $monthlyGrace);
-        if ($deductableLateMin > 0) {
-            $lateDeduction = round(($deductableLateMin / 60) * $perHour * 2, 2);
+        $deductableLateMin = 0;
+        if ($totalLateMinutes > $monthlyGrace) {
+            $deductableLateMin = $totalLateMinutes * 2;                 // full total late, doubled
+            $lateDeduction     = round($deductableLateMin * ($perHour / 60), 2);
             if ($lateDeduction > 0) {
                 $deductions['Late Deduction (' . $totalLateMinutes . ' min, 2× rate)'] = $lateDeduction;
             }
@@ -284,23 +313,37 @@ class PayrollCalculator
 
     private function getAttendance(int $empId, string $from, string $to): array
     {
+        // Timing pulled from app_settings (OT Settings / Grace Settings pages).
+        $officeStart  = setting_office_start();        // 'HH:MM' — late measured from here
+        $triggerMins  = setting_ot_trigger_mins();     // checkout must reach this for OT
+        $baselineMins = setting_ot_baseline_mins();    // OT hours counted from here
+
+        // Late minutes counted from office start.
+        // OT minutes = checkout − baseline, but ONLY when checkout ≥ OT trigger time
+        // (matches Laravel OT rule: "checkout ≥ Trigger → OT = (checkout − baseline)/60").
         $stmt = $this->db->prepare(
             'SELECT status, COUNT(*) AS cnt,
                     SUM(CASE WHEN in_time IS NOT NULL AND out_time IS NOT NULL
-                             THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, CONCAT(att_date," ",?) , CONCAT(att_date," ",in_time)))
-                             ELSE 0 END) AS late_mins
+                             THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, CONCAT(att_date," ",?), CONCAT(att_date," ",in_time)))
+                             ELSE 0 END) AS late_mins,
+                    SUM(CASE WHEN out_time IS NOT NULL
+                              AND (HOUR(out_time) * 60 + MINUTE(out_time)) >= ?
+                             THEN GREATEST(0, (HOUR(out_time) * 60 + MINUTE(out_time)) - ?)
+                             ELSE 0 END) AS ot_mins
              FROM attendance
              WHERE employee_id = ? AND att_date BETWEEN ? AND ?
              GROUP BY status'
         );
-        // Use office start time constant or default 09:00
-        $officeStart = defined('OFFICE_START_TIME') ? OFFICE_START_TIME : '09:00:00';
-        $stmt->execute([$officeStart, $empId, $from, $to]);
+        $stmt->execute([$officeStart, $triggerMins, $baselineMins, $empId, $from, $to]);
         $rows = $stmt->fetchAll();
 
         $map = [];
         foreach ($rows as $r) {
-            $map[$r['status']] = ['cnt' => (int)$r['cnt'], 'late' => (float)$r['late_mins']];
+            $map[$r['status']] = [
+                'cnt'  => (int)$r['cnt'],
+                'late' => (float)$r['late_mins'],
+                'ot'   => (float)$r['ot_mins'],
+            ];
         }
 
         $presentStatuses = ['On Time', 'OD', 'Comp Off'];
@@ -317,8 +360,13 @@ class PayrollCalculator
         // Late minutes only from rows marked Late (already worked but arrived late)
         $lateMinutes = (int)($map['Late']['late'] ?? 0);
 
-        // OT from OD records (using remarks field is project-specific; default 0 for now)
-        $otHours = 0.0;
+        // OT hours: minutes worked past office-end across all present statuses
+        // (On Time, Late, OD all eligible — Comp Off and Half Day intentionally excluded)
+        $otMinutes = 0.0;
+        foreach (['On Time', 'Late', 'OD'] as $s) {
+            $otMinutes += $map[$s]['ot'] ?? 0;
+        }
+        $otHours = round($otMinutes / 60, 2);
 
         return [
             'present'      => $present,

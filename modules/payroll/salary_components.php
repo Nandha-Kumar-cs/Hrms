@@ -100,6 +100,21 @@ if (!empty($_GET['ajax'])) {
             exit;
         }
 
+        // ── Delete branch — runs BEFORE field validation (no form fields needed) ──
+        if ($action === 'delete' && $id) {
+            $row = $db->prepare('SELECT name FROM salary_components WHERE id=?');
+            $row->execute([$id]);
+            $existing = $row->fetchColumn();
+            if (!$existing) {
+                echo json_encode(['success' => false, 'message' => 'Component not found.']);
+                exit;
+            }
+            $db->prepare('DELETE FROM salary_components WHERE id=?')->execute([$id]);
+            echo json_encode(['success' => true, 'message' => "Component '{$existing}' deleted."]);
+            exit;
+        }
+
+        // ── Create / Update — require form fields ─────────────────────────────
         $name     = trim($_POST['name'] ?? '');
         $type     = $_POST['type'] ?? '';
         $calcType = $_POST['calculation_type'] ?? '';
@@ -142,18 +157,6 @@ if (!empty($_GET['ajax'])) {
             exit;
         }
 
-        if ($action === 'delete' && $id) {
-            $row = $db->prepare('SELECT name FROM salary_components WHERE id=?');
-            $row->execute([$id]);
-            $existing = $row->fetchColumn();
-            if (!$existing) {
-                echo json_encode(['success' => false, 'message' => 'Component not found.']);
-                exit;
-            }
-            $db->prepare('DELETE FROM salary_components WHERE id=?')->execute([$id]);
-            echo json_encode(['success' => true, 'message' => "Component '{$existing}' deleted."]);
-            exit;
-        }
     }
 
     echo json_encode(['success' => false, 'message' => 'Invalid request']);
@@ -168,6 +171,40 @@ $extra_head = '
 <style>
 #compsTable tfoot th { padding:6px 8px; }
 #compsTable tfoot th input.form-control { font-size:12px; padding:4px 7px; height:30px; }
+
+/* ── Self-contained modal (no Bootstrap modal JS dependency) ───────────── */
+.comp-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.5);
+    z-index: 200000;                 /* above sidebar (1040) and everything else */
+    display: none;
+    align-items: flex-start; justify-content: center;
+    padding: 60px 16px;
+    overflow-y: auto;
+}
+.comp-overlay.show { display: flex; }
+.comp-dialog {
+    background: #fff; border-radius: 8px;
+    width: 100%; max-width: 500px;
+    box-shadow: 0 12px 48px rgba(0,0,0,.35);
+    animation: compPop .15s ease;
+}
+@keyframes compPop { from { transform: translateY(-12px); opacity: 0; } to { transform: none; opacity: 1; } }
+.comp-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid #e5e7eb;
+}
+.comp-header h5 { margin: 0; font-weight: 600; font-size: 1.05rem; }
+.comp-x {
+    background: none; border: none; font-size: 28px; line-height: 1;
+    cursor: pointer; color: #6b7280; padding: 0 4px;
+}
+.comp-x:hover { color: #111827; }
+.comp-body { padding: 18px; }
+.comp-footer {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 18px; border-top: 1px solid #e5e7eb;
+}
 </style>';
 require_once __DIR__ . '/../../includes/header.php';
 ?>
@@ -177,7 +214,7 @@ require_once __DIR__ . '/../../includes/header.php';
         <button class="btn btn-primary btn-sm" onclick="openAddModal()">
             <i class="fa fa-plus me-1"></i> Add Component
         </button>
-        <h5 class="mb-0 fw-semibold">Salary Components</h5>
+        <h5 class="mb-0 fw-semibold">Salary Details</h5>
         <a href="<?= BASE_URL ?>/modules/payroll/calculate.php" class="btn btn-sm btn-outline-secondary">
             Salary Calculation
         </a>
@@ -205,50 +242,48 @@ require_once __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<!-- Add / Edit Modal -->
-<div class="modal fade" id="compModal" tabindex="-1" aria-labelledby="modalTitle" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="modalTitle">Add Salary Component</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+<!-- Add / Edit Modal — self-contained overlay (no Bootstrap modal JS) -->
+<div class="comp-overlay" id="compOverlay">
+    <div class="comp-dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="comp-header">
+            <h5 id="modalTitle">Add Salary Component</h5>
+            <button type="button" class="comp-x" onclick="closeCompModal()" aria-label="Close">&times;</button>
+        </div>
+        <div class="comp-body">
+            <div id="formErrors" class="alert alert-danger d-none"></div>
+            <input type="hidden" id="compId">
+            <div class="mb-3">
+                <label class="form-label">Component Name <span class="text-danger">*</span></label>
+                <input type="text" id="compName" class="form-control" placeholder="e.g. HRA, Basic, PF" maxlength="255">
             </div>
-            <div class="modal-body">
-                <div id="formErrors" class="alert alert-danger d-none"></div>
-                <input type="hidden" id="compId">
-                <div class="mb-3">
-                    <label class="form-label">Component ooooName <span class="text-danger">*</span></label>
-                    <input type="text" id="compName" class="form-control" placeholder="e.g. HRA, Basic, PF" maxlength="255">
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Component Type <span class="text-danger">*</span></label>
-                    <select id="compType" class="form-select">
-                        <option value="allowance">Allowance</option>
-                        <option value="deduction">Deduction</option>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Calculation Type <span class="text-danger">*</span></label>
-                    <select id="compCalcType" class="form-select" onchange="updateFormulaPreview()">
-                        <option value="percentage">Percentage of CTC</option>
-                        <option value="fixed">Fixed Amount</option>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Value <span class="text-danger">*</span></label>
-                    <input type="number" id="compValue" class="form-control" step="0.01" min="0" oninput="updateFormulaPreview()">
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Formula Preview</label>
-                    <div id="formulaPreview" class="form-control bg-light text-muted font-monospace" style="min-height:38px;line-height:1.8"></div>
-                </div>
+            <div class="mb-3">
+                <label class="form-label">Component Type <span class="text-danger">*</span></label>
+                <select id="compType" class="form-select">
+                    <option value="allowance">Allowance</option>
+                    <option value="deduction">Deduction</option>
+                </select>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-light" data-bs-dismiss="modal" onclick="closeModal('compModal')">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="saveComponent()">
-                    <i class="fa fa-save me-1"></i> Save
-                </button>
+            <div class="mb-3">
+                <label class="form-label">Calculation Type <span class="text-danger">*</span></label>
+                <select id="compCalcType" class="form-select" onchange="updateFormulaPreview()">
+                    <option value="percentage">Percentage of CTC</option>
+                    <option value="fixed">Fixed Amount</option>
+                </select>
             </div>
+            <div class="mb-3">
+                <label class="form-label">Value <span class="text-danger">*</span></label>
+                <input type="number" id="compValue" class="form-control" step="0.01" min="0" oninput="updateFormulaPreview()">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Formula Preview</label>
+                <div id="formulaPreview" class="form-control bg-light text-muted font-monospace" style="min-height:38px;line-height:1.8"></div>
+            </div>
+        </div>
+        <div class="comp-footer">
+            <button type="button" class="btn btn-light" onclick="closeCompModal()">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveComponent()">
+                <i class="fa fa-save me-1"></i> Save
+            </button>
         </div>
     </div>
 </div>
@@ -262,11 +297,20 @@ const CSRF     = '<?= h(csrf_token()) ?>';
 <?php $page_scripts = <<<'PAGEJS'
 <script>
 var compTable;
-var compModal;
+
+// ── Self-contained modal controls ──────────────────────────────────────────
+function openCompModal()  { document.getElementById('compOverlay').classList.add('show'); }
+function closeCompModal() { document.getElementById('compOverlay').classList.remove('show'); }
 
 $(function () {
-    // Initialise Bootstrap modal once — all show/hide goes through this instance
-    compModal = new bootstrap.Modal(document.getElementById('compModal'), { backdrop: true, keyboard: true });
+    // Close on backdrop click (only when the overlay itself is the target)
+    document.getElementById('compOverlay').addEventListener('click', function (e) {
+        if (e.target === this) closeCompModal();
+    });
+    // Close on Escape
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeCompModal();
+    });
 
     compTable = $('#compsTable').DataTable({
         processing: true,
@@ -311,7 +355,7 @@ $(function () {
             $('#compValue').val(d.value);
             updateFormulaPreview();
             $('#formErrors').addClass('d-none');
-            compModal.show();
+            openCompModal();
         });
     });
 
@@ -349,7 +393,7 @@ function openAddModal() {
     $('#compValue').val('');
     $('#formulaPreview').text('');
     $('#formErrors').addClass('d-none');
-    compModal.show();
+    openCompModal();
 }
 
 function updateFormulaPreview() {
@@ -376,7 +420,7 @@ function saveComponent() {
         value:            $('#compValue').val()
     }, function (res) {
         if (res.success) {
-            compModal.hide();
+            closeCompModal();
             compTable.ajax.reload();
             Swal.fire({ icon: 'success', title: res.message, timer: 1500, showConfirmButton: false });
         } else {
