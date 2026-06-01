@@ -3,7 +3,7 @@
  * Provides offline caching and push notification support
  */
 
-const CACHE_VERSION = 'hrms-v1';
+const CACHE_VERSION = 'hrms-v2';
 const STATIC_CACHE  = `${CACHE_VERSION}-static`;
 const DYNAMIC_CACHE = `${CACHE_VERSION}-dynamic`;
 
@@ -71,9 +71,9 @@ self.addEventListener('fetch', event => {
     if (!url.origin.includes(self.location.origin)) return;
     if (url.pathname.startsWith('/api/')) return;
 
-    // Network-first for PHP pages (dynamic content)
+    // PHP pages: always fetch from network, never serve from cache
     if (url.pathname.endsWith('.php') || url.pathname === '/') {
-        event.respondWith(networkFirst(request));
+        event.respondWith(fetch(request));
         return;
     }
 

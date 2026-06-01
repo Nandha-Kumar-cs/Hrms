@@ -5,248 +5,269 @@ require_permission('employee', 'create');
 
 $db = db();
 
-// ── Dropdown data (IDs as values — the FK fix) ───────────────────────────────
+// ── Dropdown data ─────────────────────────────────────────────────────────────
+$entities = $db->query(
+    'SELECT id, name FROM entities ORDER BY name'
+)->fetchAll(PDO::FETCH_ASSOC);
+
 $depts = $db->query(
-    'SELECT id, name FROM departments ORDER BY name'
-)->fetchAll();
+    "SELECT id, name FROM departments ORDER BY name"
+)->fetchAll(PDO::FETCH_ASSOC);
 
 $designs = $db->query(
-    'SELECT id, name FROM designations ORDER BY name'
-)->fetchAll();
+    "SELECT id, name, department_id FROM designations ORDER BY name"
+)->fetchAll(PDO::FETCH_ASSOC);
 
 $managers = $db->query(
     "SELECT id, name, employee_id FROM employees
      WHERE status = 'Active' ORDER BY name"
-)->fetchAll();
+)->fetchAll(PDO::FETCH_ASSOC);
+
+// ── Suggest next employee code ────────────────────────────────────────────────
+$suggested_code = generate_employee_id();
 
 // ── Repopulate on validation failure ─────────────────────────────────────────
 $old = $_SESSION['form_old'] ?? [];
 unset($_SESSION['form_old']);
 
-// Helper: old value with fallback
-$v = fn(string $key, string $default = '') => h($old[$key] ?? $default);
-$sel = fn(string $key, $match) => ($old[$key] ?? '') == $match ? 'selected' : '';
+$v   = fn(string $key, string $default = '') => h($old[$key] ?? $default);
+$sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match ? 'selected' : '';
 ?>
 
-<div class="d-flex align-items-center gap-2 mb-4">
-    <a href="<?= BASE_URL ?>/modules/employee/index.php"
-       class="btn btn-sm btn-outline-secondary">
-        <i class="fa fa-arrow-left"></i>
-    </a>
-    <div>
-        <h4 class="mb-0 fw-semibold">Add New Employee</h4>
-        <p class="text-muted small mb-0">Fill in the details below to create an employee record</p>
+<div class="card page-card">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2">
+        <a href="<?= BASE_URL ?>/modules/employee/index.php"
+           class="btn btn-sm btn-outline-secondary">
+            <i class="fa fa-arrow-left"></i>
+        </a>
+        <h5 class="mb-0 fw-semibold">Employee Details</h5>
     </div>
-</div>
 
-<?php if (!empty($_SESSION['errors'])): ?>
-<div class="alert alert-danger alert-dismissible fade show mb-4">
-    <i class="fa fa-triangle-exclamation me-2"></i>
-    <strong>Please fix the following errors:</strong>
-    <ul class="mb-0 mt-2">
-        <?php foreach ($_SESSION['errors'] as $err): ?>
-        <li><?= h($err) ?></li>
-        <?php endforeach; ?>
-    </ul>
-    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-</div>
-<?php unset($_SESSION['errors']); ?>
-<?php endif; ?>
+    <div class="card-body">
 
-<form method="POST"
-      action="<?= BASE_URL ?>/modules/employee/create.php"
-      enctype="multipart/form-data"
-      id="addEmployeeForm">
-    <?= csrf_field() ?>
-    <input type="hidden" name="action" value="add">
-
-    <!-- ── Personal Information ─────────────────────────────────────────── -->
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-header bg-white py-3">
-            <h6 class="mb-0 fw-semibold">
-                <i class="fa fa-id-card me-2 text-primary"></i>Personal Information
-            </h6>
+        <?php if (!empty($_SESSION['errors'])): ?>
+        <div class="alert alert-danger">
+            <ul class="mb-0">
+                <?php foreach ($_SESSION['errors'] as $err): ?>
+                <li><?= h($err) ?></li>
+                <?php endforeach; ?>
+            </ul>
         </div>
-        <div class="card-body">
-            <div class="row g-3">
+        <?php unset($_SESSION['errors']); ?>
+        <?php endif; ?>
 
-                <div class="col-md-8">
-                    <label class="form-label">Full Name <span class="text-danger">*</span></label>
-                    <input type="text" name="name" class="form-control"
-                           value="<?= $v('name') ?>"
-                           placeholder="e.g. Ravi Kumar" required>
+        <form method="POST"
+              action="<?= BASE_URL ?>/modules/employee/create.php"
+              enctype="multipart/form-data"
+              novalidate
+              id="addEmployeeForm">
+            <?= csrf_field() ?>
+            <input type="hidden" name="action" value="add">
+
+            <!-- ── Personal Information ───────────────────────────────────── -->
+            <h6 class="text-primary fw-semibold mb-3 border-bottom pb-2">Personal Information</h6>
+            <div class="row g-3 mb-4">
+
+                <div class="col-md-4">
+                    <label class="form-label">Employee Code <span class="text-danger">*</span></label>
+                    <input type="text" name="employee_code"
+                           class="form-control"
+                           value="<?= $v('employee_code', $suggested_code) ?>"
+                           placeholder="e.g. EMP0001"
+                           required>
+                    <div class="form-text">Auto-suggested — edit if needed.</div>
                 </div>
 
                 <div class="col-md-4">
-                    <label class="form-label">Profile Photo</label>
-                    <input type="file" name="photo" class="form-control"
-                           accept="image/jpeg,image/png,image/webp"
-                           id="photoInput">
-                    <div id="photoPreviewWrap" class="mt-2 d-none">
-                        <img id="photoPreview"
-                             style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:2px solid #e2e8f0">
-                    </div>
+                    <label class="form-label">Full Name <span class="text-danger">*</span></label>
+                    <input type="text" name="full_name"
+                           class="form-control"
+                           value="<?= $v('full_name') ?>"
+                           placeholder="e.g. Ravi Kumar"
+                           required>
                 </div>
 
-                <div class="col-md-6">
-                    <label class="form-label">Email Address <span class="text-danger">*</span></label>
-                    <input type="email" name="email" class="form-control"
+                <div class="col-md-4">
+                    <label class="form-label">Email <span class="text-danger">*</span></label>
+                    <input type="email" name="email"
+                           class="form-control"
                            value="<?= $v('email') ?>"
-                           placeholder="ravi@company.com" required>
+                           placeholder="ravi@company.com"
+                           required>
                 </div>
 
-                <div class="col-md-6">
-                    <label class="form-label">Phone</label>
-                    <input type="tel" name="phone" class="form-control"
+                <div class="col-md-4">
+                    <label class="form-label">Phone <span class="text-danger">*</span></label>
+                    <input type="text" name="phone"
+                           class="form-control"
                            value="<?= $v('phone') ?>"
-                           placeholder="+91 98765 43210">
+                           placeholder="+91 98765 43210"
+                           required>
                 </div>
 
                 <div class="col-md-4">
                     <label class="form-label">Date of Birth</label>
-                    <input type="date" name="dob" class="form-control"
+                    <input type="date" name="dob"
+                           class="form-control"
                            value="<?= $v('dob') ?>">
                 </div>
 
                 <div class="col-md-4">
                     <label class="form-label">Gender</label>
                     <select name="gender" class="form-select">
-                        <option value="">— Select —</option>
-                        <?php foreach (['Male', 'Female', 'Other', 'Prefer not to say'] as $g): ?>
-                        <option value="<?= $g ?>" <?= $sel('gender', $g) ?>><?= $g ?></option>
-                        <?php endforeach; ?>
+                        <option value="">Select Gender</option>
+                        <option value="male"   <?= $sel('gender', 'male') ?>>Male</option>
+                        <option value="female" <?= $sel('gender', 'female') ?>>Female</option>
+                        <option value="other"  <?= $sel('gender', 'other') ?>>Other</option>
                     </select>
-                </div>
-
-                <div class="col-md-4">
-                    <!-- spacer -->
-                </div>
-
-                <div class="col-12">
-                    <label class="form-label">Address</label>
-                    <textarea name="address" class="form-control" rows="2"
-                              placeholder="Street, area…"><?= $v('address') ?></textarea>
-                </div>
-
-                <div class="col-md-4">
-                    <label class="form-label">City</label>
-                    <input type="text" name="city" class="form-control"
-                           value="<?= $v('city') ?>">
-                </div>
-
-                <div class="col-md-4">
-                    <label class="form-label">State</label>
-                    <input type="text" name="state" class="form-control"
-                           value="<?= $v('state') ?>">
-                </div>
-
-                <div class="col-md-4">
-                    <label class="form-label">Pincode</label>
-                    <input type="text" name="pincode" class="form-control"
-                           maxlength="10" value="<?= $v('pincode') ?>">
                 </div>
 
             </div>
-        </div>
-    </div>
 
-    <!-- ── Employment Details ────────────────────────────────────────────── -->
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-header bg-white py-3">
-            <h6 class="mb-0 fw-semibold">
-                <i class="fa fa-briefcase me-2 text-success"></i>Employment Details
-            </h6>
-        </div>
-        <div class="card-body">
-            <div class="row g-3">
+            <!-- ── Employment Information ─────────────────────────────────── -->
+            <h6 class="text-primary fw-semibold mb-3 border-bottom pb-2">Employment Information</h6>
+            <div class="row g-3 mb-4">
 
-                <!--
-                    FK FIX: value="<?php echo $d['id']; ?>" passes the integer PK,
-                    not the name string. This prevents the
-                    SQLSTATE[23000] FK constraint error when dept_id=0 or a
-                    text string is sent instead of a real departments.id value.
-                -->
-                <div class="col-md-6">
-                    <label class="form-label">Department <span class="text-danger">*</span></label>
-                    <select name="department_id" class="form-select" required>
-                        <option value="">— Select Department —</option>
-                        <?php foreach ($depts as $d): ?>
-                        <option value="<?= $d['id'] ?>" <?= $sel('department_id', $d['id']) ?>>
-                            <?= h($d['name']) ?>
+                <div class="col-md-4">
+                    <label class="form-label">Entity (Company)</label>
+                    <select name="entity_id" class="form-select">
+                        <option value="">Select Entity</option>
+                        <?php foreach ($entities as $ent): ?>
+                        <option value="<?= $ent['id'] ?>" <?= $sel('entity_id', $ent['id']) ?>>
+                            <?= h($ent['name']) ?>
                         </option>
                         <?php endforeach; ?>
                     </select>
-                    <div class="form-text">Must match an existing department in the system.</div>
                 </div>
 
-                <div class="col-md-6">
+                <div class="col-md-4">
+                    <label class="form-label">Department</label>
+                    <select name="department_id" id="department_id" class="form-select">
+                        <option value="">Select Department</option>
+                        <?php foreach ($depts as $dept): ?>
+                        <option value="<?= $dept['id'] ?>" <?= $sel('department_id', $dept['id']) ?>>
+                            <?= h($dept['name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="col-md-4">
                     <label class="form-label">Designation</label>
-                    <select name="designation_id" class="form-select">
-                        <option value="">— Select Designation —</option>
+                    <select name="designation_id" id="designation_id" class="form-select">
+                        <option value="">Select Designation</option>
                         <?php foreach ($designs as $d): ?>
-                        <option value="<?= $d['id'] ?>" <?= $sel('designation_id', $d['id']) ?>>
+                        <option value="<?= $d['id'] ?>"
+                            data-dept="<?= (int)$d['department_id'] ?>"
+                            <?= $sel('designation_id', $d['id']) ?>>
                             <?= h($d['name']) ?>
                         </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
 
-                <div class="col-md-6">
+                <div class="col-md-4">
+                    <label class="form-label">Status</label>
+                    <select name="status" class="form-select">
+                        <option value="active"    <?= $sel('status', 'active') ?>>Active</option>
+                        <option value="inactive"  <?= $sel('status', 'inactive') ?>>Inactive</option>
+                        <option value="on_leave"  <?= $sel('status', 'on_leave') ?>>On Leave</option>
+                    </select>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Joining Date</label>
+                    <input type="date" name="joining_date"
+                           class="form-control"
+                           value="<?= $v('joining_date') ?>">
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Probation End Date</label>
+                    <input type="date" name="probation_end"
+                           class="form-control"
+                           value="<?= $v('probation_end') ?>">
+                </div>
+
+                <div class="col-md-4">
                     <label class="form-label">Reporting Manager</label>
-                    <select name="manager_id" class="form-select">
-                        <option value="">— None —</option>
-                        <?php foreach ($managers as $m): ?>
-                        <option value="<?= $m['id'] ?>" <?= $sel('manager_id', $m['id']) ?>>
-                            <?= h($m['name']) ?> (<?= h($m['employee_id']) ?>)
+                    <select name="reporting_manager_id" class="form-select">
+                        <option value="">Select Manager</option>
+                        <?php foreach ($managers as $mgr): ?>
+                        <option value="<?= $mgr['id'] ?>" <?= $sel('reporting_manager_id', $mgr['id']) ?>>
+                            <?= h($mgr['name']) ?> (<?= h($mgr['employee_id']) ?>)
                         </option>
                         <?php endforeach; ?>
                     </select>
-                </div>
-
-                <div class="col-md-3">
-                    <label class="form-label">Join Date <span class="text-danger">*</span></label>
-                    <input type="date" name="join_date" class="form-control"
-                           value="<?= $v('join_date') ?>" required>
-                </div>
-
-                <div class="col-md-3">
-                    <label class="form-label">Employment Type</label>
-                    <select name="employment_type" class="form-select">
-                        <?php foreach (['Full Time', 'Part Time', 'Contract', 'Intern'] as $t): ?>
-                        <option value="<?= $t ?>"
-                            <?= ($old['employment_type'] ?? 'Full Time') === $t ? 'selected' : '' ?>>
-                            <?= $t ?>
-                        </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="col-md-6">
-                    <label class="form-label">Emergency Contact Name</label>
-                    <input type="text" name="emergency_name" class="form-control"
-                           value="<?= $v('emergency_name') ?>"
-                           placeholder="Parent / Spouse name">
-                </div>
-
-                <div class="col-md-6">
-                    <label class="form-label">Emergency Contact Phone</label>
-                    <input type="tel" name="emergency_phone" class="form-control"
-                           value="<?= $v('emergency_phone') ?>">
                 </div>
 
             </div>
-        </div>
-    </div>
 
-    <!-- ── Bank & Statutory Details ─────────────────────────────────────── -->
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-header bg-white py-3">
-            <h6 class="mb-0 fw-semibold">
-                <i class="fa fa-university me-2 text-warning"></i>Bank &amp; Statutory Details
-            </h6>
-        </div>
-        <div class="card-body">
-            <div class="row g-3">
+            <!-- ── Photo ──────────────────────────────────────────────────── -->
+            <h6 class="text-primary fw-semibold mb-3 border-bottom pb-2">Photo</h6>
+            <div class="row g-3 mb-4">
+                <div class="col-md-4">
+                    <label class="form-label">Employee Photo</label>
+                    <input type="file" name="photo" id="photoInput"
+                           accept="image/jpeg,image/png,image/webp"
+                           class="form-control"
+                           onchange="previewPhoto(this)">
+                    <div class="form-text">JPG / PNG / WebP — max 2 MB</div>
+                    <div id="photoPreviewWrap" class="mt-2 d-none d-flex align-items-center gap-2">
+                        <img id="photoPreview" src="" alt="Preview"
+                             class="rounded"
+                             style="width:80px;height:80px;object-fit:cover;border:2px solid #e2e8f0">
+                        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removePhoto()">
+                            <i class="fa fa-times me-1"></i>Remove
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Salary Structure ───────────────────────────────────────── -->
+            <h6 class="text-primary fw-semibold mb-3 border-bottom pb-2">Salary Structure</h6>
+            <div class="alert alert-info py-2 small mb-3">
+                <i class="fa fa-info-circle me-1"></i>
+                <strong>CTC per Month</strong> is the total monthly package. Basic, HRA, TA and other
+                allowances are auto-calculated from this value when generating payslips.
+            </div>
+            <div class="row g-3 mb-4">
+
+                <div class="col-md-4">
+                    <label class="form-label">CTC per Month <span class="text-danger">*</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text">₹</span>
+                        <input type="number" name="fixed_salary"
+                               step="0.01" min="0"
+                               class="form-control"
+                               value="<?= $v('fixed_salary', '0') ?>"
+                               required>
+                    </div>
+                    <div class="form-text">Total monthly cost to company (Basic + HRA + TA + allowances)</div>
+                </div>
+
+                <div class="col-md-4 d-flex align-items-end pb-1">
+                    <div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox"
+                                   name="ot_enabled" value="1" id="otEnabled"
+                                   <?= !empty($old['ot_enabled']) ? 'checked' : '' ?>>
+                            <label class="form-check-label fw-semibold" for="otEnabled">
+                                <i class="fa fa-clock me-1 text-warning"></i>OT Enabled
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            Auto-calculate overtime when check-out exceeds 8:30 PM.<br>
+                            OT rate = (Basic ÷ 30 ÷ 8) × 2 per OT hour.
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ── Bank & Statutory Details ──────────────────────────────── -->
+            <h6 class="text-primary fw-semibold mb-3 border-bottom pb-2">Bank &amp; Statutory Details</h6>
+            <div class="row g-3 mb-4">
 
                 <div class="col-md-4">
                     <label class="form-label">Bank Name</label>
@@ -289,39 +310,97 @@ $sel = fn(string $key, $match) => ($old[$key] ?? '') == $match ? 'selected' : ''
                            value="<?= $v('uan_number') ?>">
                 </div>
 
+                <div class="col-md-4">
+                    <label class="form-label">ESIC Number</label>
+                    <input type="text" name="esic_number" class="form-control"
+                           value="<?= $v('esic_number') ?>">
+                </div>
+
             </div>
-        </div>
-    </div>
 
-    <!-- ── Submit ────────────────────────────────────────────────────────── -->
-    <div class="d-flex gap-2 mb-4">
-        <button type="submit" class="btn btn-primary">
-            <i class="fa fa-save me-1"></i> Save Employee
-        </button>
-        <a href="<?= BASE_URL ?>/modules/employee/index.php" class="btn btn-light">
-            Cancel
-        </a>
-    </div>
+            <!-- ── Actions ────────────────────────────────────────────────── -->
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">
+                    <i class="fa fa-save me-1"></i> Create Employee
+                </button>
+                <a href="<?= BASE_URL ?>/modules/employee/index.php" class="btn btn-light">
+                    Cancel
+                </a>
+            </div>
 
-</form>
+        </form>
+    </div>
+</div>
 
 <?php
-$page_scripts = <<<'JS'
+$_desig_repop = (int)($old['designation_id'] ?? 0);
+ob_start(); ?>
 <script>
-// Photo preview
-document.getElementById('photoInput').addEventListener('change', function () {
-    var file = this.files[0];
-    if (file && file.type.startsWith('image/')) {
+window.BASE_URL = '<?= BASE_URL ?>';
+
+// ── Photo preview ─────────────────────────────────────────────────────────────
+function previewPhoto(input) {
+    if (input.files && input.files[0]) {
         var reader = new FileReader();
-        reader.onload = function (e) {
-            document.getElementById('photoPreview').src = e.target.result;
-            document.getElementById('photoPreviewWrap').classList.remove('d-none');
+        reader.onload = function(e) {
+            $('#photoPreview').attr('src', e.target.result);
+            $('#photoPreviewWrap').removeClass('d-none');
         };
-        reader.readAsDataURL(file);
+        reader.readAsDataURL(input.files[0]);
     }
-});
+}
+
+function removePhoto() {
+    document.getElementById('photoInput').value = '';
+    document.getElementById('photoPreview').src = '';
+    $('#photoPreviewWrap').addClass('d-none');
+}
+
+// ── Department → Designation AJAX ────────────────────────────────────────────
+(function () {
+    var $dept  = $('#department_id');
+    var $desig = $('#designation_id');
+
+    function filterDesignations(deptId, keepSelected) {
+        var selected = keepSelected || $desig.val();
+        $desig.html('<option value="">Select Designation</option>');
+        if (!deptId) {
+            return;
+        }
+        $.getJSON(window.BASE_URL + '/api/designations_by_dept.php', { dept_id: deptId }, function (data) {
+            if (data.length === 0) {
+                // No dept-linked designations — show all for unblocked UX
+                $('#designation_id').data('all').each(function () {
+                    $desig.append($(this).clone());
+                });
+            } else {
+                $.each(data, function (i, d) {
+                    var sel = (d.id == selected) ? ' selected' : '';
+                    $desig.append('<option value="' + d.id + '"' + sel + '>' + d.name + '</option>');
+                });
+            }
+        }).fail(function () {
+            // AJAX failed — restore full list so user is not blocked
+            $('#designation_id').data('all').each(function () {
+                $desig.append($(this).clone());
+            });
+        });
+    }
+
+    // Cache the full option list before any filtering
+    $desig.data('all', $desig.find('option').clone());
+
+    $dept.on('change', function () {
+        filterDesignations($(this).val());
+    });
+
+    // Repopulate on validation-error reload
+    var initDept = $dept.val();
+    if (initDept) {
+        filterDesignations(initDept, <?= (int)($_desig_repop) ?>);
+    }
+})();
 </script>
-JS;
-?>
+<?php $page_scripts = ob_get_clean(); ?>
 
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

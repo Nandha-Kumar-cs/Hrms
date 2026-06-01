@@ -43,10 +43,19 @@ try {
 // ── Pre-compute collapsed/open state for each submenu group ──────────────────
 $_empActive  = _sb_active('/modules/employee/', '/modules/letters/');
 $_assetActive = _sb_active('/modules/assets/');
-$_payActive  = _sb_active('/modules/payroll/');
+// salary_components.php lives under /payroll/ URL-wise but belongs to the Settings nav section.
+// Keep $_payActive narrow so it does NOT match salary_components.
+$_payActive  = _sb_active('/payroll/calculate', '/payroll/index', '/payroll/slip',
+                           '/payroll/generate_slip', '/payroll/finalize',
+                           '/payroll/history', '/payroll/process', '/payroll/salary_structure');
+$_salCompActive = _sb_active('/payroll/salary_components');
+$_genSlipActive = _sb_active('/payroll/generate_slip');
+$_calcActive    = _sb_active('/payroll/calculate');
 $_attActive  = _sb_active('/modules/attendance/');
 $_repActive  = _sb_active('report=');
-$_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/');
+// Include salary_components in settings group so the Settings accordion opens on that page.
+$_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/',
+                           '/payroll/salary_components');
 
 // ── Navbar: role badge colour map ─────────────────────────────────────────────
 $_roleColours = [
@@ -407,23 +416,35 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             <div class="collapse <?= $_payActive ? 'show' : '' ?>" id="payMenu">
                 <ul class="sidebar-submenu">
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/process.php"
-                           class="nav-link <?= _sb_active('/payroll/process') ?>">
+                        <a href="<?= BASE_URL ?>/modules/payroll/calculate.php"
+                           class="nav-link <?= $_calcActive ?>">
                             Salary Calculation
                         </a>
                     </li>
+                    <!-- <li>
+                        <a href="<?= BASE_URL ?>/modules/payroll/generate_slip.php"
+                           class="nav-link <?= $_genSlipActive ?>">
+                            Generate Slip
+                        </a>
+                    </li> -->
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/index.php"
-                           class="nav-link <?= _sb_active('/payroll/index', '/payroll/slip', '/payroll/history') ?>">
+                           class="nav-link <?= _sb_active('/payroll/index', '/payroll/slip') ?>">
                             Salary Slips
                         </a>
                     </li>
-                    <li>
+                    <!-- <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/salary_structure.php"
                            class="nav-link <?= _sb_active('/payroll/salary_structure') ?>">
                             Salary Structure
                         </a>
-                    </li>
+                    </li> -->
+                    <!-- <li>
+                        <a href="<?= BASE_URL ?>/modules/payroll/process.php"
+                           class="nav-link <?= _sb_active('/payroll/process') ?>">
+                            Batch Payroll
+                        </a>
+                    </li> -->
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/finalize.php"
                            class="nav-link <?= _sb_active('/payroll/finalize') ?>">
@@ -602,10 +623,10 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                            class="nav-link <?= _sb_active('tab=entities') ?>">
                             Entities
                         </a>
-                    </li>
+                    </li>                    
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=salary-components"
-                           class="nav-link <?= _sb_active('tab=salary-components') ?>">
+                        <a href="<?= BASE_URL ?>/modules/payroll/salary_components.php"
+                           class="nav-link <?= $_salCompActive ?>">
                             Salary Components
                         </a>
                     </li>

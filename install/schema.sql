@@ -246,36 +246,58 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     UNIQUE KEY uk_month (payroll_month)
 ) ENGINE=InnoDB;
 
+-- ─── Salary Components ────────────────────────────────────────────────────────
+-- Dynamic allowance/deduction components used in individual payroll calculation.
+CREATE TABLE IF NOT EXISTS salary_components (
+    id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name             VARCHAR(255) NOT NULL,
+    type             ENUM('allowance','deduction') NOT NULL,
+    calculation_type ENUM('percentage','fixed') NOT NULL,
+    value            DECIMAL(10,4) NOT NULL DEFAULT 0,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ─── Salary Slips ─────────────────────────────────────────────────────────────
+-- payroll_run_id is nullable — individual slips (slip_type='individual') have no run.
+-- JSON columns store dynamic allowances/deductions for individual slips.
+-- Fixed columns (basic, hra, etc.) are populated for all slips for backwards compat.
 CREATE TABLE IF NOT EXISTS salary_slips (
-    id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    payroll_run_id  INT UNSIGNED NOT NULL,
-    employee_id     INT UNSIGNED NOT NULL,
-    payroll_month   CHAR(7) NOT NULL,
-    working_days    INT DEFAULT 26,
-    present_days    INT DEFAULT 0,
-    lop_days        INT DEFAULT 0,
-    basic           DECIMAL(12,2) DEFAULT 0,
-    hra             DECIMAL(12,2) DEFAULT 0,
-    conveyance      DECIMAL(12,2) DEFAULT 0,
-    medical         DECIMAL(12,2) DEFAULT 0,
-    special_allow   DECIMAL(12,2) DEFAULT 0,
-    other_allow     DECIMAL(12,2) DEFAULT 0,
-    gross_earnings  DECIMAL(12,2) DEFAULT 0,
-    pf_employee     DECIMAL(12,2) DEFAULT 0,
-    pf_employer     DECIMAL(12,2) DEFAULT 0,
-    esi_employee    DECIMAL(12,2) DEFAULT 0,
-    esi_employer    DECIMAL(12,2) DEFAULT 0,
-    tds             DECIMAL(12,2) DEFAULT 0,
+    id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    payroll_run_id   INT UNSIGNED NULL,                      -- NULL for individual slips
+    employee_id      INT UNSIGNED NOT NULL,
+    payroll_month    CHAR(7) NOT NULL,
+    fixed_salary     DECIMAL(12,2) DEFAULT 0,               -- effective monthly CTC
+    variable_salary  DECIMAL(12,2) DEFAULT 0,               -- variable pay portion
+    allowances       JSON NULL,                             -- dynamic earnings (individual)
+    deductions_json  JSON NULL,                             -- dynamic deductions (individual)
+    attendance_summary JSON NULL,                           -- full attendance breakdown
+    working_days     INT DEFAULT 26,
+    present_days     INT DEFAULT 0,
+    lop_days         INT DEFAULT 0,
+    basic            DECIMAL(12,2) DEFAULT 0,
+    hra              DECIMAL(12,2) DEFAULT 0,
+    conveyance       DECIMAL(12,2) DEFAULT 0,
+    medical          DECIMAL(12,2) DEFAULT 0,
+    special_allow    DECIMAL(12,2) DEFAULT 0,
+    other_allow      DECIMAL(12,2) DEFAULT 0,
+    gross_earnings   DECIMAL(12,2) DEFAULT 0,
+    pf_employee      DECIMAL(12,2) DEFAULT 0,
+    pf_employer      DECIMAL(12,2) DEFAULT 0,
+    esi_employee     DECIMAL(12,2) DEFAULT 0,
+    esi_employer     DECIMAL(12,2) DEFAULT 0,
+    tds              DECIMAL(12,2) DEFAULT 0,
     other_deductions DECIMAL(12,2) DEFAULT 0,
     total_deductions DECIMAL(12,2) DEFAULT 0,
-    net_pay         DECIMAL(12,2) DEFAULT 0,
-    slip_pdf        VARCHAR(255) NULL,
-    status          ENUM('Draft','Generated','Sent') DEFAULT 'Draft',
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (payroll_run_id) REFERENCES payroll_runs(id),
-    FOREIGN KEY (employee_id)    REFERENCES employees(id)
-) ENGINE=InnoDB;
+    net_pay          DECIMAL(12,2) DEFAULT 0,
+    slip_pdf         VARCHAR(255) NULL,
+    status           ENUM('Draft','Generated','Sent') DEFAULT 'Draft',
+    slip_type        ENUM('batch','individual') NOT NULL DEFAULT 'batch',
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_emp_payroll_month (employee_id, payroll_month),
+    CONSTRAINT fk_slip_payroll_run FOREIGN KEY (payroll_run_id) REFERENCES payroll_runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─── Letters ──────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS letters (
