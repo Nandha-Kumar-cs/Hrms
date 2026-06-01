@@ -208,17 +208,6 @@ $hasIncrement = array_flip($db->query(
             <th onclick="empSort(7)">STATUS <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
             <th style="text-align:right;cursor:default">ACTIONS</th>
         </tr>
-        <tr id="empFilterRow" style="background:#2c3a4e">
-            <th><input class="emp-col-filter" data-col="0" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="1" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="2" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="3" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="4" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="5" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="6" type="text" placeholder="Search…" style="text-align:right"></th>
-            <th><input class="emp-col-filter" data-col="7" type="text" placeholder="Search…"></th>
-            <th></th>
-        </tr>
         </thead>
         <tbody id="empTbody">
         <?php foreach ($employees as $e):
@@ -330,6 +319,19 @@ $hasIncrement = array_flip($db->query(
         </tr>
         <?php endforeach; ?>
         </tbody>
+        <tfoot>
+        <tr style="background:#1e2a3a">
+            <th><input class="emp-col-filter" data-col="0" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="1" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="2" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="3" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="4" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="5" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="6" type="text" placeholder="Search…" style="text-align:right"></th>
+            <th><input class="emp-col-filter" data-col="7" type="text" placeholder="Search…"></th>
+            <th></th>
+        </tr>
+        </tfoot>
     </table>
     </div>
 
