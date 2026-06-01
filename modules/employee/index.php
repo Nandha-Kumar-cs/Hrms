@@ -142,17 +142,17 @@ $hasIncrement = array_flip($db->query(
 .btn-excel:hover { background: #f0faf3; }
 .emp-col-filter {
     width: 100%;
-    padding: 4px 7px;
-    font-size: 11px;
-    border: 1px solid rgba(255,255,255,.25);
-    border-radius: 3px;
-    background: rgba(255,255,255,.1);
-    color: #fff;
+    padding: 5px 8px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
     box-sizing: border-box;
     outline: none;
 }
-.emp-col-filter::placeholder { color: rgba(255,255,255,.45); }
-.emp-col-filter:focus { border-color: rgba(255,255,255,.6); background: rgba(255,255,255,.18); }
+.emp-col-filter::placeholder { color: var(--muted); }
+.emp-col-filter:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(var(--primary-rgb,59,130,246),.15); }
 </style>
 
 <div class="page-head">
@@ -320,16 +320,16 @@ $hasIncrement = array_flip($db->query(
         <?php endforeach; ?>
         </tbody>
         <tfoot>
-        <tr style="background:#1e2a3a">
-            <th><input class="emp-col-filter" data-col="0" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="1" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="2" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="3" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="4" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="5" type="text" placeholder="Search…"></th>
-            <th><input class="emp-col-filter" data-col="6" type="text" placeholder="Search…" style="text-align:right"></th>
-            <th><input class="emp-col-filter" data-col="7" type="text" placeholder="Search…"></th>
-            <th></th>
+        <tr style="border-top:2px solid var(--border)">
+            <td><input class="emp-col-filter" data-col="0" type="text" placeholder="Search…"></td>
+            <td><input class="emp-col-filter" data-col="1" type="text" placeholder="Search…"></td>
+            <td><input class="emp-col-filter" data-col="2" type="text" placeholder="Search…"></td>
+            <td><input class="emp-col-filter" data-col="3" type="text" placeholder="Search…"></td>
+            <td><input class="emp-col-filter" data-col="4" type="text" placeholder="Search…"></td>
+            <td><input class="emp-col-filter" data-col="5" type="text" placeholder="Search…"></td>
+            <td><input class="emp-col-filter" data-col="6" type="text" placeholder="Search…" style="text-align:right"></td>
+            <td><input class="emp-col-filter" data-col="7" type="text" placeholder="Search…"></td>
+            <td></td>
         </tr>
         </tfoot>
     </table>
