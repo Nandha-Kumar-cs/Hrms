@@ -140,6 +140,19 @@ $hasIncrement = array_flip($db->query(
     text-decoration: none;
 }
 .btn-excel:hover { background: #f0faf3; }
+.emp-col-filter {
+    width: 100%;
+    padding: 4px 7px;
+    font-size: 11px;
+    border: 1px solid rgba(255,255,255,.25);
+    border-radius: 3px;
+    background: rgba(255,255,255,.1);
+    color: #fff;
+    box-sizing: border-box;
+    outline: none;
+}
+.emp-col-filter::placeholder { color: rgba(255,255,255,.45); }
+.emp-col-filter:focus { border-color: rgba(255,255,255,.6); background: rgba(255,255,255,.18); }
 </style>
 
 <div class="page-head">
@@ -194,6 +207,17 @@ $hasIncrement = array_flip($db->query(
             <th onclick="empSort(6)" style="text-align:right">CTC <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
             <th onclick="empSort(7)">STATUS <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
             <th style="text-align:right;cursor:default">ACTIONS</th>
+        </tr>
+        <tr id="empFilterRow" style="background:#2c3a4e">
+            <th><input class="emp-col-filter" data-col="0" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="1" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="2" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="3" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="4" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="5" type="text" placeholder="Search…"></th>
+            <th><input class="emp-col-filter" data-col="6" type="text" placeholder="Search…" style="text-align:right"></th>
+            <th><input class="emp-col-filter" data-col="7" type="text" placeholder="Search…"></th>
+            <th></th>
         </tr>
         </thead>
         <tbody id="empTbody">
@@ -390,10 +414,23 @@ window.BASE_URL = '<?= BASE_URL ?>';
     var curPage  = 1;
     var sortCol  = -1;
     var sortDir  = 'asc';
+    var colFilters = {}; // col index → lowercase string
 
     function cellText(tr, col) {
         var td = tr.querySelectorAll('td')[col];
         return td ? td.textContent.trim() : '';
+    }
+
+    function applyFilters() {
+        filtered = allRows.filter(function (tr) {
+            return Object.keys(colFilters).every(function (col) {
+                var q = colFilters[col];
+                return !q || cellText(tr, parseInt(col, 10)).toLowerCase().indexOf(q) !== -1;
+            });
+        });
+        curPage = 1;
+        render();
+        reinitDropdowns();
     }
 
     function render() {
@@ -492,6 +529,14 @@ window.BASE_URL = '<?= BASE_URL ?>';
                     document.getElementById('deleteId').value = this.dataset.id;
                     document.getElementById('deleteForm').submit();
                 }
+            });
+        });
+
+        document.querySelectorAll('.emp-col-filter').forEach(function (inp) {
+            inp.addEventListener('input', function () {
+                var col = this.getAttribute('data-col');
+                colFilters[col] = this.value.trim().toLowerCase();
+                applyFilters();
             });
         });
 
