@@ -5,25 +5,31 @@ require_permission('employee');
 
 $id = (int)($_GET['id'] ?? 0);
 $db = db();
+
 $emp = $db->prepare(
     'SELECT e.*, d.name AS dept_name, des.name AS desig_name, m.name AS manager_name
      FROM employees e
-     LEFT JOIN departments d ON d.id=e.department_id
-     LEFT JOIN designations des ON des.id=e.designation_id
-     LEFT JOIN employees m ON m.id=e.manager_id
-     WHERE e.id=?'
+     LEFT JOIN departments d   ON d.id  = e.department_id
+     LEFT JOIN designations des ON des.id = e.designation_id
+     LEFT JOIN employees m     ON m.id  = e.manager_id
+     WHERE e.id = ?'
 );
 $emp->execute([$id]);
 $e = $emp->fetch();
 if (!$e) { redirect(BASE_URL . '/modules/employee/index.php'); }
 
-// Salary structure
+// Current salary structure
 $sal = $db->prepare('SELECT * FROM salary_structures WHERE employee_id=? AND is_current=1 ORDER BY effective_from DESC LIMIT 1');
 $sal->execute([$id]);
 $salary = $sal->fetch();
 
-// Recent attendance (last 7)
-$att = $db->prepare('SELECT * FROM attendance WHERE employee_id=? ORDER BY att_date DESC LIMIT 7');
+// All salary structure revisions
+$salHist = $db->prepare('SELECT * FROM salary_structures WHERE employee_id=? ORDER BY effective_from DESC');
+$salHist->execute([$id]);
+$salHistRows = $salHist->fetchAll();
+
+// Attendance (last 30)
+$att = $db->prepare('SELECT * FROM attendance WHERE employee_id=? ORDER BY att_date DESC LIMIT 30');
 $att->execute([$id]);
 $att_rows = $att->fetchAll();
 
@@ -31,223 +37,474 @@ $att_rows = $att->fetchAll();
 $assets = $db->prepare(
     'SELECT aa.*, a.name AS asset_name, a.asset_code, c.name AS cat_name
      FROM asset_assignments aa
-     JOIN assets a ON a.id=aa.asset_id
-     JOIN asset_categories c ON c.id=a.category_id
-     WHERE aa.employee_id=? AND aa.is_returned=0'
+     JOIN assets a ON a.id = aa.asset_id
+     JOIN asset_categories c ON c.id = a.category_id
+     WHERE aa.employee_id = ? AND aa.is_returned = 0'
 );
 $assets->execute([$id]);
 $asset_rows = $assets->fetchAll();
 
 // Letters
-$letters = $db->prepare('SELECT * FROM letters WHERE employee_id=? ORDER BY issued_date DESC LIMIT 5');
+$letters = $db->prepare('SELECT * FROM letters WHERE employee_id=? ORDER BY issued_date DESC');
 $letters->execute([$id]);
 $letter_rows = $letters->fetchAll();
+
+// Salary slips
+$slips = $db->prepare('SELECT * FROM salary_slips WHERE employee_id=? ORDER BY payroll_month DESC');
+$slips->execute([$id]);
+$slip_rows = $slips->fetchAll();
 ?>
 
-<div class="page-head">
-    <div>
-        <h1><?= h($e['name']) ?></h1>
-        <p class="muted"><?= h($e['employee_id']) ?> · <?= h($e['desig_name'] ?? '—') ?> · <?= h($e['dept_name'] ?? '—') ?></p>
-    </div>
-    <div class="head-actions">
-        <?php if (can('employee','edit')): ?>
-        <a href="edit.php?id=<?= $id ?>" class="btn btn-primary" accesskey="e" data-shortcut data-key="E"><u>E</u>dit</a>
-        <?php endif; ?>
-        <?php if (can('letters','create')): ?>
-        <a href="../letters/create.php?emp_id=<?= $id ?>" class="btn" accesskey="l" data-shortcut data-key="L">Issue <u>L</u>etter</a>
-        <?php endif; ?>
-        <a href="index.php" class="btn btn-ghost" accesskey="b" data-shortcut data-key="B"><u>B</u>ack</a>
-    </div>
-</div>
+<style>
+.btn-xs { padding:.2rem .5rem; font-size:.75rem; }
+.tab-content { padding-top:1rem; }
+.profile-avatar {
+    width:80px; height:80px; border-radius:50%;
+    background:var(--primary,#3b82f6); color:#fff;
+    font-size:2rem; display:flex; align-items:center;
+    justify-content:center; font-weight:700; flex-shrink:0;
+}
+.profile-photo { width:80px; height:80px; border-radius:50%; object-fit:cover; border:3px solid #e2e8f0; flex-shrink:0; }
 
-<div class="grid-2">
-    <!-- Profile Card -->
-    <div class="card form-card">
-        <div style="display:flex;gap:18px;align-items:flex-start;margin-bottom:18px">
+/* Clean tab styles — remove ugly focus outline & default border flash */
+#profileTabs .nav-link {
+    color: var(--text, #374151);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: .375rem .375rem 0 0;
+    outline: none !important;
+    box-shadow: none !important;
+    transition: color .15s, background .15s;
+}
+#profileTabs .nav-link:hover {
+    color: var(--primary, #3b82f6);
+    background: #f1f5f9;
+    border-color: #dee2e6 #dee2e6 transparent;
+}
+#profileTabs .nav-link:focus-visible {
+    outline: none !important;
+    box-shadow: none !important;
+}
+#profileTabs .nav-link.active {
+    color: var(--primary, #3b82f6);
+    background: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+    font-weight: 600;
+}
+</style>
+
+<?= render_flash() ?>
+
+<!-- ── Profile Header ──────────────────────────────────────────────── -->
+<div class="card mb-3">
+    <div class="card-body py-3">
+        <div class="d-flex align-items-center gap-3">
+            <a href="index.php" class="btn btn-sm btn-outline-secondary"><i class="fa fa-arrow-left"></i></a>
+
             <?php if ($e['photo']): ?>
-            <img src="<?= BASE_URL ?>/uploads/photos/<?= h($e['photo']) ?>" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid var(--border)">
+            <img src="<?= BASE_URL ?>/uploads/photos/<?= h($e['photo']) ?>" alt="<?= h($e['name']) ?>" class="profile-photo">
             <?php else: ?>
-            <div class="emp-avatar" style="width:72px;height:72px;font-size:28px;border-radius:50%"><?= strtoupper(substr($e['name'],0,1)) ?></div>
+            <div class="profile-avatar"><?= strtoupper(substr($e['name'],0,1)) ?></div>
             <?php endif; ?>
+
             <div>
-                <div style="font-size:18px;font-weight:700"><?= h($e['name']) ?></div>
-                <div class="muted"><?= h($e['email']) ?></div>
-                <div style="margin-top:6px">
-                    <?php
-                    $sc = ['Active'=>'pill-success','On Leave'=>'pill-warn','Resigned'=>'pill-danger','Terminated'=>'pill-cancelled'];
-                    echo '<span class="pill '.($sc[$e['status']]??'pill-neutral').'">'.h($e['status']).'</span>';
-                    echo ' <span class="pill pill-info">'.h($e['employment_type']).'</span>';
-                    ?>
-                </div>
-            </div>
-        </div>
-
-        <div class="section-title">Personal Details</div>
-        <?php
-        $fields = [
-            'Phone'          => $e['phone'],
-            'Date of Birth'  => $e['dob'] ? date_fmt($e['dob']) . ' (' . age($e['dob']) . ' yrs)' : '—',
-            'Gender'         => $e['gender'],
-            'Address'        => implode(', ', array_filter([$e['address'], $e['city'], $e['state'], $e['pincode']])) ?: '—',
-        ];
-        foreach ($fields as $lbl => $val): ?>
-        <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">
-            <span class="muted"><?= h($lbl) ?></span>
-            <span style="font-weight:500"><?= h($val ?: '—') ?></span>
-        </div>
-        <?php endforeach; ?>
-
-        <div class="section-title" style="margin-top:14px">Employment</div>
-        <?php
-        $efields = [
-            'Join Date'  => $e['join_date'] ? date_fmt($e['join_date']) . ' (' . tenure($e['join_date']) . ')' : '—',
-            'Manager'    => $e['manager_name'] ?? '—',
-            'Department' => $e['dept_name'] ?? '—',
-            'Designation'=> $e['desig_name'] ?? '—',
-        ];
-        foreach ($efields as $lbl => $val): ?>
-        <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">
-            <span class="muted"><?= h($lbl) ?></span>
-            <span style="font-weight:500"><?= h($val ?: '—') ?></span>
-        </div>
-        <?php endforeach; ?>
-
-        <div class="section-title" style="margin-top:14px">Statutory</div>
-        <?php
-        $sfields = [
-            'PAN'     => $e['pan_number'],
-            'Aadhaar' => $e['aadhaar_number'] ? '****' . substr($e['aadhaar_number'],-4) : '—',
-            'UAN'     => $e['uan_number'],
-        ];
-        foreach ($sfields as $lbl => $val): ?>
-        <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">
-            <span class="muted"><?= h($lbl) ?></span>
-            <span class="mono" style="font-weight:500"><?= h($val ?: '—') ?></span>
-        </div>
-        <?php endforeach; ?>
-    </div>
-
-    <!-- Right -->
-    <div>
-        <!-- Salary -->
-        <div class="card" style="margin-bottom:18px">
-            <div class="card-head">
-                <h3>Current Salary</h3>
-                <?php if (can('payroll','process')): ?>
-                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="link">Edit →</a>
-                <?php endif; ?>
-            </div>
-            <div style="padding:14px 18px">
-            <?php if ($salary): ?>
+                <h5 class="mb-0 fw-bold"><?= h($e['name']) ?></h5>
+                <small class="text-muted">
+                    <?= h($e['employee_id']) ?> &bull;
+                    <?= h($e['desig_name'] ?? 'N/A') ?> &bull;
+                    <?= h($e['dept_name'] ?? 'N/A') ?>
+                </small><br>
                 <?php
-                $items = ['Basic'=>$salary['basic'],'HRA'=>$salary['hra'],'Conveyance'=>$salary['conveyance'],
-                          'Medical'=>$salary['medical'],'Special Allowance'=>$salary['special_allow'],'Other Allowance'=>$salary['other_allow']];
-                foreach ($items as $lbl => $amt): if (!$amt) continue; ?>
-                <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid var(--border)">
-                    <span class="muted"><?= h($lbl) ?></span><span><?= money($amt) ?></span>
-                </div>
-                <?php endforeach; ?>
-                <div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700;font-size:14px;margin-top:4px">
-                    <span>Gross CTC</span><span><?= money($salary['gross']) ?></span>
-                </div>
-                <div class="small muted" style="margin-top:2px">Effective: <?= date_fmt($salary['effective_from']) ?></div>
-            <?php else: ?>
-                <p class="muted small">No salary structure defined.</p>
-                <?php if (can('payroll','process')): ?>
-                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-sm btn-primary" style="margin-top:8px">Set Salary</a>
-                <?php endif; ?>
-            <?php endif; ?>
-            </div>
-        </div>
-
-        <!-- Recent Attendance -->
-        <div class="card" style="margin-bottom:18px">
-            <div class="card-head">
-                <h3>Recent Attendance</h3>
-                <a href="../attendance/index.php?emp_id=<?= $id ?>" class="link">View all →</a>
-            </div>
-            <table class="data-table">
-                <thead><tr><th>Date</th><th>Status</th><th>In</th><th>Out</th></tr></thead>
-                <tbody>
-                <?php foreach ($att_rows as $r): ?>
-                <tr>
-                    <td><?= date_fmt($r['att_date'], 'd M') ?></td>
-                    <td><?php
-                        $pillMap = ['On Time'=>'pill-on-time','Late'=>'pill-late','Absent'=>'pill-absent',
-                                    'OD'=>'pill-od','Comp Off'=>'pill-comp-off','Half Day'=>'pill-half'];
-                        $pc = $pillMap[$r['status']] ?? 'pill-neutral';
-                        echo '<span class="pill '.$pc.'">'.h($r['status']).'</span>';
-                    ?></td>
-                    <td><?= $r['in_time'] ? date('h:i A', strtotime($r['in_time'])) : '—' ?></td>
-                    <td><?= $r['out_time'] ? date('h:i A', strtotime($r['out_time'])) : '—' ?></td>
-                </tr>
-                <?php endforeach; ?>
-                <?php if (!$att_rows): ?>
-                <tr><td colspan="4" class="empty">No attendance records</td></tr>
-                <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Assets -->
-        <div class="card" style="margin-bottom:18px">
-            <div class="card-head">
-                <h3>Assigned Assets</h3>
-                <?php if (can('assets','assign')): ?>
-                <a href="../assets/assign.php?emp_id=<?= $id ?>" class="link">Assign →</a>
+                $statusColor = ['Active'=>'success','On Leave'=>'warning','Resigned'=>'danger','Terminated'=>'secondary'][$e['status']] ?? 'secondary';
+                ?>
+                <span class="badge bg-<?= $statusColor ?>"><?= h($e['status']) ?></span>
+                <?php if ($e['employment_type']): ?>
+                <span class="badge bg-info ms-1"><?= h($e['employment_type']) ?></span>
                 <?php endif; ?>
             </div>
-            <div style="padding:0 4px">
-            <?php foreach ($asset_rows as $a): ?>
-            <div class="checklist-item">
-                <span>💻</span>
-                <div style="flex:1">
-                    <div style="font-weight:500;font-size:13px"><?= h($a['asset_name']) ?></div>
-                    <div class="small muted"><?= h($a['asset_code']) ?> · <?= h($a['cat_name']) ?></div>
-                </div>
-                <span class="small muted"><?= date_fmt($a['assigned_date']) ?></span>
-            </div>
-            <?php endforeach; ?>
-            <?php if (!$asset_rows): ?>
-            <div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px">No assets assigned</div>
-            <?php endif; ?>
-            </div>
-        </div>
 
-        <!-- Letters -->
-        <div class="card">
-            <div class="card-head">
-                <h3>Letters</h3>
+            <div class="ms-auto d-flex gap-2">
+                <?php if (can('employee','edit')): ?>
+                <a href="edit.php?id=<?= $id ?>" class="btn btn-sm btn-primary">
+                    <i class="fa fa-edit me-1"></i>Edit
+                </a>
+                <?php endif; ?>
                 <?php if (can('letters','create')): ?>
-                <a href="../letters/create.php?emp_id=<?= $id ?>" class="link">Issue →</a>
+                <a href="../letters/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-outline-secondary">
+                    <i class="fa fa-envelope me-1"></i>Issue Letter
+                </a>
                 <?php endif; ?>
             </div>
-            <table class="data-table">
-                <thead><tr><th>Type</th><th>Date</th><th>Status</th><th class="r">Action</th></tr></thead>
-                <tbody>
-                <?php foreach ($letter_rows as $l): ?>
-                <tr>
-                    <td><?= h($l['type']) ?></td>
-                    <td><?= date_fmt($l['issued_date']) ?></td>
-                    <td><span class="pill pill-<?= strtolower($l['status']) ?>"><?= h($l['status']) ?></span></td>
-                    <td class="r"><a href="../letters/view.php?id=<?= $l['id'] ?>" class="btn btn-sm">View</a></td>
-                </tr>
-                <?php endforeach; ?>
-                <?php if (!$letter_rows): ?>
-                <tr><td colspan="4" class="empty">No letters issued</td></tr>
-                <?php endif; ?>
-                </tbody>
-            </table>
         </div>
     </div>
 </div>
+
+<!-- ── Tabs ───────────────────────────────────────────────────────── -->
+<ul class="nav nav-tabs mb-0 px-1" id="profileTabs">
+    <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#overview">Overview</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#attendance">Attendance</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#salary">Salary History</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#assets">Assets</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#letters">Letters</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#bank"><i class="fa fa-university me-1"></i>Bank Details</a></li>
+</ul>
+
+<div class="card border-top-0" style="border-radius:0 0 .5rem .5rem">
+<div class="card-body">
+<div class="tab-content">
+
+    <!-- ── OVERVIEW ──────────────────────────────────────────────── -->
+    <div class="tab-pane fade show active" id="overview">
+        <div class="row g-3">
+
+            <!-- Personal Info -->
+            <div class="col-md-6">
+                <h6 class="text-primary fw-semibold border-bottom pb-2">Personal Information</h6>
+                <table class="table table-sm table-borderless">
+                    <tr><th class="text-muted" style="width:160px">Email</th><td><?= h($e['email']) ?></td></tr>
+                    <tr><th class="text-muted">Phone</th><td><?= h($e['phone'] ?? '—') ?></td></tr>
+                    <tr><th class="text-muted">Date of Birth</th><td><?= $e['dob'] ? date_fmt($e['dob']) . ' (' . age($e['dob']) . ' yrs)' : '—' ?></td></tr>
+                    <tr><th class="text-muted">Gender</th><td><?= h(ucfirst($e['gender'] ?? '—')) ?></td></tr>
+                    <tr><th class="text-muted">Address</th><td><?= h(implode(', ', array_filter([$e['address'] ?? '', $e['city'] ?? '', $e['state'] ?? '', $e['pincode'] ?? ''])) ?: '—') ?></td></tr>
+                </table>
+            </div>
+
+            <!-- Employment Details -->
+            <div class="col-md-6">
+                <h6 class="text-primary fw-semibold border-bottom pb-2">Employment Details</h6>
+                <table class="table table-sm table-borderless">
+                    <tr><th class="text-muted" style="width:160px">Employee Code</th><td><?= h($e['employee_id']) ?></td></tr>
+                    <tr><th class="text-muted">Joining Date</th><td><?= $e['join_date'] ? date_fmt($e['join_date']) . ' (' . tenure($e['join_date']) . ')' : '—' ?></td></tr>
+                    <tr><th class="text-muted">Department</th><td><?= h($e['dept_name'] ?? '—') ?></td></tr>
+                    <tr><th class="text-muted">Designation</th><td><?= h($e['desig_name'] ?? '—') ?></td></tr>
+                    <tr><th class="text-muted">Reporting Manager</th><td><?= h($e['manager_name'] ?? '—') ?></td></tr>
+                </table>
+            </div>
+
+            <!-- Salary -->
+            <div class="col-md-6">
+                <h6 class="text-primary fw-semibold border-bottom pb-2">Salary</h6>
+                <?php if ($salary): ?>
+                <table class="table table-sm table-borderless">
+                    <tr><th class="text-muted" style="width:160px">Basic</th><td><?= money($salary['basic']) ?></td></tr>
+                    <tr><th class="text-muted">HRA</th><td><?= money($salary['hra']) ?></td></tr>
+                    <tr><th class="text-muted">Conveyance</th><td><?= money($salary['conveyance']) ?></td></tr>
+                    <tr><th class="text-muted">Medical</th><td><?= money($salary['medical']) ?></td></tr>
+                    <?php if ($salary['special_allow']): ?>
+                    <tr><th class="text-muted">Special Allow.</th><td><?= money($salary['special_allow']) ?></td></tr>
+                    <?php endif; ?>
+                    <tr>
+                        <th class="text-muted">Gross CTC</th>
+                        <td>
+                            <strong class="text-primary"><?= money($salary['gross']) ?></strong>
+                            <small class="text-muted d-block">Effective: <?= date_fmt($salary['effective_from']) ?></small>
+                        </td>
+                    </tr>
+                </table>
+                <?php else: ?>
+                <p class="text-muted small">No salary structure defined.</p>
+                <?php if (can('payroll','process')): ?>
+                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-sm btn-primary mt-1">Set Salary</a>
+                <?php endif; ?>
+                <?php endif; ?>
+            </div>
+
+            <!-- Quick Stats + Statutory -->
+            <div class="col-md-6">
+                <h6 class="text-primary fw-semibold border-bottom pb-2">Quick Stats</h6>
+                <div class="row g-2 text-center">
+                    <div class="col-4"><div class="bg-light rounded p-2"><div class="fw-bold text-primary"><?= count($slip_rows) ?></div><small class="text-muted">Salary Slips</small></div></div>
+                    <div class="col-4"><div class="bg-light rounded p-2"><div class="fw-bold text-success"><?= count($letter_rows) ?></div><small class="text-muted">Letters</small></div></div>
+                    <div class="col-4"><div class="bg-light rounded p-2"><div class="fw-bold text-warning"><?= count($asset_rows) ?></div><small class="text-muted">Assets</small></div></div>
+                    <div class="col-4"><div class="bg-light rounded p-2"><div class="fw-bold text-info"><?= count($att_rows) ?></div><small class="text-muted">Att. Records</small></div></div>
+                    <div class="col-4"><div class="bg-light rounded p-2"><div class="fw-bold text-secondary"><?= count($salHistRows) ?></div><small class="text-muted">Sal. Revisions</small></div></div>
+                    <div class="col-4"><div class="bg-light rounded p-2"><div class="fw-bold text-dark"><?= $e['pan_number'] ? '✓' : '—' ?></div><small class="text-muted">PAN</small></div></div>
+                </div>
+
+                <h6 class="text-primary fw-semibold border-bottom pb-2 mt-3">Statutory</h6>
+                <table class="table table-sm table-borderless mb-0">
+                    <tr><th class="text-muted" style="width:100px">PAN</th><td class="font-monospace"><?= h($e['pan_number'] ?: '—') ?></td></tr>
+                    <tr><th class="text-muted">Aadhaar</th><td class="font-monospace"><?= $e['aadhaar_number'] ? '****' . substr($e['aadhaar_number'],-4) : '—' ?></td></tr>
+                    <tr><th class="text-muted">UAN</th><td class="font-monospace"><?= h($e['uan_number'] ?: '—') ?></td></tr>
+                </table>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ── ATTENDANCE ──────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="attendance">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-calendar-check me-1 text-primary"></i>Recent Attendance</h6>
+            <a href="../attendance/index.php?emp_id=<?= $id ?>" class="btn btn-sm btn-outline-secondary">
+                <i class="fa fa-external-link me-1"></i>View Full Report
+            </a>
+        </div>
+        <?php if (!$att_rows): ?>
+            <p class="text-muted text-center py-4">No attendance records found.</p>
+        <?php else: ?>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover table-bordered align-middle">
+                <thead class="table-dark">
+                    <tr><th>Date</th><th>Status</th><th>Check In</th><th>Check Out</th><th>OT Hrs</th><th>Remarks</th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($att_rows as $r):
+                    $bc = ['On Time'=>'success','Late'=>'warning','Absent'=>'danger','OD'=>'info','Comp Off'=>'secondary','Half Day'=>'warning','Holiday'=>'primary'][$r['status']] ?? 'secondary';
+                ?>
+                <tr>
+                    <td><?= date('d M Y', strtotime($r['att_date'])) ?></td>
+                    <td><span class="badge bg-<?= $bc ?>"><?= h($r['status']) ?></span></td>
+                    <td><?= $r['in_time']  ? date('h:i A', strtotime($r['in_time']))  : '—' ?></td>
+                    <td><?= $r['out_time'] ? date('h:i A', strtotime($r['out_time'])) : '—' ?></td>
+                    <td><?= ($r['ot_hours'] ?? 0) > 0 ? '<span class="text-success fw-semibold">' . number_format((float)$r['ot_hours'],2) . '</span>' : '—' ?></td>
+                    <td class="small text-muted"><?= h($r['remarks'] ?? '') ?: '—' ?></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- ── SALARY HISTORY ──────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="salary">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-money-bill-wave me-1 text-primary"></i>Salary Slip History</h6>
+            <?php if (can('payroll','process')): ?>
+            <div class="d-flex gap-2">
+                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-sm btn-outline-secondary">
+                    <i class="fa fa-cog me-1"></i>Salary Structure
+                </a>
+                <a href="../payroll/process.php?employee_id=<?= $id ?>" class="btn btn-sm btn-primary">
+                    <i class="fa fa-plus me-1"></i>Generate Slip
+                </a>
+            </div>
+            <?php endif; ?>
+        </div>
+        <?php if (!$slip_rows): ?>
+            <p class="text-muted text-center py-4">No salary slips generated.</p>
+        <?php else: ?>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover table-bordered align-middle">
+                <thead class="table-dark">
+                    <tr><th>Month / Year</th><th>Gross</th><th>Deductions</th><th>Net Salary</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($slip_rows as $slip): ?>
+                <tr>
+                    <td><?= date('F Y', strtotime($slip['payroll_month'] . '-01')) ?></td>
+                    <td>₹<?= number_format((float)$slip['gross_earnings'], 2) ?></td>
+                    <td class="text-danger">₹<?= number_format((float)$slip['total_deductions'], 2) ?></td>
+                    <td><strong class="text-primary">₹<?= number_format((float)$slip['net_pay'], 2) ?></strong></td>
+                    <td class="text-nowrap">
+                        <a href="../payroll/slip.php?id=<?= $slip['id'] ?>" class="btn btn-xs btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
+                        <a href="../payroll/slip_pdf.php?id=<?= $slip['id'] ?>" class="btn btn-xs btn-outline-danger ms-1" target="_blank" title="PDF"><i class="fa fa-file-pdf"></i></a>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($salHistRows): ?>
+        <div class="mt-4">
+            <h6 class="fw-semibold mb-3 text-primary border-bottom pb-2">Salary Structure Revisions</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover table-bordered align-middle">
+                    <thead class="table-dark">
+                        <tr><th>Effective From</th><th>Basic</th><th>HRA</th><th>Conveyance</th><th>Gross CTC</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($salHistRows as $sh): ?>
+                    <tr>
+                        <td><?= date_fmt($sh['effective_from']) ?></td>
+                        <td>₹<?= number_format((float)$sh['basic'], 2) ?></td>
+                        <td>₹<?= number_format((float)$sh['hra'], 2) ?></td>
+                        <td>₹<?= number_format((float)$sh['conveyance'], 2) ?></td>
+                        <td><strong>₹<?= number_format((float)$sh['gross'], 2) ?></strong></td>
+                        <td><span class="badge bg-<?= $sh['is_current'] ? 'success' : 'secondary' ?>"><?= $sh['is_current'] ? 'Current' : 'Superseded' ?></span></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- ── ASSETS ──────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="assets">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-laptop me-1 text-primary"></i>Assigned Assets</h6>
+            <?php if (can('assets','assign')): ?>
+            <a href="../assets/assign.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary">
+                <i class="fa fa-plus me-1"></i>Assign Asset
+            </a>
+            <?php endif; ?>
+        </div>
+        <?php if (!$asset_rows): ?>
+            <p class="text-muted text-center py-4">No assets assigned.</p>
+        <?php else: ?>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover table-bordered align-middle">
+                <thead class="table-dark">
+                    <tr><th>Asset</th><th>Code</th><th>Category</th><th>Assigned Date</th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($asset_rows as $a): ?>
+                <tr>
+                    <td class="fw-semibold"><?= h($a['asset_name']) ?></td>
+                    <td><code><?= h($a['asset_code']) ?></code></td>
+                    <td><?= h($a['cat_name']) ?></td>
+                    <td><?= date_fmt($a['assigned_date']) ?></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- ── LETTERS ──────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="letters">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-envelope me-1 text-primary"></i>Letters Issued</h6>
+            <?php if (can('letters','create')): ?>
+            <a href="../letters/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary">
+                <i class="fa fa-plus me-1"></i>Issue Letter
+            </a>
+            <?php endif; ?>
+        </div>
+        <?php if (!$letter_rows): ?>
+            <p class="text-muted text-center py-4">No letters issued yet.</p>
+        <?php else: ?>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover table-bordered align-middle">
+                <thead class="table-dark">
+                    <tr><th>Type</th><th>Issued Date</th><th>Status</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($letter_rows as $l):
+                    $lc = ['Issued'=>'success','Draft'=>'secondary','Revoked'=>'danger'][$l['status']] ?? 'secondary';
+                ?>
+                <tr>
+                    <td><span class="badge bg-light text-dark border"><?= h($l['type']) ?></span></td>
+                    <td><?= date_fmt($l['issued_date']) ?></td>
+                    <td><span class="badge bg-<?= $lc ?>"><?= h($l['status']) ?></span></td>
+                    <td>
+                        <a href="../letters/view.php?id=<?= $l['id'] ?>" class="btn btn-xs btn-outline-primary" title="View">
+                            <i class="fa fa-eye"></i>
+                        </a>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- ── BANK DETAILS ──────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="bank">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-university me-1 text-primary"></i>Bank Details</h6>
+            <?php if (can('employee','edit')): ?>
+            <a href="edit.php?id=<?= $id ?>" class="btn btn-sm btn-primary">
+                <i class="fa fa-<?= $e['bank_account'] ? 'edit' : 'plus' ?> me-1"></i>
+                <?= $e['bank_account'] ? 'Edit' : 'Add' ?> Bank Details
+            </a>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!$e['bank_account'] && !$e['bank_name']): ?>
+        <p class="text-muted text-center py-4">
+            <i class="fa fa-university fa-2x d-block mb-2 text-muted"></i>
+            No bank details recorded yet.
+        </p>
+        <?php else: ?>
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="card border-0 bg-light h-100">
+                    <div class="card-body">
+                        <h6 class="text-primary fw-semibold border-bottom pb-2 mb-3">Account Information</h6>
+                        <table class="table table-sm table-borderless mb-0">
+                            <tr><th class="text-muted" style="width:180px">Bank Name</th><td class="fw-semibold"><?= h($e['bank_name'] ?: '—') ?></td></tr>
+                            <tr>
+                                <th class="text-muted">Account Number</th>
+                                <td>
+                                    <?php $acc = $e['bank_account'] ?? ''; ?>
+                                    <span class="fw-semibold font-monospace" id="accNumDisplay">
+                                        <?= $acc ? str_repeat('•', max(0, strlen($acc)-4)) . substr($acc,-4) : '—' ?>
+                                    </span>
+                                    <?php if ($acc): ?>
+                                    <button class="btn btn-xs btn-outline-secondary ms-2" id="toggleAccNum">
+                                        <i class="fa fa-eye" id="accNumIcon"></i>
+                                    </button>
+                                    <span class="d-none" id="accNumFull"><?= h($acc) ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card border-0 bg-light h-100">
+                    <div class="card-body">
+                        <h6 class="text-primary fw-semibold border-bottom pb-2 mb-3">Branch Information</h6>
+                        <table class="table table-sm table-borderless mb-0">
+                            <tr><th class="text-muted" style="width:180px">IFSC Code</th><td class="fw-semibold font-monospace"><?= h($e['bank_ifsc'] ?: '—') ?></td></tr>
+                            <tr><th class="text-muted">PAN Number</th><td class="font-monospace"><?= h($e['pan_number'] ?: '—') ?></td></tr>
+                            <tr><th class="text-muted">UAN Number</th><td class="font-monospace"><?= h($e['uan_number'] ?: '—') ?></td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+
+</div><!-- /tab-content -->
+</div><!-- /card-body -->
+</div><!-- /card -->
 
 <script>
 window.BASE_URL = '<?= BASE_URL ?>';
-window.PAGE_SHORTCUTS = {
-    'e': () => window.location.href = 'edit.php?id=<?= $id ?>',
-    'l': () => window.location.href = '../letters/create.php?emp_id=<?= $id ?>',
-    'b': () => window.location.href = 'index.php'
-};
+(function () {
+    // Tab persistence via URL hash (matches Laravel behaviour)
+    var hashTab = window.location.hash ? window.location.hash.substring(1) : null;
+    if (hashTab) {
+        var target = document.querySelector('#profileTabs a[href="#' + hashTab + '"]');
+        if (target) {
+            document.querySelectorAll('#profileTabs .nav-link.active').forEach(function (el) { el.classList.remove('active'); });
+            document.querySelectorAll('.tab-pane.show.active').forEach(function (el) { el.classList.remove('show','active'); });
+            target.classList.add('active');
+            var pane = document.getElementById(hashTab);
+            if (pane) pane.classList.add('show','active');
+        }
+    }
+    document.querySelectorAll('#profileTabs a[data-bs-toggle="tab"]').forEach(function (el) {
+        el.addEventListener('shown.bs.tab', function (e) {
+            history.replaceState(null, null, e.target.getAttribute('href'));
+        });
+    });
+
+    // Bank account number toggle
+    var toggleBtn = document.getElementById('toggleAccNum');
+    if (toggleBtn) {
+        var accVisible = false;
+        var masked = document.getElementById('accNumDisplay').textContent.trim();
+        var full   = (document.getElementById('accNumFull') || {}).textContent || '';
+        toggleBtn.addEventListener('click', function () {
+            accVisible = !accVisible;
+            document.getElementById('accNumDisplay').textContent = accVisible ? full.trim() : masked;
+            var icon = document.getElementById('accNumIcon');
+            icon.classList.toggle('fa-eye',      !accVisible);
+            icon.classList.toggle('fa-eye-slash', accVisible);
+        });
+    }
+}());
 </script>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

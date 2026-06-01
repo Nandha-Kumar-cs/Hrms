@@ -170,12 +170,14 @@ class PayrollCalculator
         }
 
         // ── Step 5: OT ────────────────────────────────────────────────────────
-        // Per-day rate = CTC ÷ calendar days (drives OT, absent & late deductions).
-        $otHours  = $att['ot_hours'];
-        $perDay   = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
-        $perHour  = round($perDay / 8, 4);
-        $otRate   = $perHour * 2;
-        $otAmount = round($otHours * $otRate, 2);
+        // Per-day rate = CTC ÷ calendar days (drives absent & late deductions).
+        // OT rate = Basic ÷ calendar days ÷ 8 × 2  (formula: Basic ÷ days ÷ 8 × 2 × hrs).
+        $otHours    = $att['ot_hours'];
+        $perDay     = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
+        $perHour    = round($perDay / 8, 4);
+        $otPerDay   = $calDays > 0 ? round($basicSalary / $calDays, 4) : 0;
+        $otPerHour  = round($otPerDay / 8, 4);
+        $otAmount   = round($otHours * $otPerHour * 2, 2);
         if ($otAmount > 0) {
             $allowances['Overtime (' . number_format($otHours, 1) . ' hrs)'] = $otAmount;
         }
@@ -260,6 +262,7 @@ class PayrollCalculator
             'no_checkout_absent'    => 0,
             'ot_hours'              => $otHours,
             'ot_amount'             => $otAmount,
+            'ot_per_hour_rate'      => round($otPerHour, 2),
             'late_minutes'          => $totalLateMinutes,
             'late_grace_minutes'    => $monthlyGrace,
             'deductable_late_mins'  => $deductableLateMin,
