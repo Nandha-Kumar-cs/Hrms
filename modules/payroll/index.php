@@ -179,14 +179,13 @@ require_once __DIR__ . '/../../includes/header.php';
                         <th>Year</th>
                         <th>CTC / Month</th>
                         <th>Net Salary</th>
-                        <th>Type</th>
                         <th class="text-center">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (!$slips): ?>
                     <tr>
-                        <td colspan="9" class="text-center text-muted py-4">
+                        <td colspan="8" class="text-center text-muted py-4">
                             <i class="fa fa-file-invoice-dollar fa-2x d-block mb-2 opacity-25"></i>
                             No salary slips found<?= $hasFilter ? ' for the selected filters.' : '.' ?>
                         </td>
@@ -211,14 +210,9 @@ require_once __DIR__ . '/../../includes/header.php';
                         <td><?= h($mYear) ?></td>
                         <td>₹<?= number_format($ctc, 2) ?></td>
                         <td class="fw-semibold text-success">₹<?= number_format((float)$s['net_pay'], 2) ?></td>
-                        <td>
-                            <span class="badge <?= $isInd ? 'bg-primary' : 'bg-secondary' ?>" style="font-size:10px">
-                                <?= $isInd ? 'Individual' : 'Batch' ?>
-                            </span>
-                        </td>
                         <td class="text-center" style="white-space:nowrap">
                             <a href="<?= BASE_URL ?>/modules/payroll/slip.php?id=<?= $s['id'] ?>"
-                               class="btn btn-sm btn-info text-white" title="View">
+                               class="btn btn-sm btn-primary" title="View">
                                 <i class="fa fa-eye"></i>
                             </a>
                             <a href="<?= BASE_URL ?>/modules/payroll/slip_pdf.php?id=<?= $s['id'] ?>"
@@ -268,14 +262,6 @@ require_once __DIR__ . '/../../includes/header.php';
         </nav>
         <?php endif; ?>
     </div>
-</div>
-
-<!-- Quick nav links -->
-<div class="d-flex gap-2 flex-wrap mt-3">
-    <a href="<?= BASE_URL ?>/modules/payroll/salary_components.php" class="btn btn-sm btn-outline-secondary">Salary Components</a>
-    <a href="<?= BASE_URL ?>/modules/payroll/salary_structure.php"  class="btn btn-sm btn-outline-secondary">Salary Structures</a>
-    <a href="<?= BASE_URL ?>/modules/payroll/process.php"           class="btn btn-sm btn-outline-secondary">Batch Process</a>
-    <a href="<?= BASE_URL ?>/modules/payroll/history.php"           class="btn btn-sm btn-outline-secondary">Payroll History</a>
 </div>
 
 <?php include __DIR__ . '/../../includes/footer.php'; ?>
