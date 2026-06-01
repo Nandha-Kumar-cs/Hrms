@@ -9,10 +9,9 @@ $employees = $db->query(
      FROM employees e
      LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN designations des ON des.id = e.designation_id
-     ORDER BY e.name'
+     ORDER BY e.employee_id'
 )->fetchAll();
 
-// Pre-fetch letter/slip existence for action dropdown (avoids N+1)
 $hasOffer = array_flip($db->query(
     "SELECT DISTINCT employee_id FROM letters WHERE type='Offer'"
 )->fetchAll(PDO::FETCH_COLUMN));
@@ -30,87 +29,213 @@ $hasIncrement = array_flip($db->query(
 )->fetchAll(PDO::FETCH_COLUMN));
 ?>
 
+<style>
+.emp-list-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.emp-list-title {
+    font-size: 17px;
+    font-weight: 700;
+    flex: 1;
+    text-align: center;
+}
+.emp-list-show {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted);
+    white-space: nowrap;
+}
+.emp-list-show select {
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+}
+.emp-list-actions { display: flex; gap: 8px; align-items: center; }
+.emp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.emp-table thead tr { background: #1e2a3a; color: #fff; }
+.emp-table thead th {
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    border: none;
+}
+.emp-table thead th .sort-icon {
+    display: inline-flex;
+    flex-direction: column;
+    margin-left: 5px;
+    vertical-align: middle;
+    gap: 1px;
+}
+.emp-table thead th .sort-icon span { width: 0; height: 0; display: block; }
+.emp-table thead th .sort-icon .up   { border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 4px solid rgba(255,255,255,.4); }
+.emp-table thead th .sort-icon .down { border-left: 4px solid transparent; border-right: 4px solid transparent; border-top:    4px solid rgba(255,255,255,.4); }
+.emp-table thead th.sort-asc  .sort-icon .up   { border-bottom-color: #fff; }
+.emp-table thead th.sort-desc .sort-icon .down { border-top-color:    #fff; }
+.emp-table tbody tr { border-bottom: 1px solid var(--border); }
+.emp-table tbody tr:hover { background: var(--bg-subtle); }
+.emp-table tbody td { padding: 9px 12px; vertical-align: middle; }
+.emp-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    font-size: 12px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.emp-pagination .pages { display: flex; gap: 4px; }
+.emp-pagination .pages button {
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+}
+.emp-pagination .pages button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.emp-pagination .pages button:disabled { opacity: .4; cursor: default; }
+.emp-status-pill {
+    display: inline-block;
+    padding: 3px 11px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+}
+.esp-active     { background: #d4edda; color: #1a7a40; }
+.esp-onleave    { background: #fff3cd; color: #856404; }
+.esp-resigned   { background: #f8d7da; color: #842029; }
+.esp-terminated { background: #e2e3e5; color: #444; }
+.esp-default    { background: #e2e3e5; color: #444; }
+.btn-excel {
+    border: 1px solid #1a7a40;
+    color: #1a7a40;
+    background: #fff;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    text-decoration: none;
+}
+.btn-excel:hover { background: #f0faf3; }
+</style>
+
 <div class="page-head">
     <div>
         <h1>Employees</h1>
         <p class="muted"><?= count($employees) ?> records</p>
     </div>
-    <div class="head-actions">
-        <?php if (can('employee','create')): ?>
-        <button type="button" class="btn" onclick="openModal('importModal')">
-            <i class="fa fa-file-import"></i> Import
-        </button>
-        <a href="add_form.php" class="btn btn-primary" accesskey="n">
-            + New Employee
-        </a>
-        <?php endif; ?>
-    </div>
 </div>
 
-<div class="card" style="overflow:visible">
-    <div class="card-head">
-        <h3>All Employees</h3>
-        <div class="search">
-            <input type="search" placeholder="Filter..." id="tableSearch"
-                   oninput="filterTable(this.value)">
+<?= render_flash() ?>
+
+<div class="card" style="overflow:visible;margin-top:18px">
+
+    <!-- Toolbar -->
+    <div class="emp-list-toolbar">
+        <div class="emp-list-show">
+            Show
+            <select id="pageSizeSelect" onchange="empSetPageSize(this.value)">
+                <option value="10">10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+            entries
+        </div>
+
+        <div class="emp-list-title">Employees List</div>
+
+        <div class="emp-list-actions">
+            <?php if (can('employee','create')): ?>
+            <button type="button" class="btn-excel" onclick="openModal('importModal')">
+                <i class="fa fa-file-excel"></i> Import Excel
+            </button>
+            <a href="add_form.php" class="btn btn-primary" accesskey="n">
+                + Add Employee
+            </a>
+            <?php endif; ?>
         </div>
     </div>
-    <div style="overflow-x:auto;min-height:420px">
-    <table class="data-table" id="empTable">
-        <thead><tr>
-            <th>Employee</th>
-            <th>ID</th>
-            <th>Department</th>
-            <th>Designation</th>
-            <th>Join Date</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th class="r">Actions</th>
-        </tr></thead>
-        <tbody>
+
+    <!-- Table -->
+    <div style="overflow-x:auto">
+    <table class="emp-table" id="empTable">
+        <thead>
+        <tr>
+            <th onclick="empSort(0)">CODE <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(1)">NAME <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(2)">EMAIL <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(3)">PHONE <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(4)">DEPARTMENT <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(5)">DESIGNATION <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(6)" style="text-align:right">CTC <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(7)" style="text-align:right">VARIABLE <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(8)">STATUS <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th style="text-align:right;cursor:default">ACTIONS</th>
+        </tr>
+        </thead>
+        <tbody id="empTbody">
         <?php foreach ($employees as $e):
             $eid = $e['id'];
-            $sc = ['Active'=>'pill-success','On Leave'=>'pill-warn','Resigned'=>'pill-danger','Terminated'=>'pill-cancelled'];
+            $sc  = [
+                'Active'     => 'esp-active',
+                'On Leave'   => 'esp-onleave',
+                'Resigned'   => 'esp-resigned',
+                'Terminated' => 'esp-terminated',
+            ][$e['status']] ?? 'esp-default';
+            $ctc      = number_format((float)($e['fixed_salary'] ?? 0), 2);
+            $variable = number_format((float)($e['variable_salary'] ?? 0), 2);
         ?>
         <tr>
-            <td>
-                <div style="display:flex;align-items:center;gap:8px">
-                    <?php if ($e['photo']): ?>
-                    <img src="<?= BASE_URL ?>/uploads/photos/<?= h($e['photo']) ?>"
-                         style="width:34px;height:34px;border-radius:50%;object-fit:cover;flex-shrink:0">
-                    <?php else: ?>
-                    <div class="emp-avatar" style="flex-shrink:0"><?= strtoupper(mb_substr($e['name'],0,1)) ?></div>
-                    <?php endif; ?>
-                    <div>
-                        <div style="font-weight:500"><?= h($e['name']) ?></div>
-                        <div class="small muted"><?= h($e['email']) ?></div>
-                    </div>
-                </div>
-            </td>
             <td><code><?= h($e['employee_id']) ?></code></td>
-            <td><?= h($e['dept_name'] ?? '—') ?></td>
-            <td><?= h($e['desig_name'] ?? '—') ?></td>
-            <td><?= $e['join_date'] ? date_fmt($e['join_date']) : '—' ?></td>
-            <td><span class="pill pill-info"><?= h($e['employment_type'] ?? '—') ?></span></td>
-            <td><span class="pill <?= $sc[$e['status']] ?? 'pill-neutral' ?>"><?= h($e['status']) ?></span></td>
-            <td class="r">
-                <!-- Bootstrap 5 dropdown (BS5 JS loaded in footer) -->
+            <td style="white-space:nowrap"><?= h($e['name']) ?></td>
+            <td style="color:var(--primary)"><?= h($e['email']) ?></td>
+            <td><?= h($e['phone'] ?? '—') ?></td>
+            <td><?= h($e['dept_name'] ?? '-') ?></td>
+            <td><?= h($e['desig_name'] ?? '-') ?></td>
+            <td style="text-align:right;<?= (float)($e['fixed_salary'] ?? 0) > 0 ? 'color:#e6a817;font-weight:600' : '' ?>">
+                <?= $ctc ?>
+            </td>
+            <td style="text-align:right"><?= $variable ?></td>
+            <td><span class="emp-status-pill <?= $sc ?>"><?= h($e['status']) ?></span></td>
+            <td style="text-align:right">
                 <div class="dropdown">
                     <button class="btn btn-sm dropdown-toggle"
                             type="button"
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
-                            style="font-size:12px;padding:4px 10px">
-                        Options
+                            style="font-size:12px;padding:4px 12px;background:#1e2a3a;color:#fff;border:none;border-radius:var(--radius)">
+                        Op
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end shadow-sm">
-
                         <li>
                             <a class="dropdown-item" href="view.php?id=<?= $eid ?>">
                                 <i class="fa fa-user me-2 text-secondary"></i>View Profile
                             </a>
                         </li>
-
                         <?php if (can('employee','edit')): ?>
                         <li>
                             <a class="dropdown-item" href="edit.php?id=<?= $eid ?>">
@@ -118,7 +243,6 @@ $hasIncrement = array_flip($db->query(
                             </a>
                         </li>
                         <?php endif; ?>
-
                         <?php if (can('employee','delete')): ?>
                         <li>
                             <button class="dropdown-item text-danger btn-delete"
@@ -128,9 +252,7 @@ $hasIncrement = array_flip($db->query(
                             </button>
                         </li>
                         <?php endif; ?>
-
                         <li><hr class="dropdown-divider"></li>
-
                         <?php if (can('letters','create')): ?>
                         <li>
                             <?php if (isset($hasOffer[$eid])): ?>
@@ -155,7 +277,6 @@ $hasIncrement = array_flip($db->query(
                             <?php endif; ?>
                         </li>
                         <?php endif; ?>
-
                         <?php if (can('payroll','view')): ?>
                         <li>
                             <?php if (isset($hasSlip[$eid])): ?>
@@ -169,7 +290,6 @@ $hasIncrement = array_flip($db->query(
                             <?php endif; ?>
                         </li>
                         <?php endif; ?>
-
                         <?php if (can('letters','create')): ?>
                         <li>
                             <?php if (isset($hasIncrement[$eid])): ?>
@@ -183,7 +303,6 @@ $hasIncrement = array_flip($db->query(
                             <?php endif; ?>
                         </li>
                         <?php endif; ?>
-
                     </ul>
                 </div>
             </td>
@@ -192,9 +311,15 @@ $hasIncrement = array_flip($db->query(
         </tbody>
     </table>
     </div>
+
+    <!-- Pagination -->
+    <div class="emp-pagination">
+        <span id="empPagInfo"></span>
+        <div class="pages" id="empPagButtons"></div>
+    </div>
 </div>
 
-<!-- Import Modal (custom modal system) -->
+<!-- Import Modal -->
 <div class="modal" id="importModal">
     <div class="modal-content" style="max-width:620px;width:92%">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -204,14 +329,12 @@ $hasIncrement = array_flip($db->query(
             <button type="button" onclick="closeModal('importModal')"
                     style="background:none;border:none;font-size:20px;line-height:1;cursor:pointer;color:var(--text-muted);padding:0 4px">&times;</button>
         </div>
-
         <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:13px;margin-bottom:14px">
             <i class="fa fa-circle-info" style="margin-right:6px;color:var(--primary)"></i>
             Upload a <strong>CSV</strong> or <strong>XLSX</strong> file.
             Rows matching an existing <code>employee_id</code> or email are <strong>updated</strong>; others are <strong>inserted</strong>.
             New employees get a login with password <code>Hrms@</code> + last 4 chars of code.
         </div>
-
         <div style="display:flex;gap:20px;margin-bottom:14px;flex-wrap:wrap">
             <div>
                 <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:5px">Required</div>
@@ -229,7 +352,6 @@ $hasIncrement = array_flip($db->query(
                 </div>
             </div>
         </div>
-
         <form method="POST" enctype="multipart/form-data"
               action="<?= BASE_URL ?>/modules/employee/import.php" id="importForm">
             <?= csrf_field() ?>
@@ -263,32 +385,122 @@ $hasIncrement = array_flip($db->query(
 
 <script>
 window.BASE_URL = '<?= BASE_URL ?>';
-document.addEventListener('DOMContentLoaded', function () {
-    // Delete confirm
-    document.querySelectorAll('.btn-delete').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            if (confirm('Delete employee "' + this.dataset.name + '"?\nThis will also remove their user account.')) {
-                document.getElementById('deleteId').value = this.dataset.id;
-                document.getElementById('deleteForm').submit();
-            }
-        });
-    });
 
-    // Re-init dropdowns with fixed strategy so they escape overflow containers
-    if (typeof bootstrap !== 'undefined') {
-        document.querySelectorAll('[data-bs-toggle="dropdown"]').forEach(function (el) {
-            new bootstrap.Dropdown(el, { popperConfig: { strategy: 'fixed' } });
-        });
+(function () {
+    var allRows = Array.from(document.querySelectorAll('#empTbody tr'));
+    var filtered = allRows.slice();
+    var pageSize = 10;
+    var curPage  = 1;
+    var sortCol  = -1;
+    var sortDir  = 'asc';
+
+    function cellText(tr, col) {
+        var td = tr.querySelectorAll('td')[col];
+        return td ? td.textContent.trim() : '';
     }
-});
 
-// Client-side table filter
-function filterTable(q) {
-    var rows = document.querySelectorAll('#empTable tbody tr');
-    q = q.toLowerCase();
-    rows.forEach(function (tr) {
-        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+    function render() {
+        var total = filtered.length;
+        var pages = Math.max(1, Math.ceil(total / pageSize));
+        if (curPage > pages) curPage = pages;
+        var start = (curPage - 1) * pageSize;
+        var end   = Math.min(start + pageSize, total);
+
+        allRows.forEach(function (r) { r.style.display = 'none'; });
+        filtered.slice(start, end).forEach(function (r) { r.style.display = ''; });
+
+        document.getElementById('empPagInfo').textContent =
+            total === 0
+                ? 'No entries found'
+                : 'Showing ' + (start + 1) + ' to ' + end + ' of ' + total + ' entries';
+
+        var container = document.getElementById('empPagButtons');
+        container.innerHTML = '';
+
+        function btn(label, page, disabled, active) {
+            var b = document.createElement('button');
+            b.textContent = label;
+            if (active)   b.classList.add('active');
+            if (disabled) b.disabled = true;
+            b.addEventListener('click', function () {
+                curPage = page;
+                render();
+                reinitDropdowns();
+            });
+            return b;
+        }
+
+        container.appendChild(btn('‹', curPage - 1, curPage === 1, false));
+        var lo = Math.max(1, curPage - 2), hi = Math.min(pages, curPage + 2);
+        for (var p = lo; p <= hi; p++) {
+            container.appendChild(btn(p, p, false, p === curPage));
+        }
+        container.appendChild(btn('›', curPage + 1, curPage === pages, false));
+    }
+
+    window.empSetPageSize = function (v) {
+        pageSize = parseInt(v, 10) || 10;
+        curPage  = 1;
+        render();
+        reinitDropdowns();
+    };
+
+    window.empSort = function (col) {
+        var ths = document.querySelectorAll('#empTable thead th');
+        if (sortCol === col) {
+            sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            sortCol = col;
+            sortDir = 'asc';
+        }
+        ths.forEach(function (th, i) {
+            th.classList.remove('sort-asc', 'sort-desc');
+            if (i === col) th.classList.add('sort-' + sortDir);
+        });
+
+        var numeric = (col === 6 || col === 7);
+        filtered.sort(function (a, b) {
+            var av = cellText(a, col);
+            var bv = cellText(b, col);
+            if (numeric) {
+                av = parseFloat(av.replace(/,/g, '')) || 0;
+                bv = parseFloat(bv.replace(/,/g, '')) || 0;
+                return sortDir === 'asc' ? av - bv : bv - av;
+            }
+            var cmp = av.toLowerCase().localeCompare(bv.toLowerCase());
+            return sortDir === 'asc' ? cmp : -cmp;
+        });
+
+        var tbody = document.getElementById('empTbody');
+        filtered.forEach(function (r) { tbody.appendChild(r); });
+        curPage = 1;
+        render();
+        reinitDropdowns();
+    };
+
+    function reinitDropdowns() {
+        if (typeof bootstrap !== 'undefined') {
+            document.querySelectorAll('[data-bs-toggle="dropdown"]').forEach(function (el) {
+                if (!bootstrap.Dropdown.getInstance(el)) {
+                    new bootstrap.Dropdown(el, { popperConfig: { strategy: 'fixed' } });
+                }
+            });
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.btn-delete').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                if (confirm('Delete employee "' + this.dataset.name + '"?\nThis will also remove their user account.')) {
+                    document.getElementById('deleteId').value = this.dataset.id;
+                    document.getElementById('deleteForm').submit();
+                }
+            });
+        });
+
+        render();
+        reinitDropdowns();
     });
-}
+}());
 </script>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>
