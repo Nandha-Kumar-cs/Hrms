@@ -192,8 +192,7 @@ $hasIncrement = array_flip($db->query(
             <th onclick="empSort(4)">DEPARTMENT <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
             <th onclick="empSort(5)">DESIGNATION <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
             <th onclick="empSort(6)" style="text-align:right">CTC <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
-            <th onclick="empSort(7)" style="text-align:right">VARIABLE <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
-            <th onclick="empSort(8)">STATUS <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
+            <th onclick="empSort(7)">STATUS <span class="sort-icon"><span class="up"></span><span class="down"></span></span></th>
             <th style="text-align:right;cursor:default">ACTIONS</th>
         </tr>
         </thead>
@@ -206,8 +205,7 @@ $hasIncrement = array_flip($db->query(
                 'Resigned'   => 'esp-resigned',
                 'Terminated' => 'esp-terminated',
             ][$e['status']] ?? 'esp-default';
-            $ctc      = number_format((float)($e['fixed_salary'] ?? 0), 2);
-            $variable = number_format((float)($e['variable_salary'] ?? 0), 2);
+            $ctc = number_format((float)($e['fixed_salary'] ?? 0), 2);
         ?>
         <tr>
             <td><code><?= h($e['employee_id']) ?></code></td>
@@ -219,7 +217,6 @@ $hasIncrement = array_flip($db->query(
             <td style="text-align:right;<?= (float)($e['fixed_salary'] ?? 0) > 0 ? 'color:#e6a817;font-weight:600' : '' ?>">
                 <?= $ctc ?>
             </td>
-            <td style="text-align:right"><?= $variable ?></td>
             <td><span class="emp-status-pill <?= $sc ?>"><?= h($e['status']) ?></span></td>
             <td style="text-align:right">
                 <div class="dropdown">
@@ -228,7 +225,7 @@ $hasIncrement = array_flip($db->query(
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
                             style="font-size:12px;padding:4px 12px;background:#1e2a3a;color:#fff;border:none;border-radius:var(--radius)">
-                        Op
+                        Options
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end shadow-sm">
                         <li>
@@ -458,7 +455,7 @@ window.BASE_URL = '<?= BASE_URL ?>';
             if (i === col) th.classList.add('sort-' + sortDir);
         });
 
-        var numeric = (col === 6 || col === 7);
+        var numeric = (col === 6);
         filtered.sort(function (a, b) {
             var av = cellText(a, col);
             var bv = cellText(b, col);
