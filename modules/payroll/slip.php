@@ -364,7 +364,7 @@ $extra_head = '<style>
             <div style="background:var(--bg-subtle);border-radius:var(--radius);padding:10px 12px;font-size:12px;border:1px solid var(--border)">
                 <strong>Overtime Details</strong>
                 <div style="margin-top:6px;color:var(--muted)">OT Hours: <strong style="color:var(--success)"><?= number_format((float)$attSummary['ot_hours'], 2) ?> hrs</strong></div>
-                <div style="color:var(--muted)">Rate: 2× hourly (₹<?= number_format((float)($attSummary['per_hour_rate'] ?? 0), 2) ?>/hr × 2)</div>
+                <div style="color:var(--muted)">Rate: 2× hourly (₹<?= number_format((float)($attSummary['ot_per_hour_rate'] ?? $attSummary['per_hour_rate'] ?? 0), 2) ?>/hr × 2)</div>
                 <div style="color:var(--muted)">OT Pay Added: <strong style="color:var(--success)"><?= money($attSummary['ot_amount'] ?? 0) ?></strong></div>
             </div>
             <?php endif; ?>
