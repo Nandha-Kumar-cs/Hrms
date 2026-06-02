@@ -47,7 +47,9 @@ $_assetActive = _sb_active('/modules/assets/');
 // Keep $_payActive narrow so it does NOT match salary_components.
 $_payActive  = _sb_active('/payroll/calculate', '/payroll/index', '/payroll/slip',
                            '/payroll/generate_slip', '/payroll/finalize',
-                           '/payroll/history', '/payroll/process', '/payroll/salary_structure');
+                           '/payroll/history', '/payroll/process', '/payroll/salary_structure',
+                           '/modules/benefits/', '/modules/bonuses/', '/modules/increments/',
+                           '/modules/promotions/', '/modules/loans/');
 $_salCompActive = _sb_active('/payroll/salary_components');
 $_genSlipActive = _sb_active('/payroll/generate_slip');
 $_calcActive    = _sb_active('/payroll/calculate');
@@ -421,39 +423,39 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                             Salary Calculation
                         </a>
                     </li>
-                    <!-- <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/generate_slip.php"
-                           class="nav-link <?= $_genSlipActive ?>">
-                            Generate Slip
-                        </a>
-                    </li> -->
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/index.php"
                            class="nav-link <?= _sb_active('/payroll/index', '/payroll/slip') ?>">
                             Salary Slips
                         </a>
                     </li>
-                    <!-- <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/salary_structure.php"
-                           class="nav-link <?= _sb_active('/payroll/salary_structure') ?>">
-                            Salary Structure
-                        </a>
-                    </li> -->
-                    <!-- <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/process.php"
-                           class="nav-link <?= _sb_active('/payroll/process') ?>">
-                            Batch Payroll
-                        </a>
-                    </li> -->
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/finalize.php"
-                           class="nav-link <?= _sb_active('/payroll/finalize') ?>">
+                        <a href="<?= BASE_URL ?>/modules/loans/index.php"
+                           class="nav-link <?= _sb_active('/modules/loans/') ?>">
+                            Loans &amp; Advances
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/increments/index.php"
+                           class="nav-link <?= _sb_active('/modules/increments/') ?>">
                             Increments
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/history.php"
-                           class="nav-link <?= _sb_active('/payroll/history') ?>">
+                        <a href="<?= BASE_URL ?>/modules/promotions/index.php"
+                           class="nav-link <?= _sb_active('/modules/promotions/') ?>">
+                            Promotions
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/benefits/index.php"
+                           class="nav-link <?= _sb_active('/modules/benefits/') ?>">
+                            Benefits
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/bonuses/index.php"
+                           class="nav-link <?= _sb_active('/modules/bonuses/') ?>">
                             Bonuses &amp; Incentives
                         </a>
                     </li>

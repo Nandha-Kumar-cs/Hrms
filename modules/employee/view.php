@@ -53,11 +53,33 @@ $letter_rows = $letters->fetchAll();
 $slips = $db->prepare('SELECT * FROM salary_slips WHERE employee_id=? ORDER BY payroll_month DESC');
 $slips->execute([$id]);
 $slip_rows = $slips->fetchAll();
+
+// Auto-create employee extension tables
+$db->exec('CREATE TABLE IF NOT EXISTS employee_family_members (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    relationship VARCHAR(50) NOT NULL,
+    dob DATE NULL,
+    occupation VARCHAR(100) NULL,
+    contact_number VARCHAR(30) NULL,
+    dependency_status ENUM(\'dependent\',\'independent\') DEFAULT \'dependent\',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (employee_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+// Family members
+$famQ = $db->prepare('SELECT * FROM employee_family_members WHERE employee_id=? ORDER BY id');
+$famQ->execute([$id]);
+$family_rows = $famQ->fetchAll();
 ?>
 
 <style>
 .btn-xs { padding:.2rem .5rem; font-size:.75rem; }
 .tab-content { padding-top:1rem; }
+/* Guarantee modals sit above the sticky topbar and sidebar */
+.modal         { z-index: 1060 !important; }
+.modal-backdrop{ z-index: 1055 !important; }
 .profile-avatar {
     width:80px; height:80px; border-radius:50%;
     background:var(--primary,#3b82f6); color:#fff;
@@ -185,11 +207,17 @@ $slip_rows = $slips->fetchAll();
 <!-- ── Tabs ───────────────────────────────────────────────────────── -->
 <ul class="nav nav-tabs mb-0 px-1" id="profileTabs">
     <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#overview">Overview</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#attendance">Attendance</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#salary">Salary History</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#assets">Assets</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#letters">Letters</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#family">Family</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#benefits">Benefits</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#bonuses">Bonuses</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#increments">Increments</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#promotions">Promotions</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#loans">Loans &amp; Advances</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#documents">Documents</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#bank"><i class="fa fa-university me-1"></i>Bank Details</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#assets">Assets</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#salary">Salary History</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#letters">Letters</a></li>
 </ul>
 
 <div class="card border-top-0" style="border-radius:0 0 .5rem .5rem">
@@ -394,39 +422,99 @@ $slip_rows = $slips->fetchAll();
         </div>
     </div>
 
-    <!-- ── ATTENDANCE ──────────────────────────────────────────────── -->
-    <div class="tab-pane fade" id="attendance">
+    <!-- ── FAMILY MEMBERS ──────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="family">
         <div class="d-flex justify-content-between mb-3">
-            <h6 class="fw-semibold mb-0"><i class="fa fa-calendar-check me-1 text-primary"></i>Recent Attendance</h6>
-            <a href="../attendance/index.php?emp_id=<?= $id ?>" class="btn btn-sm btn-outline-secondary">
-                <i class="fa fa-external-link me-1"></i>View Full Report
-            </a>
+            <h6 class="fw-semibold mb-0"><i class="fa fa-people-roof me-1 text-primary"></i>Family Details</h6>
+            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#familyModal"><i class="fa fa-plus me-1"></i>Add Member</button>
         </div>
-        <?php if (!$att_rows): ?>
-            <p class="text-muted text-center py-4">No attendance records found.</p>
+        <?php if (empty($family_rows)): ?>
+        <p class="text-muted text-center py-4">No family members recorded.</p>
         <?php else: ?>
         <div class="table-responsive">
             <table class="table table-sm table-hover table-bordered align-middle">
                 <thead class="table-dark">
-                    <tr><th>Date</th><th>Status</th><th>Check In</th><th>Check Out</th><th>OT Hrs</th><th>Remarks</th></tr>
+                    <tr><th>#</th><th>Name</th><th>Relationship</th><th>DOB</th><th>Occupation</th><th>Contact</th><th>Dependency</th><th></th></tr>
                 </thead>
                 <tbody>
-                <?php foreach ($att_rows as $r):
-                    $bc = ['On Time'=>'success','Late'=>'warning','Absent'=>'danger','OD'=>'info','Comp Off'=>'secondary','Half Day'=>'warning','Holiday'=>'primary'][$r['status']] ?? 'secondary';
-                ?>
-                <tr>
-                    <td><?= date('d M Y', strtotime($r['att_date'])) ?></td>
-                    <td><span class="badge bg-<?= $bc ?>"><?= h($r['status']) ?></span></td>
-                    <td><?= $r['in_time']  ? date('h:i A', strtotime($r['in_time']))  : '—' ?></td>
-                    <td><?= $r['out_time'] ? date('h:i A', strtotime($r['out_time'])) : '—' ?></td>
-                    <td><?= ($r['ot_hours'] ?? 0) > 0 ? '<span class="text-success fw-semibold">' . number_format((float)$r['ot_hours'],2) . '</span>' : '—' ?></td>
-                    <td class="small text-muted"><?= h($r['remarks'] ?? '') ?: '—' ?></td>
-                </tr>
-                <?php endforeach; ?>
+                    <?php foreach ($family_rows as $fi => $fm): ?>
+                    <tr>
+                        <td><?= $fi + 1 ?></td>
+                        <td class="fw-semibold"><?= h($fm['name']) ?></td>
+                        <td><span class="badge bg-light text-dark"><?= h($fm['relationship']) ?></span></td>
+                        <td><?= $fm['dob'] ? date('d M Y', strtotime($fm['dob'])) : '—' ?></td>
+                        <td><?= h($fm['occupation'] ?? '—') ?></td>
+                        <td><?= h($fm['contact_number'] ?? '—') ?></td>
+                        <td><span class="badge bg-<?= $fm['dependency_status'] === 'dependent' ? 'info' : 'secondary' ?>"><?= ucfirst($fm['dependency_status']) ?></span></td>
+                        <td>
+                            <form method="POST" action="<?= BASE_URL ?>/modules/employee/family_save.php" class="d-inline" onsubmit="return confirm('Remove this family member?')">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="fid" value="<?= $fm['id'] ?>">
+                                <input type="hidden" name="emp_id" value="<?= $id ?>">
+                                <button class="btn btn-xs btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
         <?php endif; ?>
+    </div>
+
+    <!-- ── BENEFITS ────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="benefits">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-gift me-1 text-primary"></i>Benefit Funds</h6>
+            <a href="<?= BASE_URL ?>/modules/benefits/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Assign Benefit</a>
+        </div>
+        <p class="text-muted text-center py-4">No benefits assigned.</p>
+    </div>
+
+    <!-- ── BONUSES ──────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="bonuses">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0"><i class="fa fa-trophy me-1 text-warning"></i>Bonuses &amp; Incentives</h6>
+            <a href="<?= BASE_URL ?>/modules/bonuses/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Bonus</a>
+        </div>
+        <p class="text-muted text-center py-4">No bonus / incentive records.</p>
+    </div>
+
+    <!-- ── INCREMENTS ───────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="increments">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0">Increment History</h6>
+            <a href="<?= BASE_URL ?>/modules/increments/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Increment</a>
+        </div>
+        <p class="text-muted text-center py-4">No increment records found.</p>
+    </div>
+
+    <!-- ── PROMOTIONS ───────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="promotions">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0">Promotion History</h6>
+            <a href="<?= BASE_URL ?>/modules/promotions/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Promotion</a>
+        </div>
+        <p class="text-muted text-center py-4">No promotion records found.</p>
+    </div>
+
+    <!-- ── LOANS ────────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="loans">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0">Loan &amp; Advance History</h6>
+            <a href="<?= BASE_URL ?>/modules/loans/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Loan / Advance</a>
+        </div>
+        <p class="text-muted text-center py-4">No loan records found.</p>
+    </div>
+
+    <!-- ── DOCUMENTS ────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="documents">
+        <div class="d-flex justify-content-between mb-3">
+            <h6 class="fw-semibold mb-0">Documents</h6>
+            <a href="<?= BASE_URL ?>/modules/documents/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-upload me-1"></i>Upload Document</a>
+        </div>
+        <p class="text-muted text-center py-4">No documents uploaded yet.</p>
     </div>
 
     <!-- ── SALARY HISTORY ──────────────────────────────────────────── -->
@@ -434,14 +522,9 @@ $slip_rows = $slips->fetchAll();
         <div class="d-flex justify-content-between mb-3">
             <h6 class="fw-semibold mb-0"><i class="fa fa-money-bill-wave me-1 text-primary"></i>Salary Slip History</h6>
             <?php if (can('payroll','process')): ?>
-            <div class="d-flex gap-2">
-                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-sm btn-outline-secondary">
-                    <i class="fa fa-cog me-1"></i>Salary Structure
-                </a>
-                <a href="../payroll/process.php?employee_id=<?= $id ?>" class="btn btn-sm btn-primary">
-                    <i class="fa fa-plus me-1"></i>Generate Slip
-                </a>
-            </div>
+            <a href="<?= BASE_URL ?>/modules/payroll/generate_slip.php?emp=<?= $id ?>" class="btn btn-sm btn-primary">
+                <i class="fa fa-plus me-1"></i>Generate Slip
+            </a>
             <?php endif; ?>
         </div>
         <?php if (!$slip_rows): ?>
@@ -467,31 +550,6 @@ $slip_rows = $slips->fetchAll();
                 <?php endforeach; ?>
                 </tbody>
             </table>
-        </div>
-        <?php endif; ?>
-
-        <?php if ($salHistRows): ?>
-        <div class="mt-4">
-            <h6 class="fw-semibold mb-3 text-primary border-bottom pb-2">Salary Structure Revisions</h6>
-            <div class="table-responsive">
-                <table class="table table-sm table-hover table-bordered align-middle">
-                    <thead class="table-dark">
-                        <tr><th>Effective From</th><th>Basic</th><th>HRA</th><th>Conveyance</th><th>Gross CTC</th><th>Status</th></tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($salHistRows as $sh): ?>
-                    <tr>
-                        <td><?= date_fmt($sh['effective_from']) ?></td>
-                        <td>₹<?= number_format((float)$sh['basic'], 2) ?></td>
-                        <td>₹<?= number_format((float)$sh['hra'], 2) ?></td>
-                        <td>₹<?= number_format((float)$sh['conveyance'], 2) ?></td>
-                        <td><strong>₹<?= number_format((float)$sh['gross'], 2) ?></strong></td>
-                        <td><span class="badge bg-<?= $sh['is_current'] ? 'success' : 'secondary' ?>"><?= $sh['is_current'] ? 'Current' : 'Superseded' ?></span></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
         </div>
         <?php endif; ?>
     </div>
@@ -632,6 +690,61 @@ $slip_rows = $slips->fetchAll();
 </div><!-- /card-body -->
 </div><!-- /card -->
 
+<!-- ── Add Family Member Modal ────────────────────────────────────── -->
+<div class="modal fade" id="familyModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-semibold">Add Family Member</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <!-- Row 1: Name | Relationship -->
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+                        <input type="text" id="fm_name" class="form-control" maxlength="150">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Relationship <span class="text-danger">*</span></label>
+                        <select id="fm_relationship" class="form-select">
+                            <option value="">Select</option>
+                            <option>Father</option><option>Mother</option><option>Spouse</option>
+                            <option>Son</option><option>Daughter</option><option>Brother</option>
+                            <option>Sister</option><option>Guardian</option><option>Other</option>
+                        </select>
+                    </div>
+                    <!-- Row 2: DOB | Occupation | Contact -->
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Date of Birth</label>
+                        <input type="date" id="fm_dob" class="form-control">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Occupation</label>
+                        <input type="text" id="fm_occupation" class="form-control" maxlength="100">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Contact Number</label>
+                        <input type="text" id="fm_contact" class="form-control" maxlength="30">
+                    </div>
+                    <!-- Row 3: Dependency Status (full width) -->
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Dependency Status <span class="text-danger">*</span></label>
+                        <select id="fm_dependency" class="form-select" style="max-width:320px">
+                            <option value="dependent">Dependent</option>
+                            <option value="independent">Independent</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" id="btnSaveFamily" class="btn btn-primary"><i class="fa fa-save me-1"></i>Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 window.BASE_URL = '<?= BASE_URL ?>';
 (function () {
@@ -674,4 +787,73 @@ window.BASE_URL = '<?= BASE_URL ?>';
     }
 }());
 </script>
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php
+// $page_scripts is output by footer.php AFTER Bootstrap is loaded — safe to use bootstrap.Modal here
+ob_start();
+?>
+<script>
+(function () {
+    var famModalEl = document.getElementById('familyModal');
+    if (!famModalEl) return;
+
+    // Move modal to <body> so it escapes overflow/stacking-context of #mainContent
+    document.body.appendChild(famModalEl);
+
+    // Reset fields every time the modal is about to open
+    famModalEl.addEventListener('show.bs.modal', function () {
+        document.getElementById('fm_name').value        = '';
+        document.getElementById('fm_relationship').value = '';
+        document.getElementById('fm_dob').value         = '';
+        document.getElementById('fm_occupation').value  = '';
+        document.getElementById('fm_contact').value     = '';
+        document.getElementById('fm_dependency').value  = 'dependent';
+    });
+
+    document.getElementById('btnSaveFamily').addEventListener('click', function () {
+        var name = document.getElementById('fm_name').value.trim();
+        var rel  = document.getElementById('fm_relationship').value;
+        if (!name || !rel) { alert('Name and Relationship are required.'); return; }
+
+        var btn = this;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+
+        fetch('<?= BASE_URL ?>/modules/employee/family_save.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                action:            'add',
+                emp_id:            '<?= $id ?>',
+                name:              name,
+                relationship:      rel,
+                dob:               document.getElementById('fm_dob').value,
+                occupation:        document.getElementById('fm_occupation').value,
+                contact_number:    document.getElementById('fm_contact').value,
+                dependency_status: document.getElementById('fm_dependency').value,
+                csrf_token:        '<?= csrf_token() ?>'
+            })
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (d.success) {
+                // Set hash so the tab init JS opens #family after reload
+                history.replaceState(null, null, '#family');
+                location.reload();
+            } else {
+                alert(d.error || 'Save failed.');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa fa-save me-1"></i>Save';
+            }
+        })
+        .catch(function () {
+            alert('Network error. Please try again.');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa fa-save me-1"></i>Save';
+        });
+    });
+}());
+</script>
+<?php
+$page_scripts = ob_get_clean();
+include __DIR__ . '/../../includes/footer.php';
+?>
