@@ -279,7 +279,7 @@ $slip_rows = $slips->fetchAll();
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <small class="text-muted">Based on slip: <strong><?= $slipMonth ?></strong></small>
                     <?php if (can('payroll','process')): ?>
-                    <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-xs btn-outline-secondary"><i class="fa fa-cog me-1"></i>Structure</a>
+                    <a href="../payroll/salary_components.php?employee_id=<?= $id ?>" class="btn btn-xs btn-outline-secondary"><i class="fa fa-list me-1"></i>Salary Component</a>
                     <?php endif; ?>
                 </div>
 
