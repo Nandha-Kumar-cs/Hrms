@@ -66,16 +66,45 @@ $slip_rows = $slips->fetchAll();
 }
 .profile-photo { width:80px; height:80px; border-radius:50%; object-fit:cover; border:3px solid #e2e8f0; flex-shrink:0; }
 
-/* Clean tab styles — strip every Bootstrap/browser focus artifact */
+/* ── Issue 2: Kill ALL black hover/focus boxes ────────────────────
+   Root causes:
+   1. Global a:hover { text-decoration: underline } in magdyn-base.css
+   2. Bootstrap --bs-nav-tabs-link-hover-border-color drawing a border
+   3. Browser native focus ring staying after tab click
+   ─────────────────────────────────────────────────────────────── */
+
+/* Override global a:hover underline inside tabs */
+#profileTabs a,
+#profileTabs a:hover,
+#profileTabs a:focus,
+#profileTabs a:visited,
+#profileTabs a:active {
+    text-decoration: none !important;
+}
+
+/* Wipe every outline / shadow / border on tab links for every state */
 #profileTabs .nav-link,
 #profileTabs .nav-link:hover,
 #profileTabs .nav-link:focus,
+#profileTabs .nav-link:focus-within,
 #profileTabs .nav-link:focus-visible,
-#profileTabs .nav-link:active {
-    outline: 0 !important;
+#profileTabs .nav-link:active,
+#profileTabs .nav-link:visited {
+    outline: none !important;
+    outline-offset: 0 !important;
     box-shadow: none !important;
-    -webkit-tap-highlight-color: transparent;
+    -webkit-tap-highlight-color: transparent !important;
+    border-color: transparent !important;
+    text-decoration: none !important;
 }
+
+/* BS5 CSS variable override */
+#profileTabs {
+    --bs-nav-tabs-link-hover-border-color: transparent transparent transparent;
+    --bs-nav-tabs-border-color: #dee2e6;
+}
+
+/* Normal state */
 #profileTabs .nav-link {
     color: #374151;
     border: 1px solid transparent;
@@ -83,19 +112,28 @@ $slip_rows = $slips->fetchAll();
     border-radius: .375rem .375rem 0 0;
     transition: color .15s, background .15s;
 }
+
+/* Hover: subtle tint, no border box */
 #profileTabs .nav-link:hover {
-    color: var(--primary, #3b82f6);
-    background: #f1f5f9;
+    color: var(--primary, #3b82f6) !important;
+    background: #f1f5f9 !important;
     border-color: transparent !important;
 }
-/* Override BS5 CSS variable that drives the hover border */
-#profileTabs { --bs-nav-tabs-link-hover-border-color: transparent; }
-#profileTabs .nav-link.active {
-    color: var(--primary, #3b82f6);
-    background: #fff;
+
+/* Active tab */
+#profileTabs .nav-link.active,
+#profileTabs .nav-link.active:hover,
+#profileTabs .nav-link.active:focus {
+    color: var(--primary, #3b82f6) !important;
+    background: #fff !important;
     border-color: #dee2e6 #dee2e6 #fff !important;
     font-weight: 600;
 }
+
+/* Kill any hover underline or box-shadow inside the card body too */
+.card-body h6,
+.card-body .table th,
+.card-body .table td { outline: none !important; box-shadow: none !important; }
 </style>
 
 <?= render_flash() ?>
@@ -189,23 +227,57 @@ $slip_rows = $slips->fetchAll();
             <!-- Salary -->
             <div class="col-md-6">
                 <h6 class="text-primary fw-semibold border-bottom pb-2">Salary</h6>
-                <?php if ($salary): ?>
-                <table class="table table-sm table-borderless">
-                    <tr><th class="text-muted" style="width:160px">Basic</th><td><?= money($salary['basic']) ?></td></tr>
-                    <tr><th class="text-muted">HRA</th><td><?= money($salary['hra']) ?></td></tr>
-                    <tr><th class="text-muted">Conveyance</th><td><?= money($salary['conveyance']) ?></td></tr>
-                    <tr><th class="text-muted">Medical</th><td><?= money($salary['medical']) ?></td></tr>
-                    <?php if ($salary['special_allow']): ?>
-                    <tr><th class="text-muted">Special Allow.</th><td><?= money($salary['special_allow']) ?></td></tr>
-                    <?php endif; ?>
+                <?php if ($salary):
+                    // Compute gross from individual components (gross column may not always be stored)
+                    $salComponents = [
+                        'Basic Salary'      => (float)($salary['basic']         ?? 0),
+                        'HRA'               => (float)($salary['hra']           ?? 0),
+                        'Conveyance'        => (float)($salary['conveyance']    ?? 0),
+                        'Medical Allowance' => (float)($salary['medical']       ?? 0),
+                        'Special Allowance' => (float)($salary['special_allow'] ?? 0),
+                        'Other Allowance'   => (float)($salary['other_allow']   ?? 0),
+                    ];
+                    $computedGross = array_sum($salComponents);
+                    // Prefer stored gross if it's non-zero and close to computed; otherwise use computed
+                    $displayGross = ((float)($salary['gross'] ?? 0) > 0)
+                        ? (float)$salary['gross']
+                        : $computedGross;
+
+                    // Deductions & net from latest salary slip (most accurate)
+                    $latestSlip = $slip_rows[0] ?? null;
+                ?>
+                <table class="table table-sm table-borderless mb-0">
+                    <?php foreach ($salComponents as $lbl => $amt): if ($amt <= 0) continue; ?>
                     <tr>
-                        <th class="text-muted">Gross CTC</th>
+                        <th class="text-muted fw-normal" style="width:165px"><?= h($lbl) ?></th>
+                        <td><?= money($amt) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <tr class="border-top">
+                        <th class="text-muted fw-semibold">Gross CTC</th>
                         <td>
-                            <strong class="text-primary"><?= money($salary['gross']) ?></strong>
+                            <strong class="text-primary"><?= money($displayGross) ?></strong>
                             <small class="text-muted d-block">Effective: <?= date_fmt($salary['effective_from']) ?></small>
                         </td>
                     </tr>
+                    <?php if ($latestSlip): ?>
+                    <tr>
+                        <th class="text-muted fw-normal">Total Deductions</th>
+                        <td class="text-danger">- <?= money($latestSlip['total_deductions']) ?></td>
+                    </tr>
+                    <tr class="border-top">
+                        <th class="fw-semibold">Net Pay <small class="text-muted fw-normal">(<?= date('M Y', strtotime($latestSlip['payroll_month'] . '-01')) ?>)</small></th>
+                        <td><strong class="text-success"><?= money($latestSlip['net_pay']) ?></strong></td>
+                    </tr>
+                    <?php endif; ?>
                 </table>
+                <?php if (can('payroll','process')): ?>
+                <div class="mt-2">
+                    <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-xs btn-outline-secondary">
+                        <i class="fa fa-cog me-1"></i>Edit Structure
+                    </a>
+                </div>
+                <?php endif; ?>
                 <?php else: ?>
                 <p class="text-muted small">No salary structure defined.</p>
                 <?php if (can('payroll','process')): ?>
@@ -493,6 +565,11 @@ window.BASE_URL = '<?= BASE_URL ?>';
     document.querySelectorAll('#profileTabs a[data-bs-toggle="tab"]').forEach(function (el) {
         el.addEventListener('shown.bs.tab', function (e) {
             history.replaceState(null, null, e.target.getAttribute('href'));
+        });
+        // Blur immediately after click so the browser drops its focus ring
+        el.addEventListener('mouseup', function () {
+            var self = this;
+            setTimeout(function () { self.blur(); }, 0);
         });
     });
 
