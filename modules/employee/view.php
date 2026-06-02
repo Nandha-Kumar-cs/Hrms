@@ -224,62 +224,147 @@ $slip_rows = $slips->fetchAll();
                 </table>
             </div>
 
-            <!-- Salary -->
+            <!-- Salary — mirrors slip.php allowances logic exactly -->
             <div class="col-md-6">
-                <h6 class="text-primary fw-semibold border-bottom pb-2">Salary</h6>
-                <?php if ($salary):
-                    // Compute gross from individual components (gross column may not always be stored)
-                    $salComponents = [
-                        'Basic Salary'      => (float)($salary['basic']         ?? 0),
-                        'HRA'               => (float)($salary['hra']           ?? 0),
-                        'Conveyance'        => (float)($salary['conveyance']    ?? 0),
-                        'Medical Allowance' => (float)($salary['medical']       ?? 0),
-                        'Special Allowance' => (float)($salary['special_allow'] ?? 0),
-                        'Other Allowance'   => (float)($salary['other_allow']   ?? 0),
-                    ];
-                    $computedGross = array_sum($salComponents);
-                    // Prefer stored gross if it's non-zero and close to computed; otherwise use computed
-                    $displayGross = ((float)($salary['gross'] ?? 0) > 0)
-                        ? (float)$salary['gross']
-                        : $computedGross;
+                <h6 class="text-primary fw-semibold border-bottom pb-2">Salary Breakdown</h6>
+                <?php
+                $latestSlip = $slip_rows[0] ?? null;
 
-                    // Deductions & net from latest salary slip (most accurate)
-                    $latestSlip = $slip_rows[0] ?? null;
+                // ── Parse allowances from latest slip (same logic as slip.php) ──
+                $viewAllowances = [];
+                if ($latestSlip) {
+                    $isIndividual = ($latestSlip['slip_type'] ?? 'batch') === 'individual';
+                    if ($isIndividual && !empty($latestSlip['allowances'])) {
+                        $viewAllowances = json_decode($latestSlip['allowances'], true) ?? [];
+                    }
+                    // Fallback to fixed columns (batch slips / empty JSON)
+                    if (!$viewAllowances) {
+                        $viewAllowances = array_filter([
+                            'Basic Salary'      => (float)$latestSlip['basic'],
+                            'HRA'               => (float)$latestSlip['hra'],
+                            'Conveyance'        => (float)$latestSlip['conveyance'],
+                            'Medical Allowance' => (float)$latestSlip['medical'],
+                            'Special Allowance' => (float)$latestSlip['special_allow'],
+                            'Other Allowance'   => (float)$latestSlip['other_allow'],
+                        ]);
+                    }
+
+                    // ── Parse deductions from latest slip ──
+                    $viewDeductions = [];
+                    if ($isIndividual && !empty($latestSlip['deductions_json'])) {
+                        $viewDeductions = json_decode($latestSlip['deductions_json'], true) ?? [];
+                    }
+                    if (!$viewDeductions) {
+                        $viewDeductions = array_filter([
+                            'Provident Fund (Employee)' => (float)$latestSlip['pf_employee'],
+                            'ESI (Employee)'            => (float)$latestSlip['esi_employee'],
+                            'TDS'                       => (float)$latestSlip['tds'],
+                            'Other Deductions'          => (float)$latestSlip['other_deductions'],
+                        ]);
+                    }
+
+                    // Separate earning rows (skip [BENEFIT] / [BONUS] prefixes for this summary)
+                    $earningRows = [];
+                    foreach ($viewAllowances as $lbl => $amt) {
+                        if ($amt <= 0) continue;
+                        if (!str_starts_with($lbl, '[BENEFIT]') && !str_starts_with($lbl, '[BONUS]')) {
+                            $earningRows[$lbl] = $amt;
+                        }
+                    }
+                    $slipMonth = date('F Y', strtotime($latestSlip['payroll_month'] . '-01'));
+                }
+                ?>
+
+                <?php if ($latestSlip && ($earningRows || $viewDeductions)): ?>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <small class="text-muted">Based on slip: <strong><?= $slipMonth ?></strong></small>
+                    <?php if (can('payroll','process')): ?>
+                    <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-xs btn-outline-secondary"><i class="fa fa-cog me-1"></i>Structure</a>
+                    <?php endif; ?>
+                </div>
+
+                <table class="table table-sm table-borderless mb-1">
+                    <thead><tr>
+                        <th class="text-success small text-uppercase" style="width:55%">Earnings</th>
+                        <th class="text-danger small text-uppercase">Deductions</th>
+                    </tr></thead>
+                    <tbody>
+                    <?php
+                    $eKeys = array_keys($earningRows);
+                    $dKeys = array_keys($viewDeductions);
+                    $maxRows = max(count($eKeys), count($dKeys));
+                    for ($ri = 0; $ri < $maxRows; $ri++):
+                        $eLabel = $eKeys[$ri] ?? null;
+                        $dLabel = $dKeys[$ri] ?? null;
+                    ?>
+                    <tr>
+                        <td class="py-1 pe-2" style="font-size:12px">
+                            <?php if ($eLabel): ?>
+                            <span class="text-muted"><?= h($eLabel) ?></span>
+                            <span class="float-end fw-semibold"><?= money($earningRows[$eLabel]) ?></span>
+                            <?php endif; ?>
+                        </td>
+                        <td class="py-1" style="font-size:12px">
+                            <?php if ($dLabel): ?>
+                            <span class="text-muted"><?= h($dLabel) ?></span>
+                            <span class="float-end text-danger fw-semibold"><?= money($viewDeductions[$dLabel]) ?></span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <?php endfor; ?>
+                    </tbody>
+                    <tfoot>
+                    <tr class="border-top">
+                        <td class="py-1 pe-2" style="font-size:12px">
+                            <strong class="text-success">Total Gross</strong>
+                            <strong class="float-end text-success"><?= money($latestSlip['gross_earnings']) ?></strong>
+                        </td>
+                        <td class="py-1" style="font-size:12px">
+                            <strong class="text-danger">Total Deductions</strong>
+                            <strong class="float-end text-danger"><?= money($latestSlip['total_deductions']) ?></strong>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" class="pt-1 pb-0">
+                            <div style="background:var(--primary,#3b82f6);color:#fff;border-radius:.375rem;padding:7px 12px;display:flex;justify-content:space-between;align-items:center">
+                                <strong style="font-size:13px">Net Pay</strong>
+                                <strong style="font-size:15px"><?= money($latestSlip['net_pay']) ?></strong>
+                            </div>
+                        </td>
+                    </tr>
+                    </tfoot>
+                </table>
+
+                <?php elseif ($salary): ?>
+                <!-- No slip yet — fall back to salary structure columns -->
+                <?php
+                $salComponents = array_filter([
+                    'Basic Salary'      => (float)($salary['basic']         ?? 0),
+                    'HRA'               => (float)($salary['hra']           ?? 0),
+                    'Conveyance'        => (float)($salary['conveyance']    ?? 0),
+                    'Medical Allowance' => (float)($salary['medical']       ?? 0),
+                    'Special Allowance' => (float)($salary['special_allow'] ?? 0),
+                    'Other Allowance'   => (float)($salary['other_allow']   ?? 0),
+                ]);
+                $displayGross = array_sum($salComponents) ?: (float)($salary['gross'] ?? 0);
                 ?>
                 <table class="table table-sm table-borderless mb-0">
-                    <?php foreach ($salComponents as $lbl => $amt): if ($amt <= 0) continue; ?>
-                    <tr>
-                        <th class="text-muted fw-normal" style="width:165px"><?= h($lbl) ?></th>
-                        <td><?= money($amt) ?></td>
-                    </tr>
+                    <?php foreach ($salComponents as $lbl => $amt): ?>
+                    <tr><th class="text-muted fw-normal" style="width:165px"><?= h($lbl) ?></th><td><?= money($amt) ?></td></tr>
                     <?php endforeach; ?>
                     <tr class="border-top">
-                        <th class="text-muted fw-semibold">Gross CTC</th>
-                        <td>
-                            <strong class="text-primary"><?= money($displayGross) ?></strong>
+                        <th class="fw-semibold">Gross CTC</th>
+                        <td><strong class="text-primary"><?= money($displayGross) ?></strong>
                             <small class="text-muted d-block">Effective: <?= date_fmt($salary['effective_from']) ?></small>
                         </td>
                     </tr>
-                    <?php if ($latestSlip): ?>
-                    <tr>
-                        <th class="text-muted fw-normal">Total Deductions</th>
-                        <td class="text-danger">- <?= money($latestSlip['total_deductions']) ?></td>
-                    </tr>
-                    <tr class="border-top">
-                        <th class="fw-semibold">Net Pay <small class="text-muted fw-normal">(<?= date('M Y', strtotime($latestSlip['payroll_month'] . '-01')) ?>)</small></th>
-                        <td><strong class="text-success"><?= money($latestSlip['net_pay']) ?></strong></td>
-                    </tr>
-                    <?php endif; ?>
                 </table>
                 <?php if (can('payroll','process')): ?>
-                <div class="mt-2">
-                    <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-xs btn-outline-secondary">
-                        <i class="fa fa-cog me-1"></i>Edit Structure
-                    </a>
-                </div>
+                <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-xs btn-outline-secondary mt-2"><i class="fa fa-cog me-1"></i>Edit Structure</a>
                 <?php endif; ?>
+
                 <?php else: ?>
-                <p class="text-muted small">No salary structure defined.</p>
+                <p class="text-muted small">No salary data available.</p>
                 <?php if (can('payroll','process')): ?>
                 <a href="../payroll/salary_structure.php?employee_id=<?= $id ?>" class="btn btn-sm btn-primary mt-1">Set Salary</a>
                 <?php endif; ?>
