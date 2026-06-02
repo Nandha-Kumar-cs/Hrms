@@ -66,29 +66,34 @@ $slip_rows = $slips->fetchAll();
 }
 .profile-photo { width:80px; height:80px; border-radius:50%; object-fit:cover; border:3px solid #e2e8f0; flex-shrink:0; }
 
-/* Clean tab styles — remove ugly focus outline & default border flash */
+/* Clean tab styles — strip every Bootstrap/browser focus artifact */
+#profileTabs .nav-link,
+#profileTabs .nav-link:hover,
+#profileTabs .nav-link:focus,
+#profileTabs .nav-link:focus-visible,
+#profileTabs .nav-link:active {
+    outline: 0 !important;
+    box-shadow: none !important;
+    -webkit-tap-highlight-color: transparent;
+}
 #profileTabs .nav-link {
-    color: var(--text, #374151);
+    color: #374151;
     border: 1px solid transparent;
     border-bottom: none;
     border-radius: .375rem .375rem 0 0;
-    outline: none !important;
-    box-shadow: none !important;
     transition: color .15s, background .15s;
 }
 #profileTabs .nav-link:hover {
     color: var(--primary, #3b82f6);
     background: #f1f5f9;
-    border-color: #dee2e6 #dee2e6 transparent;
+    border-color: transparent !important;
 }
-#profileTabs .nav-link:focus-visible {
-    outline: none !important;
-    box-shadow: none !important;
-}
+/* Override BS5 CSS variable that drives the hover border */
+#profileTabs { --bs-nav-tabs-link-hover-border-color: transparent; }
 #profileTabs .nav-link.active {
     color: var(--primary, #3b82f6);
     background: #fff;
-    border-color: #dee2e6 #dee2e6 #fff;
+    border-color: #dee2e6 #dee2e6 #fff !important;
     font-weight: 600;
 }
 </style>
