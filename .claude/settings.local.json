@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where gh *)",
+      "Bash(where git *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\xampp8\\\\htdocs\\\\Employee_Management\\\\salary-components\" -Recurse -File)",
+      "Bash(Select-Object FullName)",
+      "Bash(find \"C:\\\\xampp8\\\\htdocs\\\\Employee_Management\\\\salary-components\" -type f)",
+      "Bash(xargs grep -l \"salary_components\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\xampp8\\\\htdocs\\\\Employee_Management\" -Directory)",
+      "Bash(xargs grep -l -i \"salary\\\\|payroll\")"
+    ]
+  }
+}
