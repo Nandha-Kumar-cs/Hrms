@@ -499,10 +499,18 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                             Leave History
                         </a>
                     </li>
+                    <?php if (can('holidays', 'view')): ?>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/holidays/index.php"
+                           class="nav-link <?= _sb_active('/modules/holidays/') ?>">
+                            Holidays
+                        </a>
+                    </li>
+                    <?php endif; ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/calendar.php"
                            class="nav-link <?= _sb_active('/attendance/calendar') ?>">
-                            Holidays
+                            Attendance Calendar
                         </a>
                     </li>
                     <li>

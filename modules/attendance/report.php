@@ -254,7 +254,7 @@ foreach ($employees as $emp) {
                 <?= $monthLabel ?> &mdash; <?= $days ?> days &nbsp;|&nbsp;
                 <strong><?= $totalWorkingDays ?></strong> working days
             </h6>
-            <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=holiday-types"
+            <a href="<?= BASE_URL ?>/modules/holidays/index.php"
                class="btn btn-sm btn-outline-secondary">
                 <i class="fa fa-calendar-day me-1"></i>Manage Holidays
             </a>
