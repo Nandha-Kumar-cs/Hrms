@@ -35,9 +35,11 @@ if ($action === 'delete') {
         redirect(BASE_URL . '/modules/employee/index.php');
     }
 
+    $empLabel = activity_emp_label($id);
     $db->prepare("DELETE FROM users WHERE employee_id = ?")->execute([$id]);
     $db->prepare("DELETE FROM employees WHERE id = ?")->execute([$id]);
 
+    activity_log('deleted', 'Employee', 'Deleted employee: ' . $empLabel);
     flash('success', 'Employee deleted.');
     redirect(BASE_URL . '/modules/employee/index.php');
 }
@@ -285,5 +287,6 @@ if (!$ucheck->fetchColumn()) {
     ]);
 }
 
+activity_log('created', 'Employee', "Added employee: $full_name ($employee_code)");
 flash('success', "Employee $full_name ($employee_code) created successfully.");
 redirect(BASE_URL . '/modules/employee/view.php?id=' . $new_id);

@@ -4,7 +4,9 @@ require_once __DIR__ . '/../../includes/header.php';
 require_permission('letters');
 
 $db = db();
+// Normalise case so sidebar links like ?type=offer match the 'Offer' tab labels.
 $type_filter = sanitize($_GET['type'] ?? '');
+if ($type_filter) $type_filter = ucfirst(strtolower($type_filter));
 
 $sql = 'SELECT l.*, e.name, e.employee_id AS emp_code FROM letters l JOIN employees e ON e.id=l.employee_id';
 $params = [];
@@ -47,6 +49,7 @@ $counts = $db->query('SELECT type, COUNT(*) cnt FROM letters GROUP BY type')->fe
         <h3>Letters</h3>
         <div class="search"><input type="search" placeholder="Search..." data-search></div>
     </div>
+    <div class="card-body">
     <table class="data-table" id="tbl-letters">
         <thead><tr>
             <th>Employee</th>
@@ -84,9 +87,17 @@ $counts = $db->query('SELECT type, COUNT(*) cnt FROM letters GROUP BY type')->fe
                 <?php if ($l['status'] === 'Draft' && can('letters','create')): ?>
                 <a href="issue.php?id=<?= $l['id'] ?>" class="btn btn-sm btn-success">Issue</a>
                 <?php endif; ?>
-                <?php if (can('letters','delete')): ?>
-                <a href="delete.php?id=<?= $l['id'] ?>" class="btn btn-sm btn-danger"
-                   onclick="return confirm('Delete this letter?')">Del</a>
+                <?php if (in_array($l['status'], ['Issued','Acknowledged'], true)): ?>
+                <a href="download.php?id=<?= $l['id'] ?>" class="btn btn-sm btn-primary">↓ Download</a>
+                <?php endif; ?>
+                <?php if (is_admin() || ($l['status'] === 'Draft' && can('letters','delete'))): ?>
+                <?php $delMsg = $l['status'] === 'Draft' ? 'Delete this letter?' : 'This letter has been issued. Delete it permanently?'; ?>
+                <form method="POST" action="delete.php" class="d-inline"
+                      onsubmit="return confirm('<?= h($delMsg) ?>')">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="id" value="<?= $l['id'] ?>">
+                    <button type="submit" class="btn btn-sm btn-danger">Del</button>
+                </form>
                 <?php endif; ?>
             </td>
         </tr>
@@ -96,6 +107,7 @@ $counts = $db->query('SELECT type, COUNT(*) cnt FROM letters GROUP BY type')->fe
         <?php endif; ?>
         </tbody>
     </table>
+    </div>
 </div>
 
 <script>

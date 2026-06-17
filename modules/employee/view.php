@@ -1,11 +1,13 @@
 <?php
-$page_title = 'Employee Profile';
-require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 require_permission('employee');
 
 $id = (int)($_GET['id'] ?? 0);
 $db = db();
 
+// Resolve employee BEFORE any output so a bad/missing id can redirect cleanly
+// (the Documents sidebar link, for example, has no id).
 $emp = $db->prepare(
     'SELECT e.*, d.name AS dept_name, des.name AS desig_name, m.name AS manager_name
      FROM employees e
@@ -17,6 +19,9 @@ $emp = $db->prepare(
 $emp->execute([$id]);
 $e = $emp->fetch();
 if (!$e) { redirect(BASE_URL . '/modules/employee/index.php'); }
+
+$page_title = 'Employee Profile';
+require_once __DIR__ . '/../../includes/header.php';
 
 // Current salary structure
 $sal = $db->prepare('SELECT * FROM salary_structures WHERE employee_id=? AND is_current=1 ORDER BY effective_from DESC LIMIT 1');
@@ -72,6 +77,35 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_family_members (
 $famQ = $db->prepare('SELECT * FROM employee_family_members WHERE employee_id=? ORDER BY id');
 $famQ->execute([$id]);
 $family_rows = $famQ->fetchAll();
+
+// Documents (table is created lazily on first upload — ensure it exists)
+$db->exec('CREATE TABLE IF NOT EXISTS employee_documents (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    document_type VARCHAR(50) NOT NULL,
+    document_name VARCHAR(200) NOT NULL,
+    file_path VARCHAR(500) NOT NULL,
+    file_size INT DEFAULT 0,
+    description TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (employee_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+$docQ = $db->prepare('SELECT * FROM employee_documents WHERE employee_id=? ORDER BY created_at DESC');
+$docQ->execute([$id]);
+$doc_rows = $docQ->fetchAll();
+
+// Benefit funds assigned to this employee
+$benQ = $db->prepare('SELECT * FROM employee_benefits WHERE employee_id=? ORDER BY effective_month DESC, id DESC');
+$benQ->execute([$id]);
+$benefit_rows = $benQ->fetchAll();
+
+// Human-readable file size for the Documents tab.
+$doc_size = function (int $bytes): string {
+    if ($bytes <= 0) return '—';
+    if ($bytes < 1024) return $bytes . ' B';
+    if ($bytes < 1048576) return round($bytes / 1024, 1) . ' KB';
+    return round($bytes / 1048576, 2) . ' MB';
+};
 ?>
 
 <style>
@@ -126,6 +160,17 @@ $family_rows = $famQ->fetchAll();
     --bs-nav-tabs-border-color: #dee2e6;
 }
 
+/* ── THE dark box: global `.nav-item:hover/.active` (meant for the sidebar,
+   but NOT scoped to .sidebar) fills the <li class="nav-item"> wrapper with
+   --sidebar-bg-hover (#1e293b). Neutralise it for the profile tabs. ── */
+#profileTabs .nav-item,
+#profileTabs .nav-item:hover,
+#profileTabs .nav-item:focus,
+#profileTabs .nav-item.active {
+    background: transparent !important;
+    color: inherit !important;
+}
+
 /* Normal state */
 #profileTabs .nav-link {
     color: #374151;
@@ -135,10 +180,10 @@ $family_rows = $famQ->fetchAll();
     transition: color .15s, background .15s;
 }
 
-/* Hover: subtle tint, no border box */
+/* Hover: colour only, no background box */
 #profileTabs .nav-link:hover {
     color: var(--primary, #3b82f6) !important;
-    background: #f1f5f9 !important;
+    background: transparent !important;
     border-color: transparent !important;
 }
 
@@ -469,7 +514,34 @@ $family_rows = $famQ->fetchAll();
             <h6 class="fw-semibold mb-0"><i class="fa fa-gift me-1 text-primary"></i>Benefit Funds</h6>
             <a href="<?= BASE_URL ?>/modules/benefits/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Assign Benefit</a>
         </div>
+        <?php if ($benefit_rows): ?>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Fund Type</th>
+                        <th class="text-end">Amount</th>
+                        <th>Effective Month</th>
+                        <th>Status</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($benefit_rows as $b): ?>
+                    <tr>
+                        <td><span class="badge bg-secondary"><?= h($b['fund_type']) ?></span></td>
+                        <td class="text-end"><?= money((float)$b['amount']) ?></td>
+                        <td><?= date('M Y', strtotime($b['effective_month'])) ?></td>
+                        <td><span class="badge bg-<?= ($b['status'] ?? 'active') === 'active' ? 'success' : 'secondary' ?>"><?= h(ucfirst($b['status'] ?? 'active')) ?></span></td>
+                        <td><?= h($b['description'] ?? '') ?: '<span class="text-muted">—</span>' ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php else: ?>
         <p class="text-muted text-center py-4">No benefits assigned.</p>
+        <?php endif; ?>
     </div>
 
     <!-- ── BONUSES ──────────────────────────────────────────────────── -->
@@ -511,10 +583,52 @@ $family_rows = $famQ->fetchAll();
     <!-- ── DOCUMENTS ────────────────────────────────────────────────── -->
     <div class="tab-pane fade" id="documents">
         <div class="d-flex justify-content-between mb-3">
-            <h6 class="fw-semibold mb-0">Documents</h6>
+            <h6 class="fw-semibold mb-0"><i class="fa fa-folder-open me-1 text-primary"></i>Documents</h6>
             <a href="<?= BASE_URL ?>/modules/documents/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-upload me-1"></i>Upload Document</a>
         </div>
-        <p class="text-muted text-center py-4">No documents uploaded yet.</p>
+        <?php if (!$doc_rows): ?>
+            <p class="text-muted text-center py-4">No documents uploaded yet.</p>
+        <?php else: ?>
+        <?php
+        $docIcons = ['pdf'=>'fa-file-pdf text-danger','doc'=>'fa-file-word text-primary','docx'=>'fa-file-word text-primary',
+                     'jpg'=>'fa-file-image text-success','jpeg'=>'fa-file-image text-success','png'=>'fa-file-image text-success'];
+        ?>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover table-bordered align-middle">
+                <thead class="table-dark">
+                    <tr><th>#</th><th>Type</th><th>Document</th><th>Size</th><th>Uploaded</th><th class="text-center" style="width:150px">Actions</th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($doc_rows as $di => $d):
+                    $ext = strtolower(pathinfo($d['file_path'], PATHINFO_EXTENSION));
+                    $icon = $docIcons[$ext] ?? 'fa-file text-secondary';
+                ?>
+                <tr>
+                    <td><?= $di + 1 ?></td>
+                    <td><span class="badge bg-light text-dark border"><?= h($d['document_type']) ?></span></td>
+                    <td>
+                        <i class="fa <?= $icon ?> me-1"></i><?= h($d['document_name']) ?>
+                        <?php if (!empty($d['description'])): ?><div class="small text-muted"><?= h($d['description']) ?></div><?php endif; ?>
+                    </td>
+                    <td><?= $doc_size((int)$d['file_size']) ?></td>
+                    <td><?= date_fmt($d['created_at']) ?></td>
+                    <td class="text-center text-nowrap">
+                        <a href="<?= BASE_URL ?>/<?= h($d['file_path']) ?>" target="_blank" class="btn btn-xs btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
+                        <a href="<?= BASE_URL ?>/<?= h($d['file_path']) ?>" download class="btn btn-xs btn-outline-secondary ms-1" title="Download"><i class="fa fa-download"></i></a>
+                        <?php if (can('employee','edit')): ?>
+                        <form method="POST" action="<?= BASE_URL ?>/modules/documents/delete.php" class="d-inline" onsubmit="return confirm('Delete this document?')">
+                            <?= csrf_field() ?>
+                            <input type="hidden" name="id" value="<?= $d['id'] ?>">
+                            <button type="submit" class="btn btn-xs btn-outline-danger ms-1" title="Delete"><i class="fa fa-trash"></i></button>
+                        </form>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
     </div>
 
     <!-- ── SALARY HISTORY ──────────────────────────────────────────── -->

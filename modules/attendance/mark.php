@@ -17,6 +17,7 @@
 
 $page_title = 'Mark Attendance';
 require_once __DIR__ . '/../../includes/bootstrap.php';
+require_once __DIR__ . '/../../includes/comp_off.php';
 require_login();
 require_permission('attendance', 'mark');
 
@@ -171,6 +172,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
             $remarks ?: null,
             $user['id'],
         ]);
+
+        // Auto comp-off credit: present on a non-working / declared-working day → credit.
+        comp_off_process_attendance_credit((int)$empId, $selDate, $status);
+
         $marked++;
     }
 
@@ -315,8 +320,8 @@ require_once __DIR__ . '/../../includes/header.php';
                 <br>
                 <span class="small">
                     <i class="fa fa-rotate-left me-1 text-success"></i>
-                    Employees marked <strong>Present / Late / Half Day</strong> may earn
-                    <strong>1 Comp Off credit</strong> — record manually in Comp Off Requests.
+                    Employees marked <strong>Present / Late / Half Day</strong> automatically earn
+                    <strong>1 Comp Off credit</strong> — see <a href="comp_off_credits.php">Comp Off Credits</a>.
                 </span>
             </div>
         </div>

@@ -1,12 +1,29 @@
 <?php
-$page_title = 'Create Letter';
-require_once __DIR__ . '/../../includes/header.php';
+/**
+ * Create Letter.
+ * Bootstrap + permission + POST handling run BEFORE any output so the
+ * post/redirect/get (PRG) redirect() can send its Location header cleanly.
+ */
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 require_permission('letters','create');
 
 $db       = db();
 $user     = current_user();
 $emp_id   = (int)($_GET['emp_id'] ?? 0);
-$employees = $db->query('SELECT id, name, employee_id, designation_id, department_id, join_date FROM employees WHERE status="Active" ORDER BY name')->fetchAll();
+$employees = $db->query(
+    'SELECT e.id, e.name, e.employee_id, e.designation_id, e.department_id, e.join_date,
+            d.name AS dept_name, des.name AS designation_name,
+            ent.name AS entity_name, ent.address AS entity_address, ent.city AS entity_city,
+            ent.state AS entity_state, ent.pincode AS entity_pincode,
+            ent.email AS entity_email, ent.phone AS entity_phone
+     FROM employees e
+     LEFT JOIN departments d   ON d.id   = e.department_id
+     LEFT JOIN designations des ON des.id = e.designation_id
+     LEFT JOIN entities ent    ON ent.id = e.entity_id
+     WHERE e.status = "Active"
+     ORDER BY e.name'
+)->fetchAll();
 
 // Get salary for increment/promotion templates
 function getEmpSalary($db, $eid) {
@@ -53,6 +70,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Default selected employee
 $selEmpData = $emp_id ? getEmpDetail($db, $emp_id) : null;
+
+// All POST processing is done — now it is safe to emit output.
+$page_title = 'Create Letter';
+require_once __DIR__ . '/../../includes/header.php';
 ?>
 
 <div class="page-head">
@@ -139,37 +160,77 @@ const EMPLOYEES = <?= json_encode(array_column($employees, null, 'id')) ?>;
 const COMPANY_NAME = <?= json_encode(COMPANY_NAME) ?>;
 const COMPANY_ADDRESS = <?= json_encode(COMPANY_ADDRESS) ?>;
 
+// Company name/address come from the employee's linked entity; fall back to the
+// global company constants when the employee has no entity assigned.
+function coName(emp) {
+    return (emp && emp.entity_name) ? emp.entity_name : COMPANY_NAME;
+}
+function coAddress(emp) {
+    if (emp && emp.entity_name) {
+        const cityLine = [emp.entity_city, emp.entity_state, emp.entity_pincode].filter(Boolean).join(' ');
+        return [emp.entity_address, cityLine].filter(Boolean).join(', ');
+    }
+    return COMPANY_ADDRESS;
+}
+
 // Template generators
 const TEMPLATES = {
-    Offer: (emp, fields) => `${COMPANY_NAME}
-${COMPANY_ADDRESS}
+    Offer: (emp, fields) => {
+        const num = v => { const x = parseFloat(String(v || '').replace(/[^0-9.]/g, '')); return isNaN(x) ? 0 : x; };
+        const inr = v => '₹' + Number(v).toLocaleString('en-IN');
+        const basic = num(fields.basic), hra = num(fields.hra), veh = num(fields.vehicle_maint),
+              conv = num(fields.conveyance), inc = num(fields.prod_incentive), pf = num(fields.pf_esi);
+        const gross = basic + hra + veh + conv + inc;
+        const total = gross + pf;
+        return `Dear ${emp.name},
 
-Date: ${fields.date}
-Ref: ${fields.ref}
+With reference to your application and the interviews you had with ${coName(emp)}, we are pleased to offer you employment in our company on the following terms and conditions.
 
-Dear ${emp.name},
+1. Designation: ${fields.designation || ''}
+2. Department: ${fields.department || ''}
+3. Date of Joining: ${fields.join_date || ''}
+4. Compensation: ${fields.compensation || ''}
+5. Probation: First six months from the date of joining will be treated as probation period. During this period, no increments will apply.
+6. Confirmation: After completion of six months, we will evaluate your performance and decide whether to retain your services. Unless the employment is confirmed in writing at the end of the probation period, it should be considered terminated.
+7. Hours of Work: ${fields.hours_of_work || ''}
+8. Notice of Termination: During the probation period, your service can be terminated by either side by giving two day's written notice. Upon confirmation, one month's written notice is required from either side. If you are already on an assignment and if your presence in the assignment is necessary as assessed by the management, the management reserves the right to require you to work till the assignment is complete.
+9. Leave Policy: As per the rules of the company, you can avail ${fields.casual_leave || '0'} days casual & ${fields.sick_leave || '0'} days sick leave per year.
 
-SUBJECT: OFFER OF EMPLOYMENT
+Please sign and return the copy of this letter in token of your acceptance, if the terms and conditions specified above and enclosed are acceptable to you.
 
-We are delighted to offer you the position of ${fields.designation || emp.designation_id} in our organization effective ${fields.join_date}.
+We welcome you to ${coName(emp)} and look forward to your contribution to the success and growth of the Company.
 
-Your compensation will be as follows:
-• Annual CTC: ${fields.ctc || ''}
-• Monthly Gross: ${fields.gross_monthly || ''}
+For ${coName(emp)}
 
-Your employment will be governed by the terms and conditions of our HR policy.
 
-We look forward to your joining on ${fields.join_date}.
 
-Please sign and return a copy of this letter as acceptance.
+${fields.hr_name || 'Authorized Signatory'}
 
-Yours sincerely,
+I agree to the above terms and conditions and will be joining on:
 
-${fields.hr_name || 'HR Department'}
-${COMPANY_NAME}`,
+[ ${emp.name} ]                              Confirmed Date of Joining: ${fields.join_date || ''}
 
-    Confirmation: (emp, fields) => `${COMPANY_NAME}
-${COMPANY_ADDRESS}
+____________________________________________________________
+SALARY BREAKUP
+____________________________________________________________
+1. HRA: ${inr(hra)}
+2. Basic: ${inr(basic)}
+3. Vehicle Maintenance: ${inr(veh)}
+4. Conveyance: ${inr(conv)}
+5. Production Incentive: ${inr(inc)}
+   Gross Pay: ${inr(gross)}
+
+6. Benefits — PF / ESI: ${inr(pf)}
+7. Total Cost to Company: ${inr(total)}
+
+Note:
+1. All payments are subject to Tax deduction at source (TDS). You are responsible for declaring your tax exemptions & tax liabilities.
+2. Take home pay will be Gross Pay - Applicable Statutory deductions (PF, ESI, Professional Tax etc.).
+3. All reimbursements are at actuals and need to be supported with bills/vouchers whenever available.`;
+    },
+
+    Confirmation: (emp, fields) => `${coName(emp)}
+${coAddress(emp)}
 
 Date: ${fields.date}
 Ref: ${fields.ref}
@@ -178,7 +239,7 @@ Dear ${emp.name},
 
 SUBJECT: CONFIRMATION OF EMPLOYMENT
 
-We are pleased to confirm your appointment as a permanent employee of ${COMPANY_NAME} with effect from ${fields.confirm_date}.
+We are pleased to confirm your appointment as a permanent employee of ${coName(emp)} with effect from ${fields.confirm_date}.
 
 Your service has been reviewed and found satisfactory. All other terms and conditions of service remain unchanged.
 
@@ -187,10 +248,10 @@ Congratulations on your confirmation!
 Yours sincerely,
 
 ${fields.hr_name || 'HR Department'}
-${COMPANY_NAME}`,
+${coName(emp)}`,
 
-    Increment: (emp, fields) => `${COMPANY_NAME}
-${COMPANY_ADDRESS}
+    Increment: (emp, fields) => `${coName(emp)}
+${coAddress(emp)}
 
 Date: ${fields.date}
 Ref: ${fields.ref}
@@ -211,10 +272,10 @@ This revision is in recognition of your valuable contribution and dedication.
 Yours sincerely,
 
 ${fields.hr_name || 'HR Department'}
-${COMPANY_NAME}`,
+${coName(emp)}`,
 
-    Promotion: (emp, fields) => `${COMPANY_NAME}
-${COMPANY_ADDRESS}
+    Promotion: (emp, fields) => `${coName(emp)}
+${coAddress(emp)}
 
 Date: ${fields.date}
 Ref: ${fields.ref}
@@ -236,17 +297,26 @@ Congratulations!
 Yours sincerely,
 
 ${fields.hr_name || 'HR Department'}
-${COMPANY_NAME}`,
+${coName(emp)}`,
 };
 
 // Dynamic fields per type
 const TYPE_FIELDS = {
     Offer: [
-        { id:'designation', label:'Designation Offered', type:'text' },
-        { id:'join_date',   label:'Joining Date',        type:'date' },
-        { id:'ctc',         label:'Annual CTC',          type:'text', placeholder:'₹...' },
-        { id:'gross_monthly',label:'Monthly Gross',      type:'text', placeholder:'₹...' },
-        { id:'hr_name',     label:'Signed By',           type:'text', placeholder:'HR Manager Name' },
+        { id:'designation',   label:'Designation',          type:'text',   placeholder:'e.g. Junior Developer' },
+        { id:'department',    label:'Department',            type:'text',   placeholder:'e.g. System Admin' },
+        { id:'join_date',     label:'Date of Joining',       type:'date' },
+        { id:'compensation',  label:'Compensation',          type:'text',   placeholder:'e.g. Rs 1250 per month + retirals' },
+        { id:'hours_of_work', label:'Hours of Work',         type:'text',   value:'9.00am to 6.15pm (with weekly off as per company policy)' },
+        { id:'casual_leave',  label:'Casual Leave (days/yr)',type:'number', value:'6' },
+        { id:'sick_leave',    label:'Sick Leave (days/yr)',  type:'number', value:'6' },
+        { id:'basic',         label:'Basic',                 type:'number', placeholder:'₹' },
+        { id:'hra',           label:'HRA',                   type:'number', placeholder:'₹' },
+        { id:'vehicle_maint', label:'Vehicle Maintenance',   type:'number', placeholder:'₹' },
+        { id:'conveyance',    label:'Conveyance',            type:'number', placeholder:'₹' },
+        { id:'prod_incentive',label:'Production Incentive',  type:'number', placeholder:'₹' },
+        { id:'pf_esi',        label:'PF / ESI (Benefits)',   type:'number', placeholder:'₹' },
+        { id:'hr_name',       label:'Signed By',             type:'text',   placeholder:'e.g. Suresh Kumar' },
     ],
     Confirmation: [
         { id:'confirm_date',label:'Confirmation Date',   type:'date' },
@@ -277,7 +347,8 @@ function loadTemplate() {
 
     let html = '<div class="section-title">Template Fields</div><div class="form-grid-2">';
     flds.forEach(f => {
-        html += `<div class="field"><label>${f.label}</label><input type="${f.type}" id="tf_${f.id}" placeholder="${f.placeholder||''}" oninput="refreshPreview()" style="width:100%"></div>`;
+        const val = (f.value !== undefined ? String(f.value) : '').replace(/"/g, '&quot;');
+        html += `<div class="field"><label>${f.label}</label><input type="${f.type}" id="tf_${f.id}" placeholder="${f.placeholder||''}" value="${val}" oninput="refreshPreview()" style="width:100%"></div>`;
     });
     html += '</div>';
     container.innerHTML = html;

@@ -43,6 +43,14 @@ function can(string $module, string $action = 'view'): bool {
     return has_permission($module, $action);
 }
 
+// True for Super Admin / Admin roles (privileged override).
+function is_admin(): bool {
+    $user = current_user();
+    if (!$user) return false;
+    $role = strtolower($user['role_name'] ?? '');
+    return $role === 'super admin' || $role === 'admin';
+}
+
 // Check notification permission for user
 function can_notify(string $type): bool {
     $user = current_user();

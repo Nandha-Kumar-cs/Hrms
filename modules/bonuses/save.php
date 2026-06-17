@@ -45,5 +45,7 @@ if ($errors) {
 $db->prepare('INSERT INTO employee_bonuses (employee_id,type,amount,reason,payroll_month,payroll_year,status) VALUES (?,?,?,?,?,?,?)')
    ->execute([$emp_id, $type, $amount, $reason, $payroll_month, $payroll_year, $status]);
 
+activity_log('created', 'Bonus', 'Added ' . ucfirst($type) . ' for ' . activity_emp_label($emp_id)
+    . ': ₹' . number_format($amount, 2) . ($reason ? ' — ' . $reason : '') . ' (' . ucfirst($status) . ')');
 flash('success', 'Bonus added successfully.');
 redirect(BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#bonuses');

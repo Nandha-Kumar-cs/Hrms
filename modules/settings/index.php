@@ -1,19 +1,67 @@
 <?php
-require_once '../../includes/bootstrap.php';
+/**
+ * Settings — hub page + master-data tab dispatcher.
+ *
+ * Without ?tab=        → system-info dashboard (read-only).
+ * With  ?tab=<name>    → master-data CRUD screen (see tabs/*.php).
+ * With  ?ajax=1&tab=…  → JSON endpoint for that tab's CRUD actions.
+ *
+ * Sidebar links point here as ?tab=entities|departments|designations|
+ * leave-types|holiday-types|benefit-fund-types.
+ * OT, Grace and Salary Components are separate pages and intentionally
+ * NOT handled here.
+ */
+
+require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
 require_permission('settings', 'view');
 
-$page_title = 'Settings';
-include '../../includes/header.php';
+define('IN_SETTINGS', true);
+
+$tabLabels = [
+    'entities'           => 'Entities',
+    'departments'        => 'Departments',
+    'designations'       => 'Designations',
+    'leave-types'        => 'Leave Types',
+    'holiday-types'      => 'Holiday Types',
+    'benefit-fund-types' => 'Benefit Fund Types',
+];
+
+$tab     = sanitize($_GET['tab'] ?? '');
+$tabFile = isset($tabLabels[$tab])
+    ? __DIR__ . '/tabs/' . str_replace('-', '_', $tab) . '.php'
+    : null;
+
+// ─── AJAX / JSON phase — MUST run before any output ──────────────────────────
+if ($tabFile && !empty($_GET['ajax'])) {
+    require $tabFile;   // tab file detects ?ajax=1, echoes JSON, exits
+    exit;
+}
+
+$page_title = $tabFile ? ('Settings · ' . $tabLabels[$tab]) : 'Settings';
+require_once __DIR__ . '/../../includes/header.php';
 ?>
-<div class="page-header">
+
+<div class="page-head">
     <div>
-        <h1 class="page-title">Settings</h1>
-        <p class="page-subtitle">System configuration and preferences</p>
+        <h1>Settings</h1>
+        <p class="muted"><?= $tabFile ? h($tabLabels[$tab]) : 'System configuration and preferences' ?></p>
     </div>
 </div>
 
+<!-- Master-data tab strip -->
+<div class="tabs" style="margin-bottom:18px;flex-wrap:wrap">
+    <a class="tab <?= !$tabFile ? 'active' : '' ?>" href="index.php">Overview</a>
+    <?php foreach ($tabLabels as $key => $label): ?>
+    <a class="tab <?= $tab === $key ? 'active' : '' ?>" href="index.php?tab=<?= $key ?>"><?= h($label) ?></a>
+    <?php endforeach; ?>
+</div>
+
 <?php render_flash(); ?>
+
+<?php if ($tabFile): ?>
+    <?php require $tabFile; /* renders view + sets $page_scripts */ ?>
+<?php else: ?>
 
 <div class="row">
     <div class="col-4">
@@ -151,4 +199,6 @@ include '../../includes/header.php';
         </div>
     </div>
 </div>
-<?php include '../../includes/footer.php'; ?>
+
+<?php endif; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; ?>

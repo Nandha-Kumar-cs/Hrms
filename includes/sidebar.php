@@ -47,7 +47,7 @@ try {
 $_empActive  = _sb_active('/employee/', '/letters/');
 $_assetActive = _sb_active('/assets/');
 $_payActive  = _sb_active('/payroll/');
-$_attActive  = _sb_active('/attendance/');
+$_attActive  = _sb_active('/attendance/', '/modules/holidays/');
 $_repActive  = _sb_active('/reports/');
 $_settActive = _sb_active('/settings/', '/roles/', '/pwa/');
 ?>
@@ -119,8 +119,8 @@ $_settActive = _sb_active('/settings/', '/roles/', '/pwa/');
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/employee/view.php?tab=documents"
-                           class="nav-link <?= _sb_active('tab=documents') ?>">
+                        <a href="<?= BASE_URL ?>/modules/documents/index.php"
+                           class="nav-link <?= _sb_active('/modules/documents/') ?>">
                             Documents
                         </a>
                     </li>
@@ -229,27 +229,39 @@ $_settActive = _sb_active('/settings/', '/roles/', '/pwa/');
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/index.php?tab=leave"
-                           class="nav-link <?= _sb_active('tab=leave') ?>">
+                        <a href="<?= BASE_URL ?>/modules/attendance/leaves.php"
+                           class="nav-link <?= _sb_active('/attendance/leaves') ?>">
                             Leave Requests
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/index.php?tab=leave-history"
-                           class="nav-link <?= _sb_active('tab=leave-history') ?>">
+                        <a href="<?= BASE_URL ?>/modules/attendance/leave_history.php"
+                           class="nav-link <?= _sb_active('/attendance/leave_history') ?>">
                             Leave History
                         </a>
                     </li>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/calendar.php"
                            class="nav-link <?= _sb_active('/attendance/calendar') ?>">
+                            Attendance Calendar
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/holidays/index.php"
+                           class="nav-link <?= _sb_active('/modules/holidays/') ?>">
                             Holidays
                         </a>
                     </li>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/comp_off.php"
-                           class="nav-link <?= _sb_active('/attendance/comp_off') ?>">
+                           class="nav-link <?= _sb_active('/attendance/comp_off.php') ?>">
                             Comp Offs
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/attendance/comp_off_credits.php"
+                           class="nav-link <?= _sb_active('/attendance/comp_off_credits') ?>">
+                            Comp Off Credits
                         </a>
                     </li>
                     <li>

@@ -23,9 +23,6 @@ $managers = $db->query(
      WHERE status = 'Active' ORDER BY name"
 )->fetchAll(PDO::FETCH_ASSOC);
 
-// ── Suggest next employee code ────────────────────────────────────────────────
-$suggested_code = generate_employee_id();
-
 // ── Repopulate on validation failure ─────────────────────────────────────────
 $old = $_SESSION['form_old'] ?? [];
 unset($_SESSION['form_old']);
@@ -72,10 +69,10 @@ $sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match 
                     <label class="form-label">Employee Code <span class="text-danger">*</span></label>
                     <input type="text" name="employee_code"
                            class="form-control"
-                           value="<?= $v('employee_code', $suggested_code) ?>"
+                           value="<?= $v('employee_code') ?>"
                            placeholder="e.g. EMP0001"
                            required>
-                    <div class="form-text">Auto-suggested — edit if needed.</div>
+                    <div class="form-text">Enter a unique employee code.</div>
                 </div>
 
                 <div class="col-md-4">

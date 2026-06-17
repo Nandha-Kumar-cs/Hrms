@@ -53,7 +53,7 @@ $_payActive  = _sb_active('/payroll/calculate', '/payroll/index', '/payroll/slip
 $_salCompActive = _sb_active('/payroll/salary_components');
 $_genSlipActive = _sb_active('/payroll/generate_slip');
 $_calcActive    = _sb_active('/payroll/calculate');
-$_attActive  = _sb_active('/modules/attendance/');
+$_attActive  = _sb_active('/modules/attendance/', '/modules/holidays/');
 $_repActive  = _sb_active('report=');
 // Include salary_components in settings group so the Settings accordion opens on that page.
 $_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/',
@@ -73,6 +73,8 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="<?= PWA_THEME_COLOR ?>">
+    <!-- App is light-themed only; opt out of browser/OS forced dark mode -->
+    <meta name="color-scheme" content="only light">
     <link rel="manifest" href="<?= BASE_URL ?>/manifest.json">
     <title><?= h($page_title ?? 'Dashboard') ?> — <?= h(APP_NAME) ?></title>
 
@@ -83,12 +85,13 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
     <!-- DataTables -->
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
     <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.4.2/css/buttons.dataTables.min.css">
-    <!-- HRMS custom styles -->
-    <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/magdyn-base.css">
-    <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/hrms.css">
+    <!-- HRMS custom styles (filemtime cache-buster so edits propagate past browser cache) -->
+    <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/magdyn-base.css?v=<?= @filemtime(BASE_PATH . '/assets/css/magdyn-base.css') ?: APP_VERSION ?>">
+    <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/hrms.css?v=<?= @filemtime(BASE_PATH . '/assets/css/hrms.css') ?: APP_VERSION ?>">
 
     <style>
     /* ── Layout shell ─────────────────────────────────────────────────── */
+    :root { color-scheme: only light; }
     *, *::before, *::after { box-sizing: border-box; }
     body { margin: 0; background: #f4f5f7; font-family: system-ui, -apple-system, sans-serif; }
 
@@ -365,8 +368,8 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/employee/view.php?tab=documents"
-                           class="nav-link <?= _sb_active('tab=documents') ?>">
+                        <a href="<?= BASE_URL ?>/modules/documents/index.php"
+                           class="nav-link <?= _sb_active('/modules/documents/') ?>">
                             Documents
                         </a>
                     </li>
@@ -488,14 +491,14 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/index.php?tab=leave"
-                           class="nav-link <?= _sb_active('tab=leave') ?>">
+                        <a href="<?= BASE_URL ?>/modules/attendance/leaves.php"
+                           class="nav-link <?= _sb_active('/attendance/leaves') ?>">
                             Leave Requests
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/index.php?tab=leave-history"
-                           class="nav-link <?= _sb_active('tab=leave-history') ?>">
+                        <a href="<?= BASE_URL ?>/modules/attendance/leave_history.php"
+                           class="nav-link <?= _sb_active('/attendance/leave_history') ?>">
                             Leave History
                         </a>
                     </li>
@@ -515,16 +518,24 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                     </li>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/comp_off.php"
-                           class="nav-link <?= _sb_active('/attendance/comp_off') ?>">
+                           class="nav-link <?= _sb_active('/attendance/comp_off.php') ?>">
                             Comp Offs
                         </a>
                     </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/attendance/comp_off_credits.php"
+                           class="nav-link <?= _sb_active('/attendance/comp_off_credits') ?>">
+                            Comp Off Credits
+                        </a>
+                    </li>
+                    <?php if (can('od', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/od_requests.php"
                            class="nav-link <?= _sb_active('/attendance/od_requests') ?>">
                             On Duty (OD)
                         </a>
                     </li>
+                    <?php endif; ?>
                 </ul>
             </div>
         </li>
@@ -543,26 +554,26 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             <div class="collapse <?= $_repActive ? 'show' : '' ?>" id="repMenu">
                 <ul class="sidebar-submenu">
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/export.php?report=benefits"
-                           class="nav-link <?= _sb_active('report=benefits') ?>">
+                        <a href="<?= BASE_URL ?>/modules/payroll/benefits_report.php"
+                           class="nav-link <?= _sb_active('/payroll/benefits_report') ?>">
                             Monthly Benefits
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/export.php?report=bonuses"
-                           class="nav-link <?= _sb_active('report=bonuses') ?>">
+                        <a href="<?= BASE_URL ?>/modules/payroll/bonus_report.php"
+                           class="nav-link <?= _sb_active('/payroll/bonus_report') ?>">
                             Bonus Report
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/employee/view.php?tab=history"
-                           class="nav-link <?= _sb_active('tab=history') ?>">
+                        <a href="<?= BASE_URL ?>/modules/employee/history_report.php"
+                           class="nav-link <?= _sb_active('/employee/history_report') ?>">
                             Employee History
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/payroll/export.php?report=payroll-impact"
-                           class="nav-link <?= _sb_active('report=payroll-impact') ?>">
+                        <a href="<?= BASE_URL ?>/modules/payroll/payroll_impact_report.php"
+                           class="nav-link <?= _sb_active('/payroll/payroll_impact_report') ?>">
                             Payroll Impact
                         </a>
                     </li>
@@ -587,8 +598,8 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
         <?php if ($_sbAdmin): ?>
         <div class="sidebar-section">Audit</div>
         <li>
-            <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=activity-log"
-               class="nav-link <?= _sb_active('tab=activity-log') ?>">
+            <a href="<?= BASE_URL ?>/modules/settings/activity_log.php"
+               class="nav-link <?= _sb_active('/settings/activity_log') ?>">
                 <i class="fa fa-clock-rotate-left nav-icon"></i>
                 <span class="nav-label">Activity Log</span>
             </a>

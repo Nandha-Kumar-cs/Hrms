@@ -40,5 +40,8 @@ if ($errors) {
 $db->prepare('INSERT INTO employee_increments (employee_id,effective_date,previous_salary,new_salary,remarks) VALUES (?,?,?,?,?)')
    ->execute([$emp_id, $effective_date, $previous_salary, $new_salary, $remarks]);
 
+activity_log('created', 'Increment', 'Salary increment for ' . activity_emp_label($emp_id), [
+    ['field' => 'Salary', 'from' => '₹' . number_format((float)$previous_salary, 2), 'to' => '₹' . number_format((float)$new_salary, 2)],
+]);
 flash('success', 'Increment recorded successfully.');
 redirect(BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#increments');

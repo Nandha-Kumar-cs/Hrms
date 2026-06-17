@@ -12,7 +12,7 @@ if (!$letter || $letter['status'] !== 'Draft') {
     redirect(BASE_URL . '/modules/letters/index.php');
 }
 
-db()->prepare("UPDATE letters SET status='Issued', issued_at=NOW(), issued_by=:uid WHERE id=:id")
+db()->prepare("UPDATE letters SET status='Issued', issued_by=:uid WHERE id=:id")
      ->execute([':uid'=>current_user()['id'],':id'=>$id]);
 
 flash('success','Letter issued successfully.');

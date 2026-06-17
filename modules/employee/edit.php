@@ -208,6 +208,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
         }
 
+        $changes = array_values(array_filter([
+            activity_change('Name',   $emp['name'] ?? '',  $full_name),
+            activity_change('Email',  $emp['email'] ?? '', $email),
+            activity_change('Status', $emp['status'] ?? '', $status),
+            activity_change('CTC/Month',
+                '₹' . number_format((float)($emp['fixed_salary'] ?? 0), 2),
+                '₹' . number_format((float)$fixed_salary, 2)),
+        ]));
+        activity_log('updated', 'Employee', 'Updated employee: ' . $full_name . ' (' . ($emp['employee_id'] ?? '') . ')', $changes);
         flash('success', 'Employee updated successfully.');
         redirect(BASE_URL . "/modules/employee/view.php?id=$id");
     }

@@ -41,5 +41,13 @@ if ($errors) {
 $db->prepare('INSERT INTO employee_promotions (employee_id,effective_date,previous_designation_id,new_designation_id,department_id,remarks) VALUES (?,?,?,?,?,?)')
    ->execute([$emp_id, $effective_date, $previous_designation_id, $new_designation_id, $department_id, $remarks]);
 
+$desigName = function ($id) use ($db) {
+    if (!$id) return '—';
+    $s = $db->prepare('SELECT name FROM designations WHERE id = ?'); $s->execute([$id]);
+    return $s->fetchColumn() ?: '—';
+};
+activity_log('created', 'Promotion', 'Promotion for ' . activity_emp_label($emp_id), [
+    ['field' => 'Designation', 'from' => $desigName($previous_designation_id), 'to' => $desigName($new_designation_id)],
+]);
 flash('success', 'Promotion recorded successfully.');
 redirect(BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#promotions');

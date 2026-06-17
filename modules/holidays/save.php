@@ -64,10 +64,12 @@ if ($id) {
         $db->prepare('UPDATE holidays SET h_date=?, name=?, holiday_type_id=? WHERE id=?')
            ->execute([$date, $name, $typeId, $id]);
     }
+    activity_log('updated', 'Holiday', 'Updated holiday: ' . $name . ' (' . date_fmt($date) . ')');
     flash('success', 'Holiday updated.');
 } else {
     $db->prepare('INSERT INTO holidays (name, h_date, type, holiday_type_id, source) VALUES (?,?,?,?,?)')
        ->execute([$name, $date, $legacyType ?? 'National', $typeId, $source]);
+    activity_log('created', 'Holiday', 'Added holiday: ' . $name . ' (' . date_fmt($date) . ')');
     flash('success', 'Holiday added.');
 }
 

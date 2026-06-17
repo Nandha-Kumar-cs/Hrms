@@ -1,163 +1,205 @@
 <?php
-require_once '../../includes/bootstrap.php';
+/**
+ * Comp Off Management — holiday-driven comp-off grants.
+ *
+ * Ported from the Employee_Management comp-offs.index screen (replacing the old
+ * request-based worked/comp-date page). Comp offs are auto-granted to all
+ * employees when a holiday is marked a Working Day on the Holidays page; here
+ * they can be (re-)granted, marked availed on a date (which writes a "Comp Off"
+ * attendance record), or removed (which reverts those attendance records).
+ */
+require_once __DIR__ . '/../../includes/comp_off.php';
 require_login();
 require_permission('attendance', 'view');
 
-$user = current_user();
-$isEmployee = ($user['role'] === 'Employee');
+$user    = current_user();
+$canEdit = can('attendance', 'edit') || can('holidays', 'edit');
 
-// Handle status update
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+// ── POST actions (grant / avail / remove / destroy) ───────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
-    $rid    = (int)$_POST['request_id'];
-    $action = $_POST['action'];
-    if (in_array($action, ['Approved','Rejected']) && can('attendance', 'edit')) {
-        db()->prepare("UPDATE comp_off_requests SET status=:s, reviewed_by=:rb, reviewed_at=NOW() WHERE id=:id")
-             ->execute([':s'=>$action,':rb'=>$user['id'],':id'=>$rid]);
-        flash('success',"Comp Off request $action.");
+    if (!$canEdit) { http_response_code(403); exit('Forbidden'); }
+
+    $action = $_POST['action'] ?? '';
+    $date   = sanitize($_POST['holiday_date'] ?? '');
+    $year   = (int)($_POST['year'] ?? date('Y'));
+    $self   = BASE_URL . '/modules/attendance/comp_off.php?year=' . $year;
+    $back   = (($_POST['back'] ?? '') === 'holidays')
+        ? BASE_URL . '/modules/holidays/index.php?year=' . $year
+        : $self;
+
+    if ($action === 'grant') {
+        $name = sanitize($_POST['holiday_name'] ?? 'Holiday');
+        $n = comp_off_grant_all($date, $name);
+        flash('success', "Comp off granted to {$n} employee(s) for {$name}.");
+        redirect($back);
     }
-    redirect(BASE_URL . '/modules/attendance/comp_off.php');
+
+    if ($action === 'avail') {
+        $availed = sanitize($_POST['availed_date'] ?? '');
+        $a = DateTime::createFromFormat('Y-m-d', $availed);
+        if (!$a || $a->format('Y-m-d') !== $availed) {
+            flash('error', 'A valid availed date is required.');
+            redirect($self);
+        }
+        $n = comp_off_avail_all($date, $availed, (int)$user['id']);
+        flash('success', "{$n} comp off(s) marked as availed on " . date('d M Y', strtotime($availed)) . ' and attendance updated.');
+        redirect($self);
+    }
+
+    if ($action === 'remove') {
+        $n = comp_off_remove_all($date);
+        flash('success', "{$n} comp off record(s) removed. Related attendance entries reverted.");
+        redirect($self);
+    }
+
+    if ($action === 'destroy') {
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id) db()->prepare('DELETE FROM comp_offs WHERE id = ?')->execute([$id]);
+        flash('success', 'Comp off record removed.');
+        redirect($self);
+    }
+
+    redirect($self);
 }
 
-// Handle new request
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
-    verify_csrf($_POST['csrf_token'] ?? '');
-    $empId   = $isEmployee ? $user['employee_id'] : (int)$_POST['employee_id'];
-    $wDate   = $_POST['worked_date'] ?? '';
-    $coDate  = $_POST['comp_off_date'] ?? '';
-    $reason  = trim($_POST['reason'] ?? '');
-    if ($empId && $wDate && $coDate) {
-        db()->prepare("INSERT INTO comp_off_requests (employee_id,worked_date,comp_off_date,reason,status,requested_at) VALUES (:eid,:wd,:cod,:r,'Pending',NOW())")
-             ->execute([':eid'=>$empId,':wd'=>$wDate,':cod'=>$coDate,':r'=>$reason]);
-        flash('success','Comp Off request submitted.');
-    }
-    redirect(BASE_URL . '/modules/attendance/comp_off.php');
-}
+// ── View ──────────────────────────────────────────────────────────────────────
+$year = (int)($_GET['year'] ?? date('Y'));
 
-// Fetch requests
-$where = $isEmployee ? "WHERE cr.employee_id = {$user['employee_id']}" : '';
-$requests = db()->query("SELECT cr.*, e.name AS emp_name, e.employee_id AS emp_code,
-    u.name AS reviewer_name
-    FROM comp_off_requests cr
-    JOIN employees e ON cr.employee_id = e.id
-    LEFT JOIN users u ON cr.reviewed_by = u.id
-    $where
-    ORDER BY cr.requested_at DESC")->fetchAll(PDO::FETCH_ASSOC);
+$wh = db()->prepare("SELECT * FROM holidays WHERE YEAR(h_date) = ? AND is_working_day = 1 ORDER BY h_date");
+$wh->execute([$year]);
+$workingHolidays = $wh->fetchAll();
 
-$employees = $isEmployee ? [] : db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+$summaryMap  = comp_off_year_summary($year);
+$totalActive = (int)db()->query("SELECT COUNT(*) FROM employees WHERE status = 'Active'")->fetchColumn();
 
-$page_title = 'Comp Off Requests';
-include '../../includes/header.php';
+$page_title = 'Comp Off Management';
+require_once __DIR__ . '/../../includes/header.php';
 ?>
 <div class="page-header">
     <div>
-        <h1 class="page-title">Comp Off Requests</h1>
-        <p class="page-subtitle">Manage compensatory off requests</p>
+        <h1 class="page-title">Comp Off Management</h1>
+        <p class="page-subtitle">Comp offs for company working days — <?= $year ?></p>
     </div>
-    <div class="page-actions">
-        <button class="btn btn-primary" onclick="openModal('newCompOffModal')" data-key="N"><u>N</u>ew Request</button>
-        <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>
+    <div class="page-actions d-flex gap-2 align-items-center">
+        <form method="GET" class="d-inline-flex">
+            <select name="year" onchange="this.form.submit()" class="form-select form-select-sm" style="width:auto">
+                <?php for ($y = (int)date('Y') + 1; $y >= (int)date('Y') - 2; $y--): ?>
+                <option value="<?= $y ?>" <?= $y === $year ? 'selected' : '' ?>><?= $y ?></option>
+                <?php endfor; ?>
+            </select>
+        </form>
+        <a href="<?= BASE_URL ?>/modules/holidays/index.php?year=<?= $year ?>" class="btn btn-sm btn-outline-secondary"><i class="fa fa-arrow-left me-1"></i>Holidays</a>
+        <a href="<?= BASE_URL ?>/modules/attendance/comp_off_credits.php?year=<?= $year ?>" class="btn btn-sm btn-outline-primary"><i class="fa fa-coins me-1"></i>Credits &amp; Balance</a>
     </div>
 </div>
 
 <?php render_flash(); ?>
 
-<div class="card">
+<div class="card page-card">
     <div class="card-body">
-        <table class="table datatable">
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <?php if (!$isEmployee): ?><th>Employee</th><?php endif; ?>
-                    <th>Worked Date</th>
-                    <th>Comp Off Date</th>
-                    <th>Reason</th>
-                    <th>Requested</th>
-                    <th>Status</th>
-                    <th>Reviewed By</th>
-                    <?php if (can('attendance', 'edit') && !$isEmployee): ?><th>Action</th><?php endif; ?>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($requests as $r): ?>
-                <tr>
-                    <td><?= $r['id'] ?></td>
-                    <?php if (!$isEmployee): ?><td><strong><?= h($r['emp_code']) ?></strong><br><small><?= h($r['emp_name']) ?></small></td><?php endif; ?>
-                    <td><?= date_fmt($r['worked_date']) ?></td>
-                    <td><?= date_fmt($r['comp_off_date']) ?></td>
-                    <td><?= h($r['reason']) ?></td>
-                    <td><?= date_fmt($r['requested_at'], 'd M Y H:i') ?></td>
-                    <td>
-                        <?php
-                        $cls = ['Pending'=>'pill-warn','Approved'=>'pill-success','Rejected'=>'pill-danger'];
-                        echo '<span class="pill ' . ($cls[$r['status']]??'') . '">' . $r['status'] . '</span>';
-                        ?>
-                    </td>
-                    <td><?= h($r['reviewer_name'] ?? '—') ?></td>
-                    <?php if (can('attendance', 'edit') && !$isEmployee): ?>
-                    <td>
-                        <?php if ($r['status'] === 'Pending'): ?>
-                        <form method="POST" class="d-inline">
-                            <?= csrf_field() ?>
-                            <input type="hidden" name="request_id" value="<?= $r['id'] ?>">
-                            <button name="action" value="Approved" class="btn btn-xs btn-success">Approve</button>
-                            <button name="action" value="Rejected" class="btn btn-xs btn-danger">Reject</button>
-                        </form>
-                        <?php else: echo '—'; endif; ?>
-                    </td>
-                    <?php endif; ?>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<!-- New Comp Off Modal -->
-<div class="modal-overlay" id="newCompOffModal" style="display:none">
-    <div class="modal-box">
-        <div class="modal-header">
-            <h3>New Comp Off Request</h3>
-            <button class="modal-close" onclick="closeModal('newCompOffModal')">&times;</button>
+        <div class="alert alert-info d-flex align-items-start gap-2 py-2 mb-4 small">
+            <i class="fa fa-circle-info mt-1"></i>
+            <div>Comp offs are auto-granted to all employees when you mark a holiday as a <strong>Working Day</strong> on the
+                <a href="<?= BASE_URL ?>/modules/holidays/index.php?year=<?= $year ?>">Holidays</a> page.
+                Once employees take their comp off, click <strong>“Set Availed Date”</strong> to record it for all — that also marks attendance as
+                <span class="badge" style="background:#6f42c1">CO</span> on that date.</div>
         </div>
-        <form method="POST">
-            <?= csrf_field() ?>
-            <input type="hidden" name="submit_request" value="1">
-            <div class="modal-body">
-                <?php if (!$isEmployee): ?>
-                <div class="form-group">
-                    <label class="form-label">Employee</label>
-                    <select name="employee_id" class="form-control" required>
-                        <option value="">Select Employee</option>
-                        <?php foreach ($employees as $e): ?>
-                            <option value="<?= $e['id'] ?>"><?= h($e['label']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+
+        <?php if (!$workingHolidays): ?>
+            <div class="text-center py-5 text-muted">
+                <i class="fa fa-calendar-xmark fa-3x d-block mb-3 opacity-25"></i>
+                <p class="mb-1 fw-semibold">No working holidays in <?= $year ?></p>
+                <p class="small">Go to <a href="<?= BASE_URL ?>/modules/holidays/index.php?year=<?= $year ?>">Holidays</a> and toggle a day as a working day.</p>
+            </div>
+        <?php else: foreach ($workingHolidays as $h):
+            $ds      = $h['h_date'];
+            $pending = $summaryMap[$ds]['pending'] ?? 0;
+            $availed = $summaryMap[$ds]['availed'] ?? 0;
+            $granted = $pending + $availed;
+            $notGranted = $totalActive - $granted;
+            $allAvailed = $availed >= $totalActive && $totalActive > 0;
+            $dObj = new DateTime($ds);
+        ?>
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 px-3 py-3 mb-3 rounded border" style="background:#fffbeb;border-color:#fde68a">
+            <div class="d-flex align-items-center gap-3 flex-wrap">
+                <div>
+                    <i class="fa fa-briefcase me-1" style="color:#b45309"></i>
+                    <strong style="color:#78350f"><?= h($h['name']) ?></strong>
+                    <span class="text-muted ms-2" style="font-size:.85rem"><?= $dObj->format('d M Y') ?> — <?= $dObj->format('l') ?></span>
                 </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <?php if ($notGranted > 0): ?><span class="badge bg-secondary"><?= $notGranted ?> not granted</span><?php endif; ?>
+                    <?php if ($pending > 0): ?><span class="badge bg-warning text-dark"><?= $pending ?> pending</span><?php endif; ?>
+                    <?php if ($availed > 0): ?><span class="badge bg-success"><?= $availed ?> availed</span><?php endif; ?>
+                    <?php if ($granted === 0): ?><span class="badge bg-light text-dark border">No comp offs granted yet</span><?php endif; ?>
+                </div>
+            </div>
+            <?php if ($canEdit): ?>
+            <div class="d-flex gap-2 align-items-center">
+                <?php if ($notGranted > 0): ?>
+                <form method="POST">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="action" value="grant">
+                    <input type="hidden" name="holiday_date" value="<?= $ds ?>">
+                    <input type="hidden" name="holiday_name" value="<?= h($h['name']) ?>">
+                    <input type="hidden" name="year" value="<?= $year ?>">
+                    <button class="btn btn-sm btn-outline-success"><i class="fa fa-users me-1"></i>Grant to All</button>
+                </form>
                 <?php endif; ?>
-                <div class="form-group">
-                    <label class="form-label">Worked Date (Extra day)</label>
-                    <input type="date" name="worked_date" class="form-control" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Comp Off Date (To be availed)</label>
-                    <input type="date" name="comp_off_date" class="form-control" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Reason</label>
-                    <textarea name="reason" class="form-control" rows="3"></textarea>
-                </div>
+                <?php if ($pending > 0 && !$allAvailed): ?>
+                <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#availModal<?= $h['id'] ?>"><i class="fa fa-calendar-check me-1"></i>Set Availed Date</button>
+                <?php endif; ?>
+                <?php if ($allAvailed): ?>
+                <span class="badge bg-success py-2 px-3" style="font-size:.8rem"><i class="fa fa-check-circle me-1"></i>All Availed</span>
+                <?php endif; ?>
+                <?php if ($granted > 0): ?>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#removeModal<?= $h['id'] ?>"><i class="fa fa-trash me-1"></i>Remove</button>
+                <?php endif; ?>
             </div>
-            <div class="modal-footer">
-                <button type="submit" class="btn btn-primary">Submit Request</button>
-                <button type="button" class="btn btn-secondary" onclick="closeModal('newCompOffModal')">Cancel</button>
+            <?php endif; ?>
+        </div>
+
+        <?php if ($canEdit && $pending > 0): ?>
+        <div class="modal fade" id="availModal<?= $h['id'] ?>" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm">
+                <form class="modal-content" method="POST">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="action" value="avail">
+                    <input type="hidden" name="holiday_date" value="<?= $ds ?>">
+                    <input type="hidden" name="year" value="<?= $year ?>">
+                    <div class="modal-header border-0 pb-0"><h6 class="modal-title fw-semibold"><i class="fa fa-calendar-check me-1 text-success"></i>Set Availed Date</h6><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                    <div class="modal-body">
+                        <p class="small text-muted mb-3">Date on which employees availed comp off for <strong><?= h($h['name']) ?></strong>. Updates all <strong><?= $pending ?> pending</strong> comp offs and marks attendance <span class="badge" style="background:#6f42c1;font-size:.7rem">CO</span>.</p>
+                        <label class="form-label fw-semibold small">Availed On <span class="text-danger">*</span></label>
+                        <input type="date" name="availed_date" class="form-control form-control-sm" value="<?= date('Y-m-d') ?>" required>
+                    </div>
+                    <div class="modal-footer border-0 pt-0"><button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-sm btn-success"><i class="fa fa-check me-1"></i>Confirm for All</button></div>
+                </form>
             </div>
-        </form>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($canEdit && $granted > 0): ?>
+        <div class="modal fade" id="removeModal<?= $h['id'] ?>" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm">
+                <form class="modal-content" method="POST">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="action" value="remove">
+                    <input type="hidden" name="holiday_date" value="<?= $ds ?>">
+                    <input type="hidden" name="year" value="<?= $year ?>">
+                    <div class="modal-header border-0 pb-0"><h6 class="modal-title fw-semibold text-danger"><i class="fa fa-triangle-exclamation me-1"></i>Remove Comp Off</h6><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                    <div class="modal-body">
+                        <p class="small text-muted mb-2">Remove all <strong><?= $granted ?> comp off record(s)</strong> for <strong><?= h($h['name']) ?></strong>.</p>
+                        <?php if ($availed > 0): ?><div class="alert alert-warning py-2 small mb-0"><i class="fa fa-circle-exclamation me-1"></i><strong><?= $availed ?> availed</strong> attendance record(s) auto-created will also be removed.</div><?php endif; ?>
+                    </div>
+                    <div class="modal-footer border-0 pt-0"><button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-sm btn-danger"><i class="fa fa-trash me-1"></i>Yes, Remove All</button></div>
+                </form>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php endforeach; endif; ?>
     </div>
 </div>
-
-<script>
-addLocalShortcut('n', () => openModal('newCompOffModal'));
-addLocalShortcut('b', () => location.href = 'index.php');
-</script>
-<?php include '../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; ?>

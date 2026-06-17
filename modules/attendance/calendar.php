@@ -4,7 +4,7 @@ require_login();
 require_permission('attendance', 'view');
 
 $user = current_user();
-$isEmployee = ($user['role'] === 'Employee');
+$isEmployee = (($user['role_name'] ?? '') === 'Employee');
 
 $month = (int)($_GET['month'] ?? date('m'));
 $year  = (int)($_GET['year']  ?? date('Y'));
@@ -18,16 +18,16 @@ $employees = $isEmployee ? [] : db()->query("SELECT id, CONCAT(name,' (',employe
 // Load attendance for month
 $records = [];
 if ($empId) {
-    $rows = db()->query("SELECT date, status, check_in, check_out FROM attendance
-        WHERE employee_id=$empId AND MONTH(date)=$month AND YEAR(date)=$year")->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($rows as $row) $records[$row['date']] = $row;
+    $rows = db()->query("SELECT att_date, status, in_time, out_time FROM attendance
+        WHERE employee_id=$empId AND MONTH(att_date)=$month AND YEAR(att_date)=$year")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as $row) $records[$row['att_date']] = $row;
 }
 
 // Load holidays
-$holidays = db()->query("SELECT date, name FROM holidays WHERE MONTH(date)=$month AND YEAR(date)=$year")->fetchAll(PDO::FETCH_KEY_PAIR);
+$holidays = db()->query("SELECT h_date, name FROM holidays WHERE MONTH(h_date)=$month AND YEAR(h_date)=$year")->fetchAll(PDO::FETCH_KEY_PAIR);
 
 // Summary
-$summary = ['Present'=>0,'Late'=>0,'Absent'=>0,'On Duty'=>0,'Comp Off'=>0,'Half Day'=>0,'Holiday'=>0,'Week Off'=>0];
+$summary = ['On Time'=>0,'Late'=>0,'Absent'=>0,'OD'=>0,'Comp Off'=>0,'Half Day'=>0,'On Leave'=>0,'Holiday'=>0,'Week Off'=>0];
 foreach ($records as $r) {
     if (isset($summary[$r['status']])) $summary[$r['status']]++;
 }
@@ -81,7 +81,7 @@ include '../../includes/header.php';
 <!-- Summary Pills -->
 <div class="row mb-4">
     <?php
-    $colors = ['Present'=>'success','Late'=>'warn','Absent'=>'danger','On Duty'=>'primary','Comp Off'=>'info','Half Day'=>'warn','Holiday'=>'secondary','Week Off'=>'secondary'];
+    $colors = ['On Time'=>'success','Late'=>'warn','Absent'=>'danger','OD'=>'primary','Comp Off'=>'info','Half Day'=>'warn','On Leave'=>'primary','Holiday'=>'secondary','Week Off'=>'secondary'];
     foreach ($summary as $label => $count): ?>
     <div class="col-auto mb-2">
         <div class="stat-card" style="min-width:100px;padding:0.75rem 1rem;">
@@ -118,15 +118,16 @@ include '../../includes/header.php';
                     $isToday  = ($dateStr === date('Y-m-d'));
 
                     $statusClass = [
-                        'Present' =>'cal-present','Late'=>'cal-late','Absent'=>'cal-absent',
-                        'On Duty' =>'cal-od','Comp Off'=>'cal-compoff','Half Day'=>'cal-halfday',
-                        'Holiday' =>'cal-holiday','Week Off'=>'cal-weekend',''=> 'cal-empty-day'
+                        'On Time' =>'cal-present','Late'=>'cal-late','Absent'=>'cal-absent',
+                        'OD'      =>'cal-od','Comp Off'=>'cal-compoff','Half Day'=>'cal-halfday',
+                        'On Leave'=>'cal-leave','Holiday' =>'cal-holiday','Week Off'=>'cal-weekend',
+                        ''=> 'cal-empty-day'
                     ][$status] ?? '';
                 ?>
                 <div class="cal-day <?= $statusClass ?> <?= $isToday?'cal-today':'' ?>"
                      title="<?= $dateStr ?>: <?= $status ?: 'No record' ?>
-<?= $rec&&$rec['check_in']?'In: '.$rec['check_in']:'' ?>
-<?= $rec&&$rec['check_out']?'Out: '.$rec['check_out']:'' ?>
+<?= $rec&&$rec['in_time']?'In: '.$rec['in_time']:'' ?>
+<?= $rec&&$rec['out_time']?'Out: '.$rec['out_time']:'' ?>
 <?= $isHol?$holidays[$dateStr]:'' ?>">
                     <span class="cal-day-num"><?= $day ?></span>
                     <?php if ($status): ?>
@@ -135,8 +136,8 @@ include '../../includes/header.php';
                     <?php if ($isHol): ?>
                         <span class="cal-hol-name"><?= h($holidays[$dateStr]) ?></span>
                     <?php endif; ?>
-                    <?php if ($rec && $rec['check_in']): ?>
-                        <span class="cal-time"><?= substr($rec['check_in'],0,5) ?></span>
+                    <?php if ($rec && $rec['in_time']): ?>
+                        <span class="cal-time"><?= substr($rec['in_time'],0,5) ?></span>
                     <?php endif; ?>
                 </div>
                 <?php endfor; ?>
@@ -145,12 +146,13 @@ include '../../includes/header.php';
 
         <!-- Legend -->
         <div class="cal-legend mt-3">
-            <span class="cal-leg cal-present">Present</span>
+            <span class="cal-leg cal-present">On Time</span>
             <span class="cal-leg cal-late">Late</span>
             <span class="cal-leg cal-absent">Absent</span>
-            <span class="cal-leg cal-od">On Duty</span>
+            <span class="cal-leg cal-od">OD</span>
             <span class="cal-leg cal-compoff">Comp Off</span>
             <span class="cal-leg cal-halfday">Half Day</span>
+            <span class="cal-leg cal-leave">On Leave</span>
             <span class="cal-leg cal-holiday">Holiday</span>
             <span class="cal-leg cal-weekend">Week Off</span>
         </div>
@@ -175,6 +177,7 @@ include '../../includes/header.php';
 .cal-compoff { background:#ede9fe; color:#5b21b6; }
 .cal-halfday { background:#fef9c3; color:#854d0e; }
 .cal-holiday { background:#e0f2fe; color:#0369a1; }
+.cal-leave   { background:#fae8ff; color:#86198f; }
 .cal-weekend { background:#f1f5f9; color:#64748b; }
 .cal-legend  { display:flex; flex-wrap:wrap; gap:.5rem; }
 .cal-leg     { padding:3px 10px; border-radius:4px; font-size:.7rem; font-weight:600; }

@@ -628,6 +628,52 @@ code {
 }
 
 /* ============================================================
+   Bootstrap modal compatibility shim
+   The bespoke .modal/.modal-content rules above are for the app's
+   home-grown dialogs (shown via .modal.open). Bootstrap modals use
+   `.modal.fade` and must NOT inherit that hijacked styling, or their
+   labels render uppercase/tiny, the backdrop double-dims and padding
+   breaks. Reset only the hijacked properties, scoped to .modal.fade.
+   ============================================================ */
+/* The bespoke `.modal { z-index:1000 }` rule above drops Bootstrap modals
+   BELOW their own backdrop (z-index 1050), which then swallows every click.
+   Lift Bootstrap modals above the backdrop (and the sticky topbar). */
+.modal.fade   { z-index: 1060; }
+.modal-backdrop { z-index: 1055; }
+.modal.fade { background: transparent; align-items: stretch; justify-content: normal; }
+.modal.fade .modal-content {
+    width: 100%;
+    max-width: none;
+    padding: 0;
+}
+.modal.fade .modal-content label {
+    display: inline-block;
+    margin: 0 0 .5rem;
+    font-size: inherit;
+    font-weight: 600;
+    color: inherit;
+    text-transform: none;
+    letter-spacing: normal;
+}
+.modal.fade .modal-content .form-check-label {
+    margin-bottom: 0;
+    font-weight: 400;
+}
+.modal.fade .modal-content input,
+.modal.fade .modal-content textarea {
+    padding: .375rem .75rem;
+    border: 1px solid var(--bs-border-color, #dee2e6);
+    border-radius: .375rem;
+    font-size: 1rem;
+    font-family: inherit;
+}
+.modal.fade .modal-content input[type="checkbox"],
+.modal.fade .modal-content input[type="radio"] {
+    width: 1em;
+    padding: 0;
+}
+
+/* ============================================================
    Tabs
    ============================================================ */
 .tabs {

@@ -20,7 +20,8 @@ $assets = $db->query(
     "SELECT a.*,
             c.name  AS cat_name,
             e.name  AS assigned_to,
-            e.employee_id AS emp_code
+            e.employee_id AS emp_code,
+            aa.assigned_date AS issued_date
      FROM assets a
      LEFT JOIN asset_categories c  ON c.id = a.category_id
      LEFT JOIN asset_assignments aa ON aa.asset_id = a.id AND aa.is_returned = 0
@@ -138,6 +139,7 @@ $assets = $db->query(
                     <th>Condition</th>
                     <th>Status</th>
                     <th>Assigned To</th>
+                    <th>Issued Date</th>
                     <th class="text-center">Actions</th>
                 </tr>
             </thead>
@@ -180,6 +182,7 @@ $assets = $db->query(
                     <span class="text-muted">—</span>
                     <?php endif; ?>
                 </td>
+                <td><?= $a['issued_date'] ? date_fmt($a['issued_date']) : '<span class="text-muted">—</span>' ?></td>
                 <td class="text-center text-nowrap">
                     <?php if (can('assets', 'assign')): ?>
                     <a href="<?= BASE_URL ?>/modules/assets/edit_asset.php?id=<?= $a['id'] ?>"
@@ -232,7 +235,7 @@ $(function () {
         lengthMenu: [[10, 25, 50, 100, -1], ['10', '25', '50', '100', 'All']],
         order: [[0, 'asc']],
         columnDefs: [
-            { orderable: false, targets: 7 }   // Actions column not sortable
+            { orderable: false, targets: 8 }   // Actions column not sortable
         ],
         language: {
             search:         'Search assets:',

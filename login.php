@@ -4,6 +4,7 @@ require_once __DIR__ . '/config/database.php';
 require_once __DIR__ . '/includes/helpers.php';
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/permissions.php';
+require_once __DIR__ . '/includes/activity_log.php';
 
 session_name(SESSION_NAME);
 session_start();
@@ -33,6 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         login_user($user);
         // Update last login
         db()->prepare('UPDATE users SET last_login=NOW() WHERE id=?')->execute([$user['id']]);
+        activity_log('login', 'Auth', 'Logged in: ' . ($user['name'] ?? $email));
         redirect(BASE_URL . '/index.php');
     } else {
         $error = 'Invalid email or password.';

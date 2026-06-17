@@ -42,5 +42,7 @@ if ($errors) {
 $db->prepare('INSERT INTO employee_benefits (employee_id,fund_type,amount,effective_month,status,description) VALUES (?,?,?,?,?,?)')
    ->execute([$emp_id, $fund_type, $amount, $effective_month . '-01', $status, $description]);
 
+activity_log('created', 'Benefit', 'Added benefit (' . $fund_type . ') for ' . activity_emp_label($emp_id)
+    . ': ₹' . number_format($amount, 2) . ' (' . ucfirst($status) . ')');
 flash('success', 'Benefit assigned successfully.');
 redirect(BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#benefits');
