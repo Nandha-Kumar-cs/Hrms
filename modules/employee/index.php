@@ -4,11 +4,13 @@ require_once __DIR__ . '/../../includes/header.php';
 require_permission('employee');
 
 $db = db();
+// Employee self-service: scope the list to the logged-in employee's own row.
+$_scopeWhere = is_self_scoped() ? (' WHERE e.id = ' . current_employee_id()) : '';
 $employees = $db->query(
     'SELECT e.*, d.name AS dept_name, des.name AS desig_name
      FROM employees e
      LEFT JOIN departments d ON d.id = e.department_id
-     LEFT JOIN designations des ON des.id = e.designation_id
+     LEFT JOIN designations des ON des.id = e.designation_id' . $_scopeWhere . '
      ORDER BY e.employee_id'
 )->fetchAll();
 
@@ -356,8 +358,8 @@ window.BASE_URL = '<?= BASE_URL ?>';
     var colFilters = {};
 
     // Inject search inputs into tfoot (matches Laravel DataTables initComplete pattern)
-    // Searchable column indices: 0=Code,1=Name,2=Email,3=Phone,4=Dept,5=Desig,7=Status
-    var searchableCols = [0, 1, 2, 3, 4, 5, 7];
+    // Searchable column indices: 0=Code,1=Name,2=Email,3=Phone,4=Dept,5=Desig,6=CTC,7=Status
+    var searchableCols = [0, 1, 2, 3, 4, 5, 6, 7];
     var tfootCells = document.querySelectorAll('#empTable tfoot th');
     searchableCols.forEach(function (colIdx) {
         var th = tfootCells[colIdx];

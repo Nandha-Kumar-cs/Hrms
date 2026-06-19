@@ -2,6 +2,7 @@
 require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('attendance', 'view');
+block_cross_employee();
 
 $month = (int)($_GET['month'] ?? date('m'));
 $year  = (int)($_GET['year']  ?? date('Y'));

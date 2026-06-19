@@ -3,7 +3,7 @@ require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('roles', 'edit');
 
-$allPerms = db()->query("SELECT * FROM permissions ORDER BY module, name")->fetchAll(PDO::FETCH_ASSOC);
+$allPerms = db()->query("SELECT * FROM permissions ORDER BY module, action")->fetchAll(PDO::FETCH_ASSOC);
 $grouped  = [];
 foreach ($allPerms as $p) $grouped[$p['module']][] = $p;
 
@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (db()->query("SELECT id FROM roles WHERE name='".addslashes($name)."'")->fetchColumn()) $errors[] = 'Role name already exists.';
 
     if (empty($errors)) {
-        db()->prepare("INSERT INTO roles (name, description, is_system, created_at) VALUES (:n,:d,0,NOW())")
+        db()->prepare("INSERT INTO roles (name, description, created_at) VALUES (:n,:d,NOW())")
              ->execute([':n'=>$name,':d'=>$desc]);
         $roleId = db()->lastInsertId();
 
@@ -85,7 +85,7 @@ include '../../includes/header.php';
                     <?php foreach ($grouped as $module => $mperms): ?>
                     <div class="perm-module mb-4">
                         <div class="d-flex align-items-center gap-2 mb-2">
-                            <strong style="text-transform:capitalize"><?= $module ?></strong>
+                            <strong><?= h(module_label($module)) ?></strong>
                             <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', true)">All</button>
                             <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', false)">None</button>
                         </div>
@@ -96,8 +96,7 @@ include '../../includes/header.php';
                                     <input type="checkbox" name="permissions[]" value="<?= $p['id'] ?>"
                                         class="perm-check perm-<?= $p['module'] ?>"
                                         <?= in_array($p['id'], $_POST['permissions']??[]) ? 'checked' : '' ?>>
-                                    <span><?= h($p['name']) ?></span>
-                                    <br><small class="text-muted"><?= h($p['description']) ?></small>
+                                    <span><?= h($p['label'] ?: ucfirst($p['action'])) ?></span>
                                 </label>
                             </div>
                             <?php endforeach; ?>

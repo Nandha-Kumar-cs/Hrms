@@ -1,7 +1,7 @@
 <?php
 $page_title = 'Bonuses & Incentives';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
+require_permission('bonuses', 'view');
 
 $db = db();
 
@@ -19,6 +19,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_bonuses (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp    = (int)($_GET['employee_id'] ?? 0);
+ if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
 $filterType   = trim($_GET['type']   ?? '');
 $filterStatus = trim($_GET['status'] ?? '');
 $filterMonth  = (int)($_GET['month'] ?? 0);
@@ -40,10 +41,10 @@ $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $bonuses = $stmt->fetchAll();
 
-$employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees ORDER BY name')->fetchAll();
+$employees = scope_employees_for_dropdown($db);
 
-$typeColors  = ['bonus' => 'primary', 'incentive' => 'success', 'commission' => 'info'];
-$typeLabels  = ['bonus' => 'Bonus',   'incentive' => 'Incentive', 'commission' => 'Commission'];
+$typeColors  = ['monthly_bonus' => 'primary', 'performance' => 'success', 'festival' => 'warning', 'overtime' => 'info', 'one_time' => 'secondary'];
+$typeLabels  = ['monthly_bonus' => 'Monthly Bonus', 'performance' => 'Performance Incentive', 'festival' => 'Festival Bonus', 'overtime' => 'Overtime Incentive', 'one_time' => 'One-time Reward'];
 $statColors  = ['pending' => 'warning', 'approved' => 'success', 'rejected' => 'danger'];
 $months      = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 ?>
@@ -51,7 +52,7 @@ $months      = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
         <h5 class="mb-0 fw-semibold"><i class="fa fa-trophy me-2 text-warning"></i>Bonuses &amp; Incentives</h5>
-        <?php if (can('employee','edit')): ?>
+        <?php if (can('bonuses','create')): ?>
         <a href="<?= BASE_URL ?>/modules/bonuses/create.php" class="btn btn-sm btn-primary">
             <i class="fa fa-plus me-1"></i>Add Bonus / Incentive
         </a>
@@ -76,9 +77,9 @@ $months      = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
                 <label class="form-label small fw-semibold mb-1">Type</label>
                 <select name="type" class="form-select form-select-sm">
                     <option value="">All</option>
-                    <option value="bonus"      <?= $filterType === 'bonus'      ? 'selected' : '' ?>>Bonus</option>
-                    <option value="incentive"  <?= $filterType === 'incentive'  ? 'selected' : '' ?>>Incentive</option>
-                    <option value="commission" <?= $filterType === 'commission' ? 'selected' : '' ?>>Commission</option>
+                    <?php foreach ($typeLabels as $tk => $tl): ?>
+                    <option value="<?= $tk ?>" <?= $filterType === $tk ? 'selected' : '' ?>><?= $tl ?></option>
+                    <?php endforeach; ?>
                 </select>
             </div>
             <div class="col-md-2">
@@ -155,8 +156,30 @@ $months      = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
                             </span>
                         </td>
                         <td class="text-center text-nowrap">
-                            <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $b['employee_id'] ?>#bonuses"
-                               class="btn btn-xs btn-outline-primary" title="View Employee"><i class="fa fa-eye"></i></a>
+                            <?php
+                            $bonDetail = [
+                                'Employee'      => $b['emp_name'] . ' (' . $b['emp_code'] . ')',
+                                'Type'          => $typeLabels[$b['type']] ?? ucfirst($b['type']),
+                                'Amount'        => money($b['amount']),
+                                'Payroll Month' => $months[$b['payroll_month'] - 1] . ' ' . $b['payroll_year'],
+                                'Status'        => ucfirst($b['status']),
+                                'Reason'        => $b['reason'] ?? '—',
+                            ];
+                            ?>
+                            <button type="button" class="btn btn-xs btn-outline-info" title="View Details"
+                                    data-bs-toggle="modal" data-bs-target="#recModal"
+                                    data-rec-title="Bonus / Incentive — <?= h($b['emp_name']) ?>"
+                                    data-rec="<?= h(json_encode($bonDetail)) ?>"><i class="fa fa-eye"></i></button>
+                            <?php if (can('bonuses','create')): ?>
+                            <a href="<?= BASE_URL ?>/modules/bonuses/create.php?id=<?= $b['id'] ?>"
+                               class="btn btn-xs btn-outline-primary" title="Edit"><i class="fa fa-pen"></i></a>
+                            <form method="POST" action="<?= BASE_URL ?>/modules/bonuses/delete.php" class="d-inline"
+                                  onsubmit="return confirm('Delete this bonus / incentive record?')">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="id" value="<?= $b['id'] ?>">
+                                <button type="submit" class="btn btn-xs btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -167,4 +190,5 @@ $months      = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
     </div>
 </div>
 
+<?php include __DIR__ . '/../../includes/record_modal.php'; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

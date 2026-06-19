@@ -8,22 +8,26 @@ if (!$id) redirect(BASE_URL . '/modules/roles/index.php');
 
 $role = db()->query("SELECT * FROM roles WHERE id=$id")->fetch(PDO::FETCH_ASSOC);
 if (!$role) redirect(BASE_URL . '/modules/roles/index.php');
+// The `roles` table has no is_system column — protect only Super Admin (id 1).
+$role['is_system'] = ((int)$role['id'] === 1) ? 1 : 0;
 
-$allPerms = db()->query("SELECT * FROM permissions ORDER BY module, name")->fetchAll(PDO::FETCH_ASSOC);
+// `permissions` columns are (module, action, label) — there is no `name`.
+$allPerms = db()->query("SELECT * FROM permissions ORDER BY module, action")->fetchAll(PDO::FETCH_ASSOC);
 $grouped  = [];
 foreach ($allPerms as $p) $grouped[$p['module']][] = $p;
 
 $rolePerms = db()->query("SELECT permission_id FROM role_permissions WHERE role_id=$id")->fetchAll(PDO::FETCH_COLUMN);
 
-// Notification preferences
+// Notification preferences & PWA access are NOT role-scoped in this schema
+// (user_notification_prefs is per-user; pwa_module_access is global), so these
+// tabs are display-only and are not persisted per role.
 $notifTypes = ['email_attendance','email_payroll','email_letter','email_training',
                'push_attendance','push_payroll','push_letter','push_training',
                'sms_attendance','sms_payroll'];
-$roleNotifs = db()->query("SELECT pref_key FROM user_notification_prefs WHERE role_id=$id")->fetchAll(PDO::FETCH_COLUMN);
+$roleNotifs = [];
 
-// PWA module access
 $pwaModules = ['dashboard','employees','attendance','payroll','letters','assets','training'];
-$pwaEnabled = db()->query("SELECT module_key FROM pwa_module_access WHERE role_id=$id")->fetchAll(PDO::FETCH_COLUMN);
+$pwaEnabled = [];
 
 $errors = [];
 
@@ -50,21 +54,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
                  ->execute([':r'=>$id,':p'=>(int)$pid]);
         }
 
-        // Notifications
-        db()->query("DELETE FROM user_notification_prefs WHERE role_id=$id");
-        foreach ($notifs as $nk) {
-            db()->prepare("INSERT INTO user_notification_prefs (role_id,pref_key) VALUES (:r,:k)")
-                 ->execute([':r'=>$id,':k'=>$nk]);
-        }
+        // Notifications & PWA access are not role-scoped in this schema, so they
+        // are not persisted here (see note above where they are loaded).
 
-        // PWA
-        db()->query("DELETE FROM pwa_module_access WHERE role_id=$id");
-        foreach ($pwa as $mk) {
-            db()->prepare("INSERT INTO pwa_module_access (role_id,module_key) VALUES (:r,:m)")
-                 ->execute([':r'=>$id,':m'=>$mk]);
-        }
-
-        flash('success','Role updated successfully.');
+        flash('success','Role permissions updated successfully.');
         redirect(BASE_URL . "/modules/roles/edit.php?id=$id");
     }
     $rolePerms = $_POST['permissions'] ?? [];
@@ -117,7 +110,7 @@ include '../../includes/header.php';
                 <?php foreach ($grouped as $module => $mperms): ?>
                 <div class="perm-module mb-4">
                     <div class="d-flex align-items-center gap-2 mb-2">
-                        <strong style="text-transform:capitalize"><?= $module ?></strong>
+                        <strong><?= h(module_label($module)) ?></strong>
                         <?php if (can('roles', 'edit')): ?>
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', true)">All</button>
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', false)">None</button>
@@ -131,7 +124,7 @@ include '../../includes/header.php';
                                     class="perm-check perm-<?= $p['module'] ?>"
                                     <?= in_array($p['id'], $rolePerms) ? 'checked' : '' ?>
                                     <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
-                                <span><?= h($p['name']) ?></span>
+                                <span><?= h($p['label'] ?: ucfirst($p['action'])) ?></span>
                             </label>
                         </div>
                         <?php endforeach; ?>

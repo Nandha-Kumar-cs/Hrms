@@ -1,7 +1,10 @@
 <?php
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
+require_permission('documents', 'view');
+
 $page_title = 'Documents';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
 
 $db = db();
 
@@ -20,6 +23,8 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_documents (
 
 // Optional employee filter
 $emp_filter = (int)($_GET['emp'] ?? 0);
+// Self-scoped users only ever see their own documents.
+if (is_self_scoped()) $emp_filter = current_employee_id();
 
 $sql = 'SELECT dc.*, e.name AS emp_name, e.employee_id AS emp_code
         FROM employee_documents dc
@@ -31,7 +36,9 @@ $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $docs = $stmt->fetchAll();
 
-$employees = $db->query('SELECT id, name, employee_id FROM employees ORDER BY name')->fetchAll();
+$employees = is_self_scoped()
+    ? $db->query('SELECT id, name, employee_id FROM employees WHERE id = ' . (int)current_employee_id() . ' ORDER BY name')->fetchAll()
+    : $db->query('SELECT id, name, employee_id FROM employees ORDER BY name')->fetchAll();
 
 function doc_size(int $bytes): string {
     if ($bytes <= 0) return '—';

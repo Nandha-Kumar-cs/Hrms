@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('employee', 'edit');
+require_permission('documents', 'delete');
 verify_csrf($_POST['csrf_token'] ?? '');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect(BASE_URL . '/modules/documents/index.php');

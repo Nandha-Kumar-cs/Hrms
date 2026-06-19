@@ -1,23 +1,40 @@
 <?php
-$page_title = 'Letters';
-require_once __DIR__ . '/../../includes/header.php';
-require_permission('letters');
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 
-$db = db();
-// Normalise case so sidebar links like ?type=offer match the 'Offer' tab labels.
+// Sub-menu permission: each letter type (Offer / Confirmation / Increment /
+// Promotion) is granted independently. The "All" list needs the general view.
 $type_filter = sanitize($_GET['type'] ?? '');
 if ($type_filter) $type_filter = ucfirst(strtolower($type_filter));
+require_permission('letters', $type_filter !== '' ? strtolower($type_filter) : 'view');
+
+$page_title = 'Letters';
+require_once __DIR__ . '/../../includes/header.php';
+
+$db = db();
+
+// Self-scoped employees (e.g. an Employee viewing their own letters) only ever
+// see their own records, regardless of type filter.
+$scopeEmp = scope_employee_id();
 
 $sql = 'SELECT l.*, e.name, e.employee_id AS emp_code FROM letters l JOIN employees e ON e.id=l.employee_id';
-$params = [];
-if ($type_filter) { $sql .= ' WHERE l.type=?'; $params[] = $type_filter; }
+$conds = []; $params = [];
+if ($type_filter) { $conds[] = 'l.type=?';        $params[] = $type_filter; }
+if ($scopeEmp)    { $conds[] = 'l.employee_id=?'; $params[] = $scopeEmp; }
+if ($conds) $sql .= ' WHERE ' . implode(' AND ', $conds);
 $sql .= ' ORDER BY l.issued_date DESC, l.created_at DESC';
 $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $letters = $stmt->fetchAll();
 
-// Counts per type
-$counts = $db->query('SELECT type, COUNT(*) cnt FROM letters GROUP BY type')->fetchAll(PDO::FETCH_KEY_PAIR);
+// Counts per type (scoped to own records for self-scoped users).
+if ($scopeEmp) {
+    $cs = $db->prepare('SELECT type, COUNT(*) cnt FROM letters WHERE employee_id=? GROUP BY type');
+    $cs->execute([$scopeEmp]);
+    $counts = $cs->fetchAll(PDO::FETCH_KEY_PAIR);
+} else {
+    $counts = $db->query('SELECT type, COUNT(*) cnt FROM letters GROUP BY type')->fetchAll(PDO::FETCH_KEY_PAIR);
+}
 ?>
 
 <div class="page-head">
@@ -34,10 +51,13 @@ $counts = $db->query('SELECT type, COUNT(*) cnt FROM letters GROUP BY type')->fe
     </div>
 </div>
 
-<!-- Type filter tabs -->
+<!-- Type filter tabs (only the types this user may access) -->
 <div class="tabs" style="margin-bottom:18px">
+    <?php if (can('letters', 'view')): ?>
     <a class="tab <?= !$type_filter?'active':'' ?>" href="index.php">All</a>
+    <?php endif; ?>
     <?php foreach (['Offer','Confirmation','Increment','Promotion'] as $t): ?>
+    <?php if (!can('letters', strtolower($t))) continue; ?>
     <a class="tab <?= $type_filter===$t?'active':'' ?>" href="index.php?type=<?= $t ?>">
         <?= $t ?> <span class="pill pill-neutral" style="margin-left:4px"><?= $counts[$t] ?? 0 ?></span>
     </a>

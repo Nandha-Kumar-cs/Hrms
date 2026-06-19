@@ -26,15 +26,22 @@ $hols->execute([$monthStart, $monthEnd]);
 $holiday_count = (int)$hols->fetchColumn();
 $effectiveDays = $workingDays - $holiday_count;
 
-// Active employees with current salary structure
-$employees = $db->query(
+// Active employees with the salary structure that was IN EFFECT for the
+// processed month (effective_from ≤ month-end) — never the current one, so a
+// run for a past month uses the salary that applied then.
+$empStmt = $db->prepare(
     'SELECT e.*, ss.basic, ss.hra, ss.conveyance, ss.medical, ss.special_allow, ss.other_allow,
             ss.gross, ss.lop_per_day
      FROM employees e
-     JOIN salary_structures ss ON ss.employee_id = e.id AND ss.is_current = 1
+     JOIN salary_structures ss ON ss.id = (
+            SELECT s2.id FROM salary_structures s2
+             WHERE s2.employee_id = e.id AND s2.effective_from <= ?
+             ORDER BY s2.effective_from DESC, s2.id DESC LIMIT 1)
      WHERE e.status = "Active"
      ORDER BY e.name'
-)->fetchAll();
+);
+$empStmt->execute([$monthEnd]);
+$employees = $empStmt->fetchAll();
 
 $calculations = [];
 foreach ($employees as $emp) {

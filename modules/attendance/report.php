@@ -21,7 +21,7 @@
 
 $page_title = 'Monthly Attendance Report';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('attendance', 'view');
+require_permission('attendance', 'report');   // sub-module: Attendance Report
 
 $db  = db();
 $now = new DateTime();
@@ -98,13 +98,13 @@ for ($d = 1; $d <= $days; $d++) {
     if (!isset($nwDateSet[$dateStr])) $totalWorkingDays++;
 }
 
-/* ── Load all employees ──────────────────────────────────────────────────── */
+/* ── Load employees (self-scoped users see only their own row) ───────────── */
 $employees = $db->query(
     "SELECT e.id, e.name, e.employee_id AS emp_code,
             COALESCE(d.name, '—') AS dept_name
      FROM   employees e
      LEFT JOIN departments d ON d.id = e.department_id
-     WHERE  e.status = 'Active'
+     WHERE  e.status = 'Active'" . (is_self_scoped() ? ' AND e.id = ' . current_employee_id() : '') . "
      ORDER  BY e.name"
 )->fetchAll();
 $empCount = count($employees);
@@ -440,11 +440,19 @@ foreach ($employees as $emp) {
                             $cellIsWeekend = in_array($cellNwLabel, ['Sunday', '1st Saturday', '3rd Saturday']);
                             $nwLabelColor  = $cellIsWeekend ? '#6c757d' : '#c0392b';
                         ?>
+                        <?php
+                            // The rotated label is doubled + padded so it fills a column
+                            // that spans many employee rows. When only a few rows exist
+                            // (e.g. an employee viewing just their own row) that padding
+                            // would stretch the single row absurdly tall, so render the
+                            // label once, compactly, instead.
+                            $nwTall = $empCount > 3;
+                        ?>
                         <td class="text-center table-secondary"
                             rowspan="<?= $empCount ?>"
                             style="vertical-align:middle;padding:4px 2px;">
-                            <span style="writing-mode:vertical-rl;transform:rotate(180deg);font-size:.6rem;color:<?= $nwLabelColor ?>;font-weight:700;letter-spacing:4px;display:inline-block;line-height:1;word-spacing:2em;"
-                                  title="<?= h($cellNwLabel) ?>"><?= h($cellNwLabel) ?>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<?= h($cellNwLabel) ?></span>
+                            <span style="writing-mode:vertical-rl;transform:rotate(180deg);font-size:.6rem;color:<?= $nwLabelColor ?>;font-weight:700;letter-spacing:<?= $nwTall ? '4px' : '1px' ?>;display:inline-block;line-height:1;<?= $nwTall ? 'word-spacing:2em;' : '' ?>"
+                                  title="<?= h($cellNwLabel) ?>"><?= h($cellNwLabel) ?><?php if ($nwTall): ?>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<?= h($cellNwLabel) ?><?php endif; ?></span>
                         </td>
                         <?php endif; ?>
                         <!-- All other employee rows: skip — covered by rowspan above -->

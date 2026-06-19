@@ -53,7 +53,7 @@ define('PAYROLL_WORKING_DAYS', 26);   // default working days per month
 define('PAYROLL_PF_EMPLOYEE', 0.12); // 12%
 define('PAYROLL_PF_EMPLOYER', 0.12);
 define('PAYROLL_ESI_EMPLOYEE', 0.0075); // 0.75%
-define('PAYROLL_ESI_EMPLOYER', 0.0325); // 3.25%
+define('PAYROLL_ESI_EMPLOYER', 0.0075); // matched to employee rate (per request)
 define('PAYROLL_ESI_WAGE_LIMIT', 21000);  // ESI only applies below this gross
 
 // ─── Attendance ───────────────────────────────────────────────────────────────

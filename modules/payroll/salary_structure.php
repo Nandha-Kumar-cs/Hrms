@@ -2,6 +2,7 @@
 require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('payroll', 'view');
+block_cross_employee();
 
 $user = current_user();
 

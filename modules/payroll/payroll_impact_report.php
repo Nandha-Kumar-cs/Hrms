@@ -16,7 +16,9 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('payroll', 'view');
+require_permission('report_impact', 'view');
+// Self-scoped employees see only their own row in this report (not blocked).
+$scopeEmp = scope_employee_id();
 
 $db = db();
 
@@ -29,6 +31,7 @@ $deptId = (int)($_GET['department'] ?? 0);
 $search = trim((string)($_GET['search'] ?? ''));
 if (mb_strlen($search) > 100) $search = mb_substr($search, 0, 100);
 $export = (string)($_GET['export'] ?? '');
+if ($export !== '' && !can('report_impact', 'export')) { http_response_code(403); exit('You do not have permission to export this report.'); }
 
 $monthName = date('F', mktime(0, 0, 0, $month, 1));
 $pm = sprintf('%04d-%02d', $year, $month);
@@ -36,6 +39,7 @@ $pm = sprintf('%04d-%02d', $year, $month);
 // Shared employee-filter fragment (applies to every source).
 $empWhere = '';
 $empParams = [];
+if ($scopeEmp)      { $empWhere .= ' AND e.id = ?'; $empParams[] = $scopeEmp; }
 if ($search !== '') { $empWhere .= ' AND (e.name LIKE ? OR e.employee_id LIKE ?)'; $empParams[] = "%$search%"; $empParams[] = "%$search%"; }
 if ($deptId)        { $empWhere .= ' AND e.department_id = ?'; $empParams[] = $deptId; }
 
@@ -233,8 +237,10 @@ require_once __DIR__ . '/../../includes/header.php';
         <p class="page-subtitle"><?= h($monthName) ?> <?= $year ?> · <?= $rowCount ?> employee<?= $rowCount === 1 ? '' : 's' ?></p>
     </div>
     <div class="page-actions">
+        <?php if (can('report_impact', 'export')): ?>
         <a href="?export=csv&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-csv me-1"></i>Excel</a>
         <a href="?export=pdf&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-pdf me-1"></i>PDF</a>
+        <?php endif; ?>
         <button type="button" class="btn btn-secondary" onclick="window.print()"><i class="fa fa-print me-1"></i>Print</button>
     </div>
 </div>

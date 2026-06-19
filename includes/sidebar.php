@@ -241,12 +241,6 @@ $_settActive = _sb_active('/settings/', '/roles/', '/pwa/');
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/calendar.php"
-                           class="nav-link <?= _sb_active('/attendance/calendar') ?>">
-                            Attendance Calendar
-                        </a>
-                    </li>
-                    <li>
                         <a href="<?= BASE_URL ?>/modules/holidays/index.php"
                            class="nav-link <?= _sb_active('/modules/holidays/') ?>">
                             Holidays

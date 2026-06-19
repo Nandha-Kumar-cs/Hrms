@@ -7,13 +7,17 @@ $id  = (int)($_GET['id'] ?? 0);
 $db  = db();
 $slip = $db->prepare(
     'SELECT ss.*, e.name, e.employee_id AS emp_code, e.designation_id,
-            e.department_id, e.created_at,
+            e.department_id, e.created_at, e.entity_id,
             e.bank_account, e.bank_name, e.bank_ifsc, e.pan_number, e.uan_number,
-            d.name AS dept_name, des.name AS desig_name
+            d.name AS dept_name, des.name AS desig_name,
+            ent.name AS entity_name, ent.address AS entity_address,
+            ent.city AS entity_city, ent.state AS entity_state,
+            ent.pincode AS entity_pincode, ent.logo AS entity_logo
      FROM salary_slips ss
      JOIN employees e ON e.id = ss.employee_id
      LEFT JOIN departments d   ON d.id = e.department_id
      LEFT JOIN designations des ON des.id = e.designation_id
+     LEFT JOIN entities ent    ON ent.id = e.entity_id
      WHERE ss.id = ?'
 );
 $slip->execute([$id]);
@@ -88,18 +92,28 @@ $incSt = $db->prepare(
 $incSt->execute([$s['employee_id'], $firstOfMonth, $lastOfMonth]);
 $increment = $incSt->fetch() ?: null;
 
-// ─── Entity logo ─────────────────────────────────────────────────────────────
-$logoUrl = null;
-try {
-    $logoSt = $db->prepare(
-        "SELECT logo FROM entities WHERE logo IS NOT NULL AND logo != '' LIMIT 1"
-    );
-    $logoSt->execute();
-    $logoFile = $logoSt->fetchColumn();
-    if ($logoFile && file_exists(BASE_PATH . '/storage/entities/' . $logoFile)) {
-        $logoUrl = BASE_URL . '/storage/entities/' . h($logoFile);
-    }
-} catch (Exception $_e) {}
+// ─── Company header from the employee's selected entity ──────────────────────
+// Falls back to the global COMPANY_* constants when no entity is assigned.
+$companyName = $s['entity_name'] ?: COMPANY_NAME;
+$companyAddress = COMPANY_ADDRESS;
+if ($s['entity_name']) {
+    $cityLine = trim(implode(' ', array_filter([$s['entity_city'], $s['entity_state'], $s['entity_pincode']])));
+    $companyAddress = trim(implode(', ', array_filter([$s['entity_address'], $cityLine])));
+}
+
+// Logo: prefer the employee's entity logo, else any entity logo, else none.
+$logoUrl  = null;
+$logoFile = $s['entity_logo'] ?? null;
+if (!$logoFile) {
+    try {
+        $logoSt = $db->prepare("SELECT logo FROM entities WHERE logo IS NOT NULL AND logo != '' LIMIT 1");
+        $logoSt->execute();
+        $logoFile = $logoSt->fetchColumn() ?: null;
+    } catch (Exception $_e) {}
+}
+if ($logoFile && file_exists(BASE_PATH . '/storage/entities/' . $logoFile)) {
+    $logoUrl = BASE_URL . '/storage/entities/' . h($logoFile);
+}
 
 $extra_head = '<style>
 @media print {
@@ -166,8 +180,8 @@ $extra_head = '<style>
             <?php if ($logoUrl): ?>
             <img src="<?= $logoUrl ?>" alt="Logo" style="max-height:52px;margin-bottom:6px;display:block">
             <?php endif; ?>
-            <div style="font-size:18px;font-weight:800;color:var(--primary)"><?= h(COMPANY_NAME) ?></div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px"><?= h(COMPANY_ADDRESS) ?></div>
+            <div style="font-size:18px;font-weight:800;color:var(--primary)"><?= h($companyName) ?></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px"><?= h($companyAddress) ?></div>
         </div>
         <div style="text-align:right">
             <div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">SALARY SLIP</div>

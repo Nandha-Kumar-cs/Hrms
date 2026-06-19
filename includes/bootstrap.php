@@ -17,3 +17,5 @@ require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/permissions.php';
 require_once __DIR__ . '/activity_log.php';
+require_once __DIR__ . '/scope.php';
+require_once __DIR__ . '/salary_sync.php';

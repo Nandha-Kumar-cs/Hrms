@@ -2,6 +2,7 @@
 require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('payroll', 'view');
+block_cross_employee();
 
 $runId = (int)($_GET['run_id'] ?? 0);
 if (!$runId) exit('Invalid run');

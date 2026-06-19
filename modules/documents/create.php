@@ -1,7 +1,7 @@
 <?php
 $page_title = 'Upload Document';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
+require_permission('documents', 'create');
 
 $db     = db();
 $emp_id = (int)($_GET['emp_id'] ?? 0);

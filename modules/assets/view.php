@@ -28,6 +28,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act->execute([$id]);
     $activeId = (int)$act->fetchColumn();
 
+    // Self-scoped employees may only act on an asset currently assigned to them.
+    if (is_self_scoped()) {
+        $own = $db->prepare('SELECT 1 FROM asset_assignments WHERE asset_id = ? AND is_returned = 0 AND employee_id = ? LIMIT 1');
+        $own->execute([$id, current_employee_id()]);
+        if (!$own->fetchColumn()) { http_response_code(403); exit('Forbidden'); }
+    }
+
     if ($action === 'return') {
         require_permission('assets', 'return');
         if (!$activeId) {
@@ -96,6 +103,13 @@ $cur = $db->prepare(
 );
 $cur->execute([$id]);
 $current = $cur->fetch();
+
+// Self-scoped employees may only view an asset currently assigned to them.
+if (is_self_scoped() && (!$current || (int)$current['employee_id'] !== current_employee_id())) {
+    http_response_code(403);
+    include BASE_PATH . '/includes/403.php';
+    exit;
+}
 
 // Assignment history (all rows).
 $hist = $db->prepare(

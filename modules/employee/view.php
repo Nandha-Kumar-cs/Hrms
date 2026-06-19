@@ -6,6 +6,10 @@ require_permission('employee');
 $id = (int)($_GET['id'] ?? 0);
 $db = db();
 
+// Employee self-service: a scoped user can only ever view their OWN profile,
+// regardless of the requested id.
+if (is_self_scoped()) $id = current_employee_id();
+
 // Resolve employee BEFORE any output so a bad/missing id can redirect cleanly
 // (the Documents sidebar link, for example, has no id).
 $emp = $db->prepare(
@@ -98,6 +102,25 @@ $doc_rows = $docQ->fetchAll();
 $benQ = $db->prepare('SELECT * FROM employee_benefits WHERE employee_id=? ORDER BY effective_month DESC, id DESC');
 $benQ->execute([$id]);
 $benefit_rows = $benQ->fetchAll();
+
+// Payroll-group history (loans / increments / promotions / bonuses). Each list
+// page lazily creates its table, but a profile may be opened before any record
+// exists, so guard every read so a missing table never breaks the page.
+$safeRows = function (string $sql) use ($db, $id): array {
+    try { $s = $db->prepare($sql); $s->execute([$id]); return $s->fetchAll(); }
+    catch (Throwable $e) { return []; }
+};
+$loan_rows      = $safeRows('SELECT * FROM employee_loans WHERE employee_id=? ORDER BY date_given DESC, id DESC');
+$increment_rows = $safeRows('SELECT * FROM employee_increments WHERE employee_id=? ORDER BY effective_date DESC, id DESC');
+$promotion_rows = $safeRows(
+    'SELECT ep.*, pd.name AS prev_desig, nd.name AS new_desig, d.name AS dept_name
+     FROM employee_promotions ep
+     LEFT JOIN designations pd ON pd.id = ep.previous_designation_id
+     LEFT JOIN designations nd ON nd.id = ep.new_designation_id
+     LEFT JOIN departments  d  ON d.id  = ep.department_id
+     WHERE ep.employee_id=? ORDER BY ep.effective_date DESC, ep.id DESC'
+);
+$bonus_rows     = $safeRows('SELECT * FROM employee_bonuses WHERE employee_id=? ORDER BY payroll_year DESC, payroll_month DESC, id DESC');
 
 // Human-readable file size for the Documents tab.
 $doc_size = function (int $bytes): string {
@@ -550,7 +573,33 @@ $doc_size = function (int $bytes): string {
             <h6 class="fw-semibold mb-0"><i class="fa fa-trophy me-1 text-warning"></i>Bonuses &amp; Incentives</h6>
             <a href="<?= BASE_URL ?>/modules/bonuses/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Bonus</a>
         </div>
+        <?php if ($bonus_rows):
+            $bTypeColors = ['monthly_bonus'=>'primary','performance'=>'success','festival'=>'warning','overtime'=>'info','one_time'=>'secondary'];
+            $bTypeLabels = ['monthly_bonus'=>'Monthly Bonus','performance'=>'Performance Incentive','festival'=>'Festival Bonus','overtime'=>'Overtime Incentive','one_time'=>'One-time Reward'];
+            $bStatColors = ['pending'=>'warning','approved'=>'success','rejected'=>'danger'];
+            $bMonths     = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        ?>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr><th>Type</th><th class="text-end">Amount</th><th>Payroll Month</th><th>Status</th><th>Reason</th></tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($bonus_rows as $b): ?>
+                    <tr>
+                        <td><span class="badge bg-<?= $bTypeColors[$b['type']] ?? 'secondary' ?>"><?= h($bTypeLabels[$b['type']] ?? ucwords(str_replace('_',' ',$b['type']))) ?></span></td>
+                        <td class="text-end fw-semibold text-success"><?= money((float)$b['amount']) ?></td>
+                        <td><?= h(($bMonths[(int)$b['payroll_month']] ?? '') . ' ' . $b['payroll_year']) ?></td>
+                        <td><span class="badge bg-<?= $bStatColors[$b['status']] ?? 'secondary' ?> <?= $b['status']==='pending'?'text-dark':'' ?>"><?= h(ucfirst($b['status'])) ?></span></td>
+                        <td><?= h($b['reason'] ?? '') ?: '<span class="text-muted">—</span>' ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php else: ?>
         <p class="text-muted text-center py-4">No bonus / incentive records.</p>
+        <?php endif; ?>
     </div>
 
     <!-- ── INCREMENTS ───────────────────────────────────────────────── -->
@@ -559,7 +608,32 @@ $doc_size = function (int $bytes): string {
             <h6 class="fw-semibold mb-0">Increment History</h6>
             <a href="<?= BASE_URL ?>/modules/increments/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Increment</a>
         </div>
+        <?php if ($increment_rows): ?>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr><th>Effective Date</th><th class="text-end">Previous Salary</th><th class="text-end">New Salary</th><th class="text-end">Increment</th><th class="text-center">%</th><th>Remarks</th></tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($increment_rows as $inc):
+                        $diff = (float)$inc['new_salary'] - (float)$inc['previous_salary'];
+                        $pct  = (float)$inc['previous_salary'] > 0 ? round($diff / (float)$inc['previous_salary'] * 100, 2) : 0;
+                    ?>
+                    <tr>
+                        <td><?= date('d M Y', strtotime($inc['effective_date'])) ?></td>
+                        <td class="text-end"><?= money((float)$inc['previous_salary']) ?></td>
+                        <td class="text-end fw-semibold"><?= money((float)$inc['new_salary']) ?></td>
+                        <td class="text-end text-success fw-semibold">+<?= money($diff) ?></td>
+                        <td class="text-center"><span class="badge bg-success"><?= $pct ?>%</span></td>
+                        <td><?= h($inc['remarks'] ?? '') ?: '<span class="text-muted">—</span>' ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php else: ?>
         <p class="text-muted text-center py-4">No increment records found.</p>
+        <?php endif; ?>
     </div>
 
     <!-- ── PROMOTIONS ───────────────────────────────────────────────── -->
@@ -568,7 +642,28 @@ $doc_size = function (int $bytes): string {
             <h6 class="fw-semibold mb-0">Promotion History</h6>
             <a href="<?= BASE_URL ?>/modules/promotions/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Promotion</a>
         </div>
+        <?php if ($promotion_rows): ?>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr><th>Effective Date</th><th>Previous Designation</th><th>New Designation</th><th>Department</th><th>Remarks</th></tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($promotion_rows as $p): ?>
+                    <tr>
+                        <td><?= date('d M Y', strtotime($p['effective_date'])) ?></td>
+                        <td class="text-muted"><?= h($p['prev_desig'] ?? '—') ?></td>
+                        <td><strong><?= h($p['new_desig'] ?? '—') ?></strong></td>
+                        <td><?= h($p['dept_name'] ?? '—') ?></td>
+                        <td><?= h($p['remarks'] ?? '') ?: '<span class="text-muted">—</span>' ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php else: ?>
         <p class="text-muted text-center py-4">No promotion records found.</p>
+        <?php endif; ?>
     </div>
 
     <!-- ── LOANS ────────────────────────────────────────────────────── -->
@@ -577,7 +672,33 @@ $doc_size = function (int $bytes): string {
             <h6 class="fw-semibold mb-0">Loan &amp; Advance History</h6>
             <a href="<?= BASE_URL ?>/modules/loans/create.php?emp_id=<?= $id ?>" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>Add Loan / Advance</a>
         </div>
+        <?php if ($loan_rows): ?>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr><th>Type</th><th class="text-end">Principal</th><th class="text-center">Interest %</th><th>Date Given</th><th class="text-end">Monthly EMI</th><th class="text-end">Returned</th><th class="text-end">Pending</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($loan_rows as $l):
+                        $pending = max(0, (float)$l['amount'] - (float)$l['returned_amount']);
+                    ?>
+                    <tr>
+                        <td><span class="badge bg-<?= $l['type']==='loan'?'primary':'info' ?>"><?= h(ucfirst($l['type'])) ?></span></td>
+                        <td class="text-end"><?= money((float)$l['amount']) ?></td>
+                        <td class="text-center"><?= (float)$l['interest_rate'] > 0 ? h($l['interest_rate']).'%' : '—' ?></td>
+                        <td><?= date('d M Y', strtotime($l['date_given'])) ?></td>
+                        <td class="text-end"><?= money((float)$l['monthly_deduction']) ?></td>
+                        <td class="text-end text-success"><?= money((float)$l['returned_amount']) ?></td>
+                        <td class="text-end <?= $pending > 0 ? 'text-danger fw-semibold' : 'text-success' ?>"><?= money($pending) ?></td>
+                        <td><span class="badge bg-<?= $l['status']==='active'?'success':'secondary' ?>"><?= h(ucfirst($l['status'])) ?></span></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php else: ?>
         <p class="text-muted text-center py-4">No loan records found.</p>
+        <?php endif; ?>
     </div>
 
     <!-- ── DOCUMENTS ────────────────────────────────────────────────── -->

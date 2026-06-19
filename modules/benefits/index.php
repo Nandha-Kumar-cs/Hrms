@@ -1,7 +1,7 @@
 <?php
 $page_title = 'Employee Benefits';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
+require_permission('benefits', 'view');
 
 $db = db();
 
@@ -18,6 +18,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_benefits (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp    = (int)($_GET['employee_id'] ?? 0);
+ if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
 $filterStatus = trim($_GET['status'] ?? '');
 
 $sql    = 'SELECT eb.*, e.name AS emp_name, e.employee_id AS emp_code
@@ -33,13 +34,13 @@ $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $benefits = $stmt->fetchAll();
 
-$employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees ORDER BY name')->fetchAll();
+$employees = scope_employees_for_dropdown($db);
 ?>
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
         <h5 class="mb-0 fw-semibold"><i class="fa fa-gift me-2 text-primary"></i>Employee Benefits</h5>
-        <?php if (can('employee','edit')): ?>
+        <?php if (can('benefits','create')): ?>
         <a href="<?= BASE_URL ?>/modules/benefits/create.php" class="btn btn-sm btn-primary">
             <i class="fa fa-plus me-1"></i>Assign Benefit
         </a>
@@ -82,11 +83,11 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                     <tr>
                         <th>#</th>
                         <th>Employee</th>
-                        <th>Fund Type</th>
+                        <th>Fund Type / Benefit</th>
                         <th class="text-end">Amount</th>
-                        <th>Effective Month</th>
+                        <th>Frequency</th>
+                        <th>Coverage</th>
                         <th>Status</th>
-                        <th>Notes</th>
                         <th class="text-center">Action</th>
                     </tr>
                 </thead>
@@ -94,25 +95,65 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                     <?php if (empty($benefits)): ?>
                     <tr><td colspan="8" class="text-center text-muted py-4">No benefit records found.</td></tr>
                     <?php else: ?>
-                    <?php foreach ($benefits as $i => $b): ?>
+                    <?php
+                    $freqLabels = ['weekly'=>'Weekly','fortnightly'=>'Fortnightly','monthly'=>'Monthly','quarterly'=>'Quarterly','half_yearly'=>'Half-Yearly','annual'=>'Annual'];
+                    foreach ($benefits as $i => $b):
+                        $recurring = !empty($b['start_date']);
+                    ?>
                     <tr>
                         <td><?= $i + 1 ?></td>
                         <td>
                             <div class="fw-semibold"><?= h($b['emp_name']) ?></div>
                             <small class="text-muted"><?= h($b['emp_code']) ?></small>
                         </td>
-                        <td><span class="badge bg-secondary"><?= h($b['fund_type']) ?></span></td>
+                        <td>
+                            <div class="fw-semibold"><?= h(!empty($b['benefit_name']) ? $b['benefit_name'] : $b['fund_type']) ?></div>
+                            <?php if (!empty($b['benefit_name'])): ?><small class="text-muted"><?= h($b['fund_type']) ?></small><?php endif; ?>
+                        </td>
                         <td class="text-end fw-semibold text-success"><?= money($b['amount']) ?></td>
-                        <td><?= date('M Y', strtotime($b['effective_month'])) ?></td>
+                        <td>
+                            <?php if ($recurring): ?>
+                            <span class="badge bg-info"><?= h($freqLabels[$b['frequency']] ?? ucfirst((string)$b['frequency'])) ?></span>
+                            <?php else: ?><span class="text-muted">One-time</span><?php endif; ?>
+                        </td>
+                        <td class="small">
+                            <?php if ($recurring): ?>
+                            <?= date('d M Y', strtotime($b['start_date'])) ?> &rarr;
+                            <?= !empty($b['end_date']) ? date('d M Y', strtotime($b['end_date'])) : '<span class="text-muted">Ongoing</span>' ?>
+                            <?php else: ?><?= date('M Y', strtotime($b['effective_month'])) ?><?php endif; ?>
+                        </td>
                         <td>
                             <span class="badge bg-<?= $b['status'] === 'active' ? 'success' : 'secondary' ?>">
                                 <?= ucfirst($b['status']) ?>
                             </span>
                         </td>
-                        <td class="small text-muted"><?= h($b['description'] ?? '—') ?></td>
                         <td class="text-center text-nowrap">
-                            <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $b['employee_id'] ?>#benefits"
-                               class="btn btn-xs btn-outline-primary" title="View Employee"><i class="fa fa-eye"></i></a>
+                            <?php
+                            $benDetail = [
+                                'Employee'        => $b['emp_name'] . ' (' . $b['emp_code'] . ')',
+                                'Fund Type'       => $b['fund_type'],
+                                'Benefit Name'    => $b['benefit_name'] ?: '—',
+                                'Amount'          => money($b['amount']),
+                                'Frequency'       => $recurring ? ($freqLabels[$b['frequency']] ?? ucfirst((string)$b['frequency'])) : 'One-time',
+                                'Coverage'        => $recurring ? (date('d M Y', strtotime($b['start_date'])) . ' → ' . (!empty($b['end_date']) ? date('d M Y', strtotime($b['end_date'])) : 'Ongoing')) : date('M Y', strtotime($b['effective_month'])),
+                                'Status'          => ucfirst($b['status']),
+                                'Notes'           => $b['description'] ?? '—',
+                            ];
+                            ?>
+                            <button type="button" class="btn btn-xs btn-outline-info" title="View Details"
+                                    data-bs-toggle="modal" data-bs-target="#recModal"
+                                    data-rec-title="Benefit — <?= h($b['emp_name']) ?>"
+                                    data-rec="<?= h(json_encode($benDetail)) ?>"><i class="fa fa-eye"></i></button>
+                            <?php if (can('benefits','create')): ?>
+                            <a href="<?= BASE_URL ?>/modules/benefits/create.php?id=<?= $b['id'] ?>"
+                               class="btn btn-xs btn-outline-primary" title="Edit"><i class="fa fa-pen"></i></a>
+                            <form method="POST" action="<?= BASE_URL ?>/modules/benefits/delete.php" class="d-inline"
+                                  onsubmit="return confirm('Delete this benefit record?')">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="id" value="<?= $b['id'] ?>">
+                                <button type="submit" class="btn btn-xs btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -123,4 +164,5 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
     </div>
 </div>
 
+<?php include __DIR__ . '/../../includes/record_modal.php'; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

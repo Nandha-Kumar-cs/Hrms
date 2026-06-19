@@ -21,6 +21,50 @@ require_permission('dashboard');
 // ── Data queries ──────────────────────────────────────────────────────────────
 $db = db();
 
+// ── Employee self-service dashboard — shows only the logged-in employee's data ──
+if (is_self_scoped()) {
+    $eid = current_employee_id();
+    $u   = current_user();
+    $ms  = date('Y-m-01'); $me = date('Y-m-t'); $yr = (int)date('Y');
+    $slipSt = $db->prepare('SELECT net_pay, payroll_month FROM salary_slips WHERE employee_id=? ORDER BY payroll_month DESC, id DESC LIMIT 1');
+    $slipSt->execute([$eid]); $mySlip = $slipSt->fetch();
+    $cnt = function (string $sql, array $p) use ($db) { $s = $db->prepare($sql); $s->execute($p); return (int)$s->fetchColumn(); };
+    $present = $cnt("SELECT COUNT(*) FROM attendance WHERE employee_id=? AND att_date BETWEEN ? AND ? AND status IN ('On Time','Late','OD','Comp Off')", [$eid, $ms, $me]);
+    $pendLv  = $cnt("SELECT COUNT(*) FROM leave_requests WHERE employee_id=? AND status='pending'", [$eid]);
+    $apprLv  = $cnt("SELECT COUNT(*) FROM leave_requests WHERE employee_id=? AND status='approved' AND YEAR(start_date)=?", [$eid, $yr]);
+    ?>
+    <nav aria-label="breadcrumb" class="mb-3"><ol class="breadcrumb"><li class="breadcrumb-item active">My Dashboard</li></ol></nav>
+    <div class="mb-4"><h4 class="fw-semibold mb-1">Welcome, <?= h($u['name'] ?? '') ?></h4>
+        <p class="text-muted small mb-0">Here is your personal overview. You can only see your own records.</p></div>
+    <div class="row g-4 mb-4">
+        <div class="col-xl-3 col-md-6"><div class="card stat-card h-100"><div class="card-body">
+            <div class="text-muted small fw-semibold text-uppercase mb-1">Latest Net Pay</div>
+            <div class="h4 mb-0 fw-bold text-success"><?= $mySlip ? money((float)$mySlip['net_pay']) : '—' ?></div>
+            <div class="small text-muted"><?= $mySlip ? date('F Y', strtotime($mySlip['payroll_month'] . '-01')) : 'No slip yet' ?></div>
+        </div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="card stat-card h-100"><div class="card-body">
+            <div class="text-muted small fw-semibold text-uppercase mb-1">Present Days (This Month)</div>
+            <div class="h4 mb-0 fw-bold text-primary"><?= $present ?></div></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="card stat-card h-100"><div class="card-body">
+            <div class="text-muted small fw-semibold text-uppercase mb-1">Pending Leaves</div>
+            <div class="h4 mb-0 fw-bold text-warning"><?= $pendLv ?></div></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="card stat-card h-100"><div class="card-body">
+            <div class="text-muted small fw-semibold text-uppercase mb-1">Approved Leaves (<?= $yr ?>)</div>
+            <div class="h4 mb-0 fw-bold text-info"><?= $apprLv ?></div></div></div></div>
+    </div>
+    <div class="card page-card"><div class="card-body">
+        <h6 class="fw-semibold mb-3">Quick Links</h6>
+        <div class="d-flex flex-wrap gap-2">
+            <?php if (can('payroll', 'view')): ?><a href="<?= BASE_URL ?>/modules/payroll/index.php" class="btn btn-outline-primary btn-sm"><i class="fa fa-money-bill-wave me-1"></i>My Salary Slips</a><?php endif; ?>
+            <?php if (can('leaves', 'view')): ?><a href="<?= BASE_URL ?>/modules/attendance/leaves.php" class="btn btn-outline-primary btn-sm"><i class="fa fa-calendar-xmark me-1"></i>Leave Requests</a><?php endif; ?>
+            <?php if (can('attendance', 'view')): ?><a href="<?= BASE_URL ?>/modules/attendance/comp_off_credits.php" class="btn btn-outline-primary btn-sm"><i class="fa fa-clock me-1"></i>Comp Off Balance</a><?php endif; ?>
+        </div>
+    </div></div>
+    <?php
+    include __DIR__ . '/includes/footer.php';
+    return;
+}
+
 $totalEmployees    = (int) $db->query('SELECT COUNT(*) FROM employees')->fetchColumn();
 $totalDepartments  = (int) $db->query('SELECT COUNT(*) FROM departments')->fetchColumn();
 $totalSalarySlips  = (int) $db->query('SELECT COUNT(*) FROM salary_slips')->fetchColumn();

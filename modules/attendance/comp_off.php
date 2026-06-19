@@ -10,9 +10,10 @@
  */
 require_once __DIR__ . '/../../includes/comp_off.php';
 require_login();
-require_permission('attendance', 'view');
+require_permission('compoff', 'view');
+block_cross_employee();   // company-wide comp-off management; employees use Comp Off Credits
 
-$user    = current_user();
+$canEdit = can('compoff', 'edit') || can('attendance', 'edit') || can('holidays', 'edit');
 $canEdit = can('attendance', 'edit') || can('holidays', 'edit');
 
 // ── POST actions (grant / avail / remove / destroy) ───────────────────────────

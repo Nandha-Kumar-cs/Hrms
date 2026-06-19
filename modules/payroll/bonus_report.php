@@ -16,7 +16,9 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('payroll', 'view');
+require_permission('report_bonus', 'view');
+// Self-scoped employees see only their own row in this report (not blocked).
+$scopeEmp = scope_employee_id();
 
 $db = db();
 
@@ -37,6 +39,7 @@ if (!isset($TYPE_LABELS[$type])) $type = '';
 $status = (string)($_GET['status'] ?? 'approved');
 if (!in_array($status, ['pending', 'approved', 'rejected', 'all'], true)) $status = 'approved';
 $export = (string)($_GET['export'] ?? '');
+if ($export !== '' && !can('report_bonus', 'export')) { http_response_code(403); exit('You do not have permission to export this report.'); }
 
 $monthName = date('F', mktime(0, 0, 0, $month, 1));
 
@@ -49,6 +52,7 @@ $sql = "SELECT eb.id, eb.type, eb.amount, eb.reason, eb.payroll_month, eb.payrol
         LEFT JOIN departments d ON d.id = e.department_id
         WHERE eb.payroll_month = ? AND eb.payroll_year = ?";
 $params = [$month, $year];
+if ($scopeEmp)         { $sql .= ' AND e.id = ?';           $params[] = $scopeEmp; }
 if ($status !== 'all') { $sql .= ' AND eb.status = ?';       $params[] = $status; }
 if ($type !== '')      { $sql .= ' AND eb.type = ?';         $params[] = $type; }
 if ($deptId)           { $sql .= ' AND e.department_id = ?'; $params[] = $deptId; }
@@ -208,8 +212,10 @@ require_once __DIR__ . '/../../includes/header.php';
         <p class="page-subtitle"><?= h($monthName) ?> <?= $year ?> · <?= $recCount ?> record<?= $recCount === 1 ? '' : 's' ?></p>
     </div>
     <div class="page-actions">
+        <?php if (can('report_bonus', 'export')): ?>
         <a href="?export=csv&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-csv me-1"></i>Excel</a>
         <a href="?export=pdf&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-pdf me-1"></i>PDF</a>
+        <?php endif; ?>
         <button type="button" class="btn btn-secondary" onclick="window.print()"><i class="fa fa-print me-1"></i>Print</button>
     </div>
 </div>

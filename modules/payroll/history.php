@@ -2,6 +2,7 @@
 require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('payroll', 'view');
+block_cross_employee();
 
 $empId = (int)($_GET['employee_id'] ?? 0);
 $employees = db()->query("SELECT id, CONCAT(name,' (',employee_id,')') AS label FROM employees WHERE status='Active' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);

@@ -18,7 +18,9 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('employee', 'view');
+require_permission('report_history', 'view');
+// Self-scoped employees see only their own change history (not blocked).
+$scopeEmp = scope_employee_id();
 
 $db = db();
 
@@ -35,10 +37,12 @@ if (!$validDate($to))   $to = '';
 $ctype    = (string)($_GET['ctype'] ?? '');   // '', 'salary', 'promotion'
 if (!in_array($ctype, ['salary', 'promotion'], true)) $ctype = '';
 $export   = (string)($_GET['export'] ?? '');
+if ($export !== '' && !can('report_history', 'export')) { http_response_code(403); exit('You do not have permission to export this report.'); }
 
 // Shared employee/date WHERE fragments + params.
 $empWhere = '';
 $empParams = [];
+if ($scopeEmp)      { $empWhere .= ' AND e.id = ?'; $empParams[] = $scopeEmp; }
 if ($search !== '') { $empWhere .= ' AND (e.name LIKE ? OR e.employee_id LIKE ?)'; $empParams[] = "%$search%"; $empParams[] = "%$search%"; }
 if ($deptId)        { $empWhere .= ' AND e.department_id = ?';  $empParams[] = $deptId; }
 if ($desigId)       { $empWhere .= ' AND e.designation_id = ?'; $empParams[] = $desigId; }
@@ -218,8 +222,10 @@ require_once __DIR__ . '/../../includes/header.php';
         <p class="page-subtitle">Salary &amp; designation change timeline · <?= $totalCount ?> change<?= $totalCount === 1 ? '' : 's' ?></p>
     </div>
     <div class="page-actions">
+        <?php if (can('report_history', 'export')): ?>
         <a href="?export=csv&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-csv me-1"></i>Excel</a>
         <a href="?export=pdf&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-pdf me-1"></i>PDF</a>
+        <?php endif; ?>
         <button type="button" class="btn btn-secondary" onclick="window.print()"><i class="fa fa-print me-1"></i>Print</button>
     </div>
 </div>

@@ -19,9 +19,10 @@ $db   = db();
 $user = current_user();
 $yearNow = (int)date('Y');
 
-$canCreate = can('leaves', 'create');
-$canEdit   = can('leaves', 'edit');
-$canDelete = can('leaves', 'delete');
+$canCreate  = can('leaves', 'create');
+$canEdit    = can('leaves', 'edit');                          // edit request FIELDS only (no approval)
+$canApprove = can('leaves', 'approve') && !is_self_scoped();  // admin-only approve / reject
+$canDelete  = can('leaves', 'delete');
 
 // Employee self-service: non-privileged employees only see / act on their own records.
 $isEmployee = (($user['role_name'] ?? '') === 'Employee');
@@ -135,7 +136,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($doc === null) { flash('error', 'Document upload failed (allowed: PDF/JPG/PNG/DOC/DOCX, max size).'); redirect($self); }
         }
         $days = leave_days($start, $end);
-        $db->prepare('INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, days_requested, reason, document, status) VALUES (?,?,?,?,?,?,?,"pending")')
+        // Submitted request → engine status + admin approval both start "pending".
+        $db->prepare('INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, days_requested, reason, document, status, admin_approval_status) VALUES (?,?,?,?,?,?,?,"pending","pending")')
            ->execute([$emp, $typeId, $start, $end, $days, $reason ?: null, $doc]);
         flash('success', 'Leave request submitted.');
         redirect($self);
@@ -149,12 +151,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$req) { flash('error', 'Leave request not found.'); redirect($self); }
 
     if ($action === 'approve' || $action === 'reject') {
-        if (!$canEdit) { http_response_code(403); exit('Forbidden'); }
-        if ($req['status'] !== 'pending') { flash('error', 'Only pending requests can be ' . $action . 'd.'); redirect($self); }
+        // Admin-only: requires the separate approve permission (never editors/employees).
+        if (!$canApprove) { http_response_code(403); exit('Forbidden'); }
+        if (($req['admin_approval_status'] ?? 'pending') !== 'pending') { flash('error', 'Only pending requests can be ' . $action . 'd.'); redirect($self); }
         $remarks = trim($_POST['remarks'] ?? '');
 
         if ($action === 'reject') {
-            $db->prepare("UPDATE leave_requests SET status='rejected', approved_by=?, approved_at=NOW(), remarks=? WHERE id=?")
+            $db->prepare("UPDATE leave_requests SET admin_approval_status='rejected', status='rejected', approved_by=?, approved_at=NOW(), remarks=? WHERE id=?")
                ->execute([(int)$user['id'], $remarks ?: null, $id]);
             flash('success', 'Leave request rejected.');
             redirect($self);
@@ -164,7 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($c = leave_paid_conflict((int)$req['employee_id'], (int)$req['leave_type_id'], $req['start_date'], $req['end_date'], $id)) { flash('error', $c); redirect($self); }
         if ($req['is_comp_off'] && ($c = comp_off_check_balance((int)$req['employee_id'], (int)$req['days_requested'], $id))) { flash('error', $c); redirect($self); }
 
-        $db->prepare("UPDATE leave_requests SET status='approved', approved_by=?, approved_at=NOW(), remarks=? WHERE id=?")
+        $db->prepare("UPDATE leave_requests SET admin_approval_status='approved', status='approved', approved_by=?, approved_at=NOW(), remarks=? WHERE id=?")
            ->execute([(int)$user['id'], $remarks ?: null, $id]);
         leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $yearNow, (float)$req['days_allowed'], (float)$req['days_requested']);
         leave_apply_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name'], (int)$user['id']);
@@ -174,6 +177,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'delete') {
         if (!$canDelete) { http_response_code(403); exit('Forbidden'); }
+        if (is_self_scoped() && (int)$req['employee_id'] !== $selfEmpId) { http_response_code(403); exit('Forbidden'); }
         if ($req['status'] === 'approved') {
             leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $yearNow, (float)$req['days_allowed'], -(float)$req['days_requested']);
             leave_remove_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name']);
@@ -187,14 +191,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'update') {
+        // Edit permission lets a user change the request FIELDS only — never the
+        // admin approval decision. The admin_approval_status/status are preserved.
         if (!$canEdit) { http_response_code(403); exit('Forbidden'); }
-        $emp    = (int)($_POST['employee_id'] ?? 0);
+        // Self-scoped employees may only edit their OWN request.
+        if (is_self_scoped() && (int)$req['employee_id'] !== $selfEmpId) { http_response_code(403); exit('Forbidden'); }
+
+        // A self-scoped employee cannot reassign the request to another employee.
+        $emp    = is_self_scoped() ? (int)$req['employee_id'] : (int)($_POST['employee_id'] ?? 0);
         $typeId = (int)($_POST['leave_type_id'] ?? 0);
         $start  = sanitize($_POST['start_date'] ?? '');
         $end    = sanitize($_POST['end_date'] ?? '');
         $reason = trim($_POST['reason'] ?? '');
-        $status = in_array($_POST['status'] ?? '', ['pending','approved','rejected'], true) ? $_POST['status'] : 'pending';
-        $remarks= trim($_POST['remarks'] ?? '');
         $type   = $loadType($typeId);
 
         $errors = [];
@@ -205,13 +213,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $days = leave_days($start, $end);
 
-        // Reverse old approved effects first.
-        if ($req['status'] === 'approved') {
+        // The approval decision is left exactly as it was — editing never changes it.
+        $wasApproved = ($req['status'] === 'approved');
+
+        // If it was already approved, reverse the old effects so the edited dates
+        // re-apply cleanly (then re-validate the new range against the rules).
+        if ($wasApproved) {
             leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $yearNow, (float)$req['days_allowed'], -(float)$req['days_requested']);
             leave_remove_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name']);
-        }
-
-        if ($status === 'approved') {
             if ($c = leave_paid_conflict($emp, $typeId, $start, $end, $id)) { flash('error', $c); redirect($self); }
             if ($type['is_comp_off'] && ($c = comp_off_check_balance($emp, $days, $id))) { flash('error', $c); redirect($self); }
         }
@@ -228,16 +237,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $doc = null;
         }
 
-        $appBy = $status === 'pending' ? null : (int)$user['id'];
-        $appAt = $status === 'pending' ? null : date('Y-m-d H:i:s');
-        $rem   = $status === 'pending' ? null : ($remarks ?: null);
-        $db->prepare('UPDATE leave_requests SET employee_id=?, leave_type_id=?, start_date=?, end_date=?, days_requested=?, reason=?, document=?, status=?, approved_by=?, approved_at=?, remarks=? WHERE id=?')
-           ->execute([$emp, $typeId, $start, $end, $days, $reason ?: null, $doc, $status, $appBy, $appAt, $rem, $id]);
+        // Persist field edits only — status & admin_approval_status are untouched.
+        $db->prepare('UPDATE leave_requests SET employee_id=?, leave_type_id=?, start_date=?, end_date=?, days_requested=?, reason=?, document=? WHERE id=?')
+           ->execute([$emp, $typeId, $start, $end, $days, $reason ?: null, $doc, $id]);
 
-        if ($status === 'approved') {
-            $tn = $type['name'];
+        // Re-apply approved effects with the edited values.
+        if ($wasApproved) {
             leave_balance_adjust($emp, $typeId, $yearNow, (float)$type['days_allowed'], (float)$days);
-            leave_apply_attendance($emp, $start, $end, $tn, (int)$user['id']);
+            leave_apply_attendance($emp, $start, $end, $type['name'], (int)$user['id']);
         }
         flash('success', 'Leave request updated.');
         redirect($self);
@@ -246,228 +253,313 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect($self);
 }
 
-/* ── View ───────────────────────────────────────────────────────────────────── */
-$rowsSql = "SELECT lr.*, e.name AS emp_name, e.employee_id AS emp_code, lt.name AS type_name,
-            lt.days_allowed, u.name AS approver
-     FROM leave_requests lr
-     JOIN employees e ON e.id = lr.employee_id
-     JOIN leave_types lt ON lt.id = lr.leave_type_id
-     LEFT JOIN users u ON u.id = lr.approved_by";
-if ($isEmployee) {
-    $rs = $db->prepare($rowsSql . " WHERE lr.employee_id = ? ORDER BY lr.created_at DESC, lr.id DESC");
-    $rs->execute([$selfEmpId]);
-    $rows = $rs->fetchAll();
-} else {
-    $rows = $db->query($rowsSql . " ORDER BY lr.created_at DESC, lr.id DESC")->fetchAll();
-}
+/* ── View dispatcher (mirrors the Laravel index / create / show / edit screens) ── */
+$self    = BASE_URL . '/modules/attendance/leaves.php';
+$viewId  = (int)($_GET['view'] ?? 0);
+$editId  = (int)($_GET['edit'] ?? 0);
+$screen  = isset($_GET['new']) ? 'new' : ($viewId ? 'view' : ($editId ? 'edit' : 'list'));
 
 $employees  = $db->query("SELECT id, name, employee_id FROM employees WHERE status='Active' ORDER BY name")->fetchAll();
 $selfName   = '';
-if ($isEmployee) {
-    foreach ($employees as $e) if ((int)$e['id'] === $selfEmpId) { $selfName = $e['name'] . ' (' . $e['employee_id'] . ')'; break; }
-}
-$leaveTypes = $db->query("SELECT id, name, days_allowed FROM leave_types WHERE status='active' ORDER BY name")->fetchAll();
-
-// Per-row data for the View/Edit modals.
-$rowData = [];
-foreach ($rows as $r) {
-    $rowData[$r['id']] = [
-        'id' => $r['id'], 'employee_id' => $r['employee_id'], 'emp' => $r['emp_name'] . ' (' . $r['emp_code'] . ')',
-        'leave_type_id' => $r['leave_type_id'], 'type' => $r['type_name'],
-        'start_date' => $r['start_date'], 'end_date' => $r['end_date'], 'days' => $r['days_requested'],
-        'reason' => $r['reason'], 'status' => $r['status'], 'remarks' => $r['remarks'],
-        'document' => $r['document'], 'approver' => $r['approver'], 'approved_at' => $r['approved_at'],
-    ];
-}
-
+if ($isEmployee) foreach ($employees as $e) if ((int)$e['id'] === $selfEmpId) { $selfName = $e['name'] . ' (' . $e['employee_id'] . ')'; break; }
+$leaveTypes = $db->query("SELECT id, name, days_allowed, is_paid, is_comp_off FROM leave_types WHERE status='active' ORDER BY name")->fetchAll();
 $statusBadge = ['pending' => 'warning text-dark', 'approved' => 'success', 'rejected' => 'danger'];
+
+/** Load one request with employee/type/approver context. */
+$leaveLoad = function (int $id) use ($db) {
+    $s = $db->prepare(
+        "SELECT lr.*, e.name emp_name, e.employee_id emp_code, lt.name type_name, lt.days_allowed, lt.is_paid, lt.is_comp_off,
+                u.name approver, d.name dept_name, des.name desig_name
+         FROM leave_requests lr
+         JOIN employees e ON e.id = lr.employee_id
+         JOIN leave_types lt ON lt.id = lr.leave_type_id
+         LEFT JOIN users u ON u.id = lr.approved_by
+         LEFT JOIN departments d ON d.id = e.department_id
+         LEFT JOIN designations des ON des.id = e.designation_id
+         WHERE lr.id = ?"
+    );
+    $s->execute([$id]);
+    return $s->fetch();
+};
+
+$current = null;
+if ($screen === 'view' || $screen === 'edit') {
+    $current = $leaveLoad($viewId ?: $editId);
+    if (!$current || ($isEmployee && (int)$current['employee_id'] !== $selfEmpId)) { $screen = 'list'; $current = null; }
+    if ($screen === 'edit' && !$canEdit) { $screen = 'view'; }
+}
+if (($screen === 'new' && !$canCreate)) { $screen = 'list'; }
+
+/** Short period label "01 Jan 2026" or "01 Jan 2026 – 03 Jan 2026". */
+$period = function ($s, $e) {
+    $sf = (new DateTime($s))->format('d M Y');
+    return $s === $e ? $sf : $sf . ' – ' . (new DateTime($e))->format('d M Y');
+};
+$fmtDays = fn ($d) => rtrim(rtrim(number_format((float)$d, 1), '0'), '.');
 
 $page_title = 'Leave Requests';
 require_once __DIR__ . '/../../includes/header.php';
-?>
-<div class="page-header">
-    <div>
-        <h1 class="page-title">Leave Requests</h1>
-        <p class="page-subtitle">Apply, approve and track employee leave</p>
-    </div>
-    <div class="page-actions d-flex gap-2 align-items-center">
-        <a href="<?= BASE_URL ?>/modules/attendance/leave_history.php" class="btn btn-sm btn-outline-secondary"><i class="fa fa-clock-rotate-left me-1"></i>Leave History</a>
-        <?php if ($canCreate): ?>
-        <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#leaveNewModal"><i class="fa fa-plus me-1"></i>New Request</button>
-        <?php endif; ?>
-    </div>
-</div>
+render_flash();
 
-<?php render_flash(); ?>
-
-<div class="card page-card">
-    <div class="card-body table-responsive">
-        <table class="table table-hover table-bordered align-middle" id="tbl-leaves">
-            <thead class="table-dark"><tr>
-                <th>Employee</th><th>Leave Type</th><th>Period</th><th class="text-center">Days</th><th class="text-center">Status</th><th class="text-center" style="width:200px">Actions</th>
-            </tr></thead>
-            <tbody>
-            <?php foreach ($rows as $r): $sObj = new DateTime($r['start_date']); $eObj = new DateTime($r['end_date']); ?>
-                <tr>
-                    <td><strong><?= h($r['emp_code']) ?></strong> <span class="text-muted">— <?= h($r['emp_name']) ?></span></td>
-                    <td><?= h($r['type_name']) ?></td>
-                    <td><?= $sObj->format('d M Y') ?><?= $r['start_date'] !== $r['end_date'] ? ' – ' . $eObj->format('d M Y') : '' ?></td>
-                    <td class="text-center"><?= rtrim(rtrim(number_format((float)$r['days_requested'], 1), '0'), '.') ?></td>
-                    <td class="text-center"><span class="badge bg-<?= $statusBadge[$r['status']] ?? 'secondary' ?>"><?= ucfirst($r['status']) ?></span></td>
-                    <td class="text-center text-nowrap">
-                        <button class="btn btn-sm btn-outline-primary leave-view" data-id="<?= $r['id'] ?>" title="View"><i class="fa fa-eye"></i></button>
-                        <?php if ($canEdit && $r['status'] === 'pending'): ?>
-                        <form method="POST" class="d-inline"><?= csrf_field() ?><input type="hidden" name="action" value="approve"><input type="hidden" name="id" value="<?= $r['id'] ?>">
-                            <button class="btn btn-sm btn-outline-success" title="Approve" onclick="return confirm('Approve this leave?')"><i class="fa fa-check"></i></button></form>
-                        <button class="btn btn-sm btn-outline-danger leave-reject" data-id="<?= $r['id'] ?>" title="Reject"><i class="fa fa-xmark"></i></button>
-                        <?php endif; ?>
-                        <?php if ($canEdit): ?>
-                        <button class="btn btn-sm btn-outline-warning leave-edit" data-id="<?= $r['id'] ?>" title="Edit"><i class="fa fa-pen"></i></button>
-                        <?php endif; ?>
-                        <?php if ($canDelete): ?>
-                        <form method="POST" class="d-inline" onsubmit="return confirm('Delete this leave request? Approved requests will have balance &amp; attendance reversed.')">
-                            <?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= $r['id'] ?>">
-                            <button class="btn btn-sm btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button></form>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
+/* ═══════════════ CREATE SCREEN ═══════════════ */
+if ($screen === 'new'): ?>
+<div class="card page-card" style="max-width:620px">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2">
+        <a href="<?= $self ?>" class="btn btn-sm btn-outline-secondary"><i class="fa fa-arrow-left"></i></a>
+        <h5 class="mb-0 fw-semibold">New Leave Request</h5>
     </div>
-</div>
-
-<?php if ($canCreate): ?>
-<!-- New Request modal -->
-<div class="modal fade" id="leaveNewModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <form class="modal-content" method="POST" enctype="multipart/form-data">
+    <div class="card-body">
+        <form method="POST" enctype="multipart/form-data">
             <?= csrf_field() ?><input type="hidden" name="action" value="create">
-            <div class="modal-header"><h5 class="modal-title">New Leave Request</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-            <div class="modal-body">
-                <div class="mb-3"><label class="form-label">Employee <span class="text-danger">*</span></label>
-                    <?php if ($isEmployee): ?>
-                        <input type="text" class="form-control" value="<?= h($selfName) ?>" readonly>
-                    <?php else: ?>
-                    <select name="employee_id" class="form-select" required><option value="">Select Employee</option>
-                        <?php foreach ($employees as $e): ?><option value="<?= $e['id'] ?>"><?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)</option><?php endforeach; ?>
-                    </select>
-                    <?php endif; ?></div>
-                <div class="mb-3"><label class="form-label">Leave Type <span class="text-danger">*</span></label>
-                    <select name="leave_type_id" class="form-select" required><option value="">Select Leave Type</option>
-                        <?php foreach ($leaveTypes as $lt): ?><option value="<?= $lt['id'] ?>"><?= h($lt['name']) ?> (<?= (int)$lt['days_allowed'] ?> days/yr)</option><?php endforeach; ?>
-                    </select></div>
-                <div class="row g-3 mb-3">
-                    <div class="col-md-6"><label class="form-label">Start Date <span class="text-danger">*</span></label><input type="date" name="start_date" class="form-control" required></div>
-                    <div class="col-md-6"><label class="form-label">End Date <span class="text-danger">*</span></label><input type="date" name="end_date" class="form-control" required></div>
-                </div>
-                <div class="mb-3"><label class="form-label">Reason</label><textarea name="reason" class="form-control" rows="2" maxlength="500"></textarea></div>
-                <div class="mb-1"><label class="form-label">Supporting Document <span class="text-muted">(optional)</span></label>
-                    <input type="file" name="document" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
-                    <div class="form-text">PDF, JPG, PNG, DOC, DOCX · max 5 MB.</div></div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Employee <span class="text-danger">*</span></label>
+                <?php if ($isEmployee): ?>
+                    <input type="text" class="form-control" value="<?= h($selfName) ?>" readonly>
+                <?php else: ?>
+                <select name="employee_id" class="form-select" required>
+                    <option value="">Select Employee</option>
+                    <?php foreach ($employees as $e): ?><option value="<?= $e['id'] ?>"><?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)</option><?php endforeach; ?>
+                </select>
+                <?php endif; ?>
             </div>
-            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary"><i class="fa fa-paper-plane me-1"></i>Submit</button></div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Leave Type <span class="text-danger">*</span></label>
+                <select name="leave_type_id" class="form-select" required>
+                    <option value="">Select Leave Type</option>
+                    <?php foreach ($leaveTypes as $lt): ?><option value="<?= $lt['id'] ?>"><?= h($lt['name']) ?> (<?= (int)$lt['days_allowed'] ?> days/yr)</option><?php endforeach; ?>
+                </select>
+            </div>
+            <div class="row g-3 mb-3">
+                <div class="col-md-6"><label class="form-label fw-semibold">Start Date <span class="text-danger">*</span></label><input type="date" name="start_date" class="form-control" value="<?= date('Y-m-d') ?>" required></div>
+                <div class="col-md-6"><label class="form-label fw-semibold">End Date <span class="text-danger">*</span></label><input type="date" name="end_date" class="form-control" value="<?= date('Y-m-d') ?>" required></div>
+            </div>
+            <div class="mb-3"><label class="form-label fw-semibold">Reason</label><textarea name="reason" class="form-control" rows="3" maxlength="500" placeholder="Optional reason"></textarea></div>
+            <div class="mb-4">
+                <label class="form-label fw-semibold">Supporting Document <span class="text-muted fw-normal">(Optional)</span></label>
+                <input type="file" name="document" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                <div class="form-text"><i class="fa fa-info-circle me-1 text-primary"></i>Accepted: PDF, JPG, PNG, DOC, DOCX &nbsp;·&nbsp; Max size: 5 MB</div>
+            </div>
+            <button type="submit" class="btn btn-primary"><i class="fa fa-paper-plane me-1"></i>Submit Request</button>
         </form>
     </div>
 </div>
-<?php endif; ?>
 
-<?php if ($canEdit): ?>
-<!-- Edit modal -->
-<div class="modal fade" id="leaveEditModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <form class="modal-content" method="POST" enctype="multipart/form-data">
-            <?= csrf_field() ?><input type="hidden" name="action" value="update"><input type="hidden" name="id" id="edId">
-            <div class="modal-header"><h5 class="modal-title">Edit Leave Request</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-            <div class="modal-body">
-                <div class="mb-3"><label class="form-label">Employee <span class="text-danger">*</span></label>
-                    <select name="employee_id" id="edEmp" class="form-select" required>
-                        <?php foreach ($employees as $e): ?><option value="<?= $e['id'] ?>"><?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)</option><?php endforeach; ?>
-                    </select></div>
-                <div class="mb-3"><label class="form-label">Leave Type <span class="text-danger">*</span></label>
-                    <select name="leave_type_id" id="edType" class="form-select" required>
-                        <?php foreach ($leaveTypes as $lt): ?><option value="<?= $lt['id'] ?>"><?= h($lt['name']) ?></option><?php endforeach; ?>
-                    </select></div>
-                <div class="row g-3 mb-3">
-                    <div class="col-md-6"><label class="form-label">Start Date <span class="text-danger">*</span></label><input type="date" name="start_date" id="edStart" class="form-control" required></div>
-                    <div class="col-md-6"><label class="form-label">End Date <span class="text-danger">*</span></label><input type="date" name="end_date" id="edEnd" class="form-control" required></div>
+<?php /* ═══════════════ SHOW SCREEN ═══════════════ */
+elseif ($screen === 'view'):
+    $balS = $db->prepare('SELECT total_days, used_days, GREATEST(0, total_days-used_days) AS remaining FROM leave_balances WHERE employee_id=? AND leave_type_id=? AND year=?');
+    $balS->execute([$current['employee_id'], $current['leave_type_id'], $yearNow]);
+    $bal = $balS->fetch();
+?>
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card page-card">
+            <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
+                <div class="d-flex align-items-center gap-2">
+                    <a href="<?= $self ?>" class="btn btn-sm btn-outline-secondary"><i class="fa fa-arrow-left"></i></a>
+                    <h5 class="mb-0 fw-semibold">Leave Request #<?= (int)$current['id'] ?></h5>
                 </div>
-                <div class="mb-3"><label class="form-label">Reason</label><textarea name="reason" id="edReason" class="form-control" rows="2" maxlength="500"></textarea></div>
-                <div class="row g-3 mb-3">
-                    <div class="col-md-6"><label class="form-label">Status</label>
-                        <select name="status" id="edStatus" class="form-select"><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></div>
-                    <div class="col-md-6"><label class="form-label">Remarks</label><input type="text" name="remarks" id="edRemarks" class="form-control" maxlength="500"></div>
-                </div>
-                <div class="mb-1"><label class="form-label">Replace Document <span class="text-muted">(optional)</span></label>
-                    <input type="file" name="document" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
-                    <div class="form-check mt-2"><input class="form-check-input" type="checkbox" name="remove_document" value="1" id="edRemoveDoc"><label class="form-check-label" for="edRemoveDoc">Remove existing document</label></div>
+                <div class="d-flex gap-2">
+                    <span class="badge bg-info">Submitted</span>
+                    <span class="badge bg-<?= $statusBadge[$current['admin_approval_status']] ?? 'secondary' ?>">Admin: <?= ucfirst($current['admin_approval_status']) ?></span>
                 </div>
             </div>
-            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Save</button></div>
-        </form>
+            <div class="card-body">
+                <table class="table table-borderless table-sm">
+                    <tr><th class="text-muted" style="width:160px">Employee</th><td><strong><?= h($current['emp_name']) ?></strong> (<?= h($current['emp_code']) ?>)</td></tr>
+                    <tr><th class="text-muted">Department</th><td><?= h($current['dept_name'] ?? '') ?: '—' ?></td></tr>
+                    <tr><th class="text-muted">Designation</th><td><?= h($current['desig_name'] ?? '') ?: '—' ?></td></tr>
+                    <tr><th class="text-muted">Leave Type</th><td><?= h($current['type_name']) ?></td></tr>
+                    <tr><th class="text-muted">From</th><td><?= date_fmt($current['start_date']) ?></td></tr>
+                    <tr><th class="text-muted">To</th><td><?= date_fmt($current['end_date']) ?></td></tr>
+                    <tr><th class="text-muted">Days Requested</th><td><strong><?= $fmtDays($current['days_requested']) ?></strong></td></tr>
+                    <tr><th class="text-muted">Reason</th><td><?= h($current['reason'] ?? '') ?: '—' ?></td></tr>
+                    <?php if ($current['document']): ?>
+                    <tr><th class="text-muted">Document</th><td><a href="<?= BASE_URL ?>/uploads/leave_docs/<?= h($current['document']) ?>" target="_blank" class="btn btn-sm btn-outline-primary"><i class="fa fa-paperclip me-1"></i>View Attachment</a></td></tr>
+                    <?php endif; ?>
+                    <tr><th class="text-muted">Request Status</th><td><span class="badge bg-info">Submitted</span></td></tr>
+                    <tr><th class="text-muted">Admin Approval Status</th><td><span class="badge bg-<?= $statusBadge[$current['admin_approval_status']] ?? 'secondary' ?>"><?= ucfirst($current['admin_approval_status']) ?></span></td></tr>
+                    <?php if ($current['admin_approval_status'] !== 'pending'): ?>
+                    <tr><th class="text-muted"><?= ucfirst($current['admin_approval_status']) ?> By</th><td><?= h($current['approver'] ?? '') ?: '—' ?></td></tr>
+                    <tr><th class="text-muted"><?= ucfirst($current['admin_approval_status']) ?> At</th><td><?= $current['approved_at'] ? date_fmt($current['approved_at'], 'd M Y H:i') : '—' ?></td></tr>
+                    <?php if ($current['remarks']): ?><tr><th class="text-muted">Admin Remarks</th><td><?= h($current['remarks']) ?></td></tr><?php endif; ?>
+                    <?php endif; ?>
+                </table>
+                <?php if ($bal): ?>
+                <div class="alert alert-info mt-3"><i class="fa fa-info-circle me-2"></i>
+                    <strong><?= h($current['type_name']) ?> Balance (<?= $yearNow ?>):</strong>
+                    <?= $fmtDays($bal['remaining']) ?> days remaining of <?= $fmtDays($bal['total_days']) ?> total (<?= $fmtDays($bal['used_days']) ?> used)
+                </div>
+                <?php endif; ?>
+                <div class="d-flex gap-2 mt-2">
+                    <?php if ($canEdit): ?><a href="?edit=<?= (int)$current['id'] ?>" class="btn btn-sm btn-outline-warning"><i class="fa fa-pen me-1"></i>Edit</a><?php endif; ?>
+                    <?php if ($canDelete): ?>
+                    <form method="POST" onsubmit="return confirm('Delete this leave request?<?= $current['status']==='approved' ? ' Balance & attendance will be reversed.' : '' ?>')">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= (int)$current['id'] ?>">
+                        <button class="btn btn-sm btn-outline-danger"><i class="fa fa-trash me-1"></i>Delete</button>
+                    </form>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
     </div>
+    <?php if ($current['admin_approval_status'] === 'pending' && $canApprove): ?>
+    <div class="col-lg-4">
+        <div class="card page-card">
+            <div class="card-header bg-white py-3"><h6 class="mb-0 fw-semibold">Admin Approval</h6></div>
+            <div class="card-body">
+                <form method="POST" class="mb-3">
+                    <?= csrf_field() ?><input type="hidden" name="action" value="approve"><input type="hidden" name="id" value="<?= (int)$current['id'] ?>">
+                    <div class="mb-2"><label class="form-label small">Approval Remarks (optional)</label><textarea name="remarks" class="form-control form-control-sm" rows="2" placeholder="e.g. Approved, enjoy your leave."></textarea></div>
+                    <button class="btn btn-success w-100"><i class="fa fa-check me-1"></i>Approve Request</button>
+                </form>
+                <hr>
+                <form method="POST">
+                    <?= csrf_field() ?><input type="hidden" name="action" value="reject"><input type="hidden" name="id" value="<?= (int)$current['id'] ?>">
+                    <div class="mb-2"><label class="form-label small">Rejection Reason</label><textarea name="remarks" class="form-control form-control-sm" rows="2" placeholder="Reason for rejection..."></textarea></div>
+                    <button class="btn btn-danger w-100"><i class="fa fa-xmark me-1"></i>Reject Request</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 
-<!-- Reject modal -->
-<div class="modal fade" id="leaveRejectModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-sm">
-        <form class="modal-content" method="POST">
-            <?= csrf_field() ?><input type="hidden" name="action" value="reject"><input type="hidden" name="id" id="rjId">
-            <div class="modal-header"><h6 class="modal-title text-danger">Reject Leave</h6><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-            <div class="modal-body"><label class="form-label small">Remarks (optional)</label><textarea name="remarks" class="form-control" rows="2"></textarea></div>
-            <div class="modal-footer"><button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-sm btn-danger">Reject</button></div>
-        </form>
+<?php /* ═══════════════ EDIT SCREEN ═══════════════ */
+elseif ($screen === 'edit'): ?>
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card page-card">
+            <div class="card-header bg-white py-3 d-flex align-items-center gap-2">
+                <a href="?view=<?= (int)$current['id'] ?>" class="btn btn-sm btn-outline-secondary"><i class="fa fa-arrow-left"></i></a>
+                <h5 class="mb-0 fw-semibold">Edit Leave Request #<?= (int)$current['id'] ?></h5>
+                <span class="ms-2 badge bg-info">Submitted</span>
+                <span class="badge bg-<?= $statusBadge[$current['admin_approval_status']] ?? 'secondary' ?>">Admin: <?= ucfirst($current['admin_approval_status']) ?></span>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-light border d-flex align-items-start gap-2 mb-4"><i class="fa fa-circle-info mt-1 text-primary"></i>
+                    <div>You can edit the request details only. The <strong>Admin Approval status</strong> is not changed by editing — only an admin can approve or reject it.</div>
+                </div>
+                <?php if ($current['admin_approval_status'] === 'approved'): ?>
+                <div class="alert alert-warning d-flex align-items-start gap-2 mb-4"><i class="fa fa-triangle-exclamation mt-1"></i>
+                    <div><strong>This request is already Approved.</strong><br>Editing the dates re-syncs the leave balance and the <em>On Leave</em> attendance. The approval stays <strong>Approved</strong>.</div>
+                </div>
+                <?php endif; ?>
+                <form method="POST" enctype="multipart/form-data">
+                    <?= csrf_field() ?><input type="hidden" name="action" value="update"><input type="hidden" name="id" value="<?= (int)$current['id'] ?>">
+                    <div class="mb-3"><label class="form-label fw-semibold">Employee <span class="text-danger">*</span></label>
+                        <?php if (is_self_scoped()): ?>
+                        <input type="text" class="form-control" value="<?= h($current['emp_name'] . ' (' . $current['emp_code'] . ')') ?>" readonly>
+                        <?php else: ?>
+                        <select name="employee_id" class="form-select" required>
+                            <?php foreach ($employees as $e): ?><option value="<?= $e['id'] ?>" <?= (int)$current['employee_id']===(int)$e['id']?'selected':'' ?>><?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)</option><?php endforeach; ?>
+                        </select>
+                        <?php endif; ?>
+                    </div>
+                    <div class="mb-3"><label class="form-label fw-semibold">Leave Type <span class="text-danger">*</span></label>
+                        <select name="leave_type_id" class="form-select" required>
+                            <?php foreach ($leaveTypes as $lt): ?><option value="<?= $lt['id'] ?>" <?= (int)$current['leave_type_id']===(int)$lt['id']?'selected':'' ?>><?= h($lt['name']) ?> (<?= $lt['is_paid']?'Paid':'Unpaid' ?>, <?= (int)$lt['days_allowed'] ?> days/yr)</option><?php endforeach; ?>
+                        </select></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label fw-semibold">Start Date <span class="text-danger">*</span></label><input type="date" name="start_date" class="form-control" value="<?= h($current['start_date']) ?>" required></div>
+                        <div class="col-md-6"><label class="form-label fw-semibold">End Date <span class="text-danger">*</span></label><input type="date" name="end_date" class="form-control" value="<?= h($current['end_date']) ?>" required></div>
+                    </div>
+                    <div class="mb-3"><label class="form-label fw-semibold">Reason</label><textarea name="reason" class="form-control" rows="3" maxlength="500"><?= h($current['reason'] ?? '') ?></textarea></div>
+                    <div class="mb-3"><label class="form-label fw-semibold">Supporting Document <span class="text-muted fw-normal">(Optional)</span></label>
+                        <?php if ($current['document']): ?>
+                        <div class="d-flex align-items-center gap-2 mb-2 p-2 border rounded bg-light">
+                            <i class="fa fa-paperclip text-primary"></i>
+                            <a href="<?= BASE_URL ?>/uploads/leave_docs/<?= h($current['document']) ?>" target="_blank" class="text-primary text-decoration-none fw-semibold small"><?= h($current['document']) ?></a>
+                            <span class="ms-auto"><label class="form-check-label small text-danger d-flex align-items-center gap-1 mb-0" style="cursor:pointer"><input type="checkbox" name="remove_document" value="1" class="form-check-input mt-0">Remove file</label></span>
+                        </div>
+                        <div class="form-text mb-1">Upload a new file below to replace the existing one.</div>
+                        <?php endif; ?>
+                        <input type="file" name="document" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                        <div class="form-text"><i class="fa fa-info-circle me-1 text-primary"></i>Accepted: PDF, JPG, PNG, DOC, DOCX &nbsp;·&nbsp; Max size: 5 MB</div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary"><i class="fa fa-save me-1"></i>Save Changes</button>
+                        <a href="?view=<?= (int)$current['id'] ?>" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
     </div>
-</div>
-<?php endif; ?>
-
-<!-- View modal -->
-<div class="modal fade" id="leaveViewModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header"><h5 class="modal-title">Leave Request</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-            <div class="modal-body" id="vwBody"></div>
+    <div class="col-lg-4">
+        <div class="card page-card">
+            <div class="card-header bg-white py-3"><h6 class="mb-0 fw-semibold"><i class="fa fa-circle-info me-2 text-primary"></i>Current Details</h6></div>
+            <div class="card-body small">
+                <table class="table table-sm table-borderless mb-0">
+                    <tr><th class="text-muted">Employee</th><td><?= h($current['emp_name']) ?></td></tr>
+                    <tr><th class="text-muted">Leave Type</th><td><?= h($current['type_name']) ?></td></tr>
+                    <tr><th class="text-muted">Period</th><td><?= $period($current['start_date'], $current['end_date']) ?></td></tr>
+                    <tr><th class="text-muted">Days</th><td><strong><?= $fmtDays($current['days_requested']) ?></strong></td></tr>
+                    <tr><th class="text-muted">Request Status</th><td><span class="badge bg-info">Submitted</span></td></tr>
+                    <tr><th class="text-muted">Admin Approval</th><td><span class="badge bg-<?= $statusBadge[$current['admin_approval_status']] ?? 'secondary' ?>"><?= ucfirst($current['admin_approval_status']) ?></span></td></tr>
+                </table>
+            </div>
+        </div>
+        <div class="card page-card mt-3 border-info">
+            <div class="card-body small text-muted"><i class="fa fa-circle-info text-info me-1"></i>Editing changes the request details only. Approval is handled separately by an admin.</div>
         </div>
     </div>
 </div>
-
-<script>window.LEAVES = <?= json_encode($rowData) ?>; window.LEAVE_DOC_BASE = '<?= BASE_URL ?>/uploads/leave_docs/';</script>
+<?php
+/* ═══════════════ LIST SCREEN ═══════════════ */
+else:
+    $rowsSql = "SELECT lr.*, e.name AS emp_name, e.employee_id AS emp_code, lt.name AS type_name
+                FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN leave_types lt ON lt.id=lr.leave_type_id";
+    if ($isEmployee) { $rs = $db->prepare($rowsSql . " WHERE lr.employee_id=? ORDER BY lr.created_at DESC, lr.id DESC"); $rs->execute([$selfEmpId]); $rows = $rs->fetchAll(); }
+    else             { $rows = $db->query($rowsSql . " ORDER BY lr.created_at DESC, lr.id DESC")->fetchAll(); }
+?>
+<div class="card page-card">
+    <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <h5 class="mb-0 fw-semibold"><i class="fa fa-calendar-xmark me-2 text-primary"></i>Leave Requests</h5>
+        <div class="d-flex gap-2">
+            <a href="<?= BASE_URL ?>/modules/attendance/leave_history.php" class="btn btn-sm btn-outline-secondary"><i class="fa fa-clock-rotate-left me-1"></i>Leave History</a>
+            <?php if ($canCreate): ?><a href="?new=1" class="btn btn-sm btn-primary"><i class="fa fa-plus me-1"></i>New Request</a><?php endif; ?>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table id="leaveTable" class="table table-hover table-bordered align-middle mb-0">
+                <thead class="table-dark"><tr>
+                    <th>Employee</th><th>Leave Type</th><th>Period</th><th class="text-center">Days</th><th class="text-center">Status</th><th class="text-center">Admin Approval</th><th class="text-center" style="width:150px">Action</th>
+                </tr></thead>
+                <tbody>
+                <?php foreach ($rows as $r): ?>
+                    <tr>
+                        <td><div class="fw-semibold"><?= h($r['emp_name']) ?></div><small class="text-muted"><?= h($r['emp_code']) ?></small></td>
+                        <td><span class="badge bg-primary bg-opacity-75"><?= h($r['type_name']) ?></span></td>
+                        <td><?= $period($r['start_date'], $r['end_date']) ?></td>
+                        <td class="text-center"><span class="badge bg-secondary"><?= $fmtDays($r['days_requested']) ?>d</span></td>
+                        <td class="text-center"><span class="badge bg-info">Submitted</span></td>
+                        <td class="text-center"><span class="badge bg-<?= $statusBadge[$r['admin_approval_status'] ?? 'pending'] ?? 'secondary' ?>"><?= ucfirst($r['admin_approval_status'] ?? 'pending') ?></span></td>
+                        <td class="text-center text-nowrap">
+                            <a href="?view=<?= $r['id'] ?>" class="btn btn-sm btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
+                            <?php if ($canEdit): ?><a href="?edit=<?= $r['id'] ?>" class="btn btn-sm btn-outline-warning" title="Edit"><i class="fa fa-pen"></i></a><?php endif; ?>
+                            <?php if ($canDelete): ?>
+                            <form method="POST" class="d-inline leave-delete-form">
+                                <?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= $r['id'] ?>">
+                                <button class="btn btn-sm btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 <?php $page_scripts = <<<'JS'
 <script>
 $(function () {
-    if ($.fn.DataTable) $('#tbl-leaves').DataTable({ pageLength: 25, order: [], columnDefs: [{ orderable: false, targets: [5] }], language: { search: '', searchPlaceholder: 'Search leaves...' } });
-
-    $(document).on('click', '.leave-view', function () {
-        var r = window.LEAVES[$(this).data('id')]; if (!r) return;
-        var doc = r.document ? '<a href="' + window.LEAVE_DOC_BASE + r.document + '" target="_blank">View document</a>' : '<span class="text-muted">None</span>';
-        $('#vwBody').html(
-            '<dl class="row mb-0">' +
-            '<dt class="col-4">Employee</dt><dd class="col-8">' + r.emp + '</dd>' +
-            '<dt class="col-4">Leave Type</dt><dd class="col-8">' + r.type + '</dd>' +
-            '<dt class="col-4">Period</dt><dd class="col-8">' + r.start_date + ' to ' + r.end_date + ' (' + r.days + ' day(s))</dd>' +
-            '<dt class="col-4">Status</dt><dd class="col-8">' + r.status + '</dd>' +
-            '<dt class="col-4">Reason</dt><dd class="col-8">' + (r.reason ? $('<div>').text(r.reason).html() : '—') + '</dd>' +
-            '<dt class="col-4">Remarks</dt><dd class="col-8">' + (r.remarks ? $('<div>').text(r.remarks).html() : '—') + '</dd>' +
-            '<dt class="col-4">Approved By</dt><dd class="col-8">' + (r.approver || '—') + (r.approved_at ? ' on ' + r.approved_at : '') + '</dd>' +
-            '<dt class="col-4">Document</dt><dd class="col-8">' + doc + '</dd>' +
-            '</dl>'
-        );
-        new bootstrap.Modal(document.getElementById('leaveViewModal')).show();
-    });
-
-    $(document).on('click', '.leave-edit', function () {
-        var r = window.LEAVES[$(this).data('id')]; if (!r) return;
-        $('#edId').val(r.id); $('#edEmp').val(r.employee_id); $('#edType').val(r.leave_type_id);
-        $('#edStart').val(r.start_date); $('#edEnd').val(r.end_date); $('#edReason').val(r.reason || '');
-        $('#edStatus').val(r.status); $('#edRemarks').val(r.remarks || ''); $('#edRemoveDoc').prop('checked', false);
-        new bootstrap.Modal(document.getElementById('leaveEditModal')).show();
-    });
-
-    $(document).on('click', '.leave-reject', function () {
-        $('#rjId').val($(this).data('id'));
-        new bootstrap.Modal(document.getElementById('leaveRejectModal')).show();
+    if ($.fn.DataTable) $('#leaveTable').DataTable({ pageLength: 25, order: [[3,'desc']], columnDefs: [{ orderable:false, targets:[2,4,5,6] }], language: { search:'', searchPlaceholder:'Search…' } });
+    $('#leaveTable').on('submit', '.leave-delete-form', function (e) {
+        if (!confirm('Delete this leave request?\nApproved requests will have their balance and attendance automatically reversed.')) e.preventDefault();
     });
 });
 </script>
-JS; ?>
+JS;
+endif; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

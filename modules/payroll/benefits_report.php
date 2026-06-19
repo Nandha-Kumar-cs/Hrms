@@ -15,7 +15,9 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('payroll', 'view');
+require_permission('report_benefits', 'view');
+// Self-scoped employees see only their own row in this report (not blocked).
+$scopeEmp = scope_employee_id();
 
 $db = db();
 
@@ -30,6 +32,7 @@ if (mb_strlen($search) > 100) $search = mb_substr($search, 0, 100);
 $status = (string)($_GET['status'] ?? 'active');
 if (!in_array($status, ['active', 'inactive', 'all'], true)) $status = 'active';
 $export = (string)($_GET['export'] ?? '');
+if ($export !== '' && !can('report_benefits', 'export')) { http_response_code(403); exit('You do not have permission to export this report.'); }
 
 $monthName = date('F', mktime(0, 0, 0, $month, 1));
 
@@ -44,6 +47,7 @@ $sql = "SELECT eb.id, eb.fund_type, eb.amount, eb.effective_month, eb.status,
                ON LOWER(bt.name) COLLATE utf8mb4_general_ci = LOWER(eb.fund_type) COLLATE utf8mb4_general_ci
         WHERE MONTH(eb.effective_month) = ? AND YEAR(eb.effective_month) = ?";
 $params = [$month, $year];
+if ($scopeEmp)         { $sql .= ' AND e.id = ?';            $params[] = $scopeEmp; }
 if ($status !== 'all') { $sql .= ' AND eb.status = ?';        $params[] = $status; }
 if ($deptId)           { $sql .= ' AND e.department_id = ?';  $params[] = $deptId; }
 if ($search !== '')    { $sql .= ' AND (e.name LIKE ? OR e.employee_id LIKE ?)'; $params[] = "%$search%"; $params[] = "%$search%"; }
@@ -208,8 +212,10 @@ require_once __DIR__ . '/../../includes/header.php';
         <p class="page-subtitle"><?= h($monthName) ?> <?= $year ?> · <?= $empCount ?> benefit record<?= $empCount === 1 ? '' : 's' ?></p>
     </div>
     <div class="page-actions">
+        <?php if (can('report_benefits', 'export')): ?>
         <a href="?export=csv&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-csv me-1"></i>Excel</a>
         <a href="?export=pdf&<?= h($exportQs) ?>" class="btn btn-secondary"><i class="fa fa-file-pdf me-1"></i>PDF</a>
+        <?php endif; ?>
         <button type="button" class="btn btn-secondary" onclick="window.print()"><i class="fa fa-print me-1"></i>Print</button>
     </div>
 </div>

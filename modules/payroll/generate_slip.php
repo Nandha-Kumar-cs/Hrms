@@ -89,6 +89,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── Run payroll calculation ──────────────────────────────────────────────
     $result = $calc->computePayroll($employee, $components, $month, $year, $fixedSalary, $variableSalary);
 
+    // Fold in the employee's active Benefits & approved Bonuses (earnings) and
+    // active Loan/Advance EMIs (deduction). Core formulas are untouched — gross,
+    // total deductions and net pay are simply re-summed to include these items.
+    require_once __DIR__ . '/../../includes/payroll_extras.php';
+    $result = payroll_apply_extras($db, $result, $empId, $month, $year);
+
     // ── Persist slip ─────────────────────────────────────────────────────────
     $allowancesJson    = json_encode($result['allowances'],    JSON_UNESCAPED_UNICODE);
     $deductionsJson    = json_encode($result['deductions'],    JSON_UNESCAPED_UNICODE);

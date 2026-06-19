@@ -329,9 +329,12 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
         </li>
 
         <!-- ── PEOPLE ──────────────────────────────────────────────────── -->
+        <?php if (can_any('employee') || can_any('letters') || can_any('documents') || can_any('assets')): ?>
         <div class="sidebar-section">People</div>
+        <?php endif; ?>
 
         <!-- Employees submenu -->
+        <?php if (can('employee', 'view') || can_any('letters') || can('documents', 'view')): ?>
         <li>
             <a class="nav-link <?= $_empActive ?>"
                data-bs-toggle="collapse" href="#empMenu" role="button"
@@ -343,41 +346,61 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             </a>
             <div class="collapse <?= $_empActive ? 'show' : '' ?>" id="empMenu">
                 <ul class="sidebar-submenu">
+                    <?php if (can('employee', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/employee/index.php"
                            class="nav-link <?= _sb_active('/modules/employee/') ?>">
                             Employees List
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('letters', 'offer')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/letters/index.php?type=offer"
                            class="nav-link <?= _sb_active('type=offer') ?>">
                             Offer Letters
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('letters', 'confirmation')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/letters/index.php?type=confirmation"
                            class="nav-link <?= _sb_active('type=confirmation') ?>">
                             Confirmation Letters
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('letters', 'increment')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/letters/index.php?type=increment"
                            class="nav-link <?= _sb_active('type=increment') ?>">
                             Increment Letters
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('letters', 'promotion')): ?>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/letters/index.php?type=promotion"
+                           class="nav-link <?= _sb_active('type=promotion') ?>">
+                            Promotion
+                        </a>
+                    </li>
+                    <?php endif; ?>
+                    <?php if (can('documents', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/documents/index.php"
                            class="nav-link <?= _sb_active('/modules/documents/') ?>">
                             Documents
                         </a>
                     </li>
+                    <?php endif; ?>
                 </ul>
             </div>
         </li>
+        <?php endif; ?>
 
         <!-- Assets submenu -->
+        <?php if (can('assets', 'view')): ?>
         <li>
             <a class="nav-link <?= $_assetActive ?>"
                data-bs-toggle="collapse" href="#assetMenu" role="button"
@@ -404,8 +427,10 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                 </ul>
             </div>
         </li>
+        <?php endif; ?>
 
         <!-- ── PAYROLL ─────────────────────────────────────────────────── -->
+        <?php if (can('payroll', 'calculate') || can('payroll', 'view') || can_any('loans') || can_any('increments') || can_any('promotions') || can_any('benefits') || can_any('bonuses')): ?>
         <div class="sidebar-section">Payroll</div>
 
         <!-- Payroll submenu -->
@@ -420,53 +445,69 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             </a>
             <div class="collapse <?= $_payActive ? 'show' : '' ?>" id="payMenu">
                 <ul class="sidebar-submenu">
+                    <?php if (can('payroll', 'calculate')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/calculate.php"
                            class="nav-link <?= $_calcActive ?>">
                             Salary Calculation
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('payroll', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/index.php"
                            class="nav-link <?= _sb_active('/payroll/index', '/payroll/slip') ?>">
                             Salary Slips
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('loans', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/loans/index.php"
                            class="nav-link <?= _sb_active('/modules/loans/') ?>">
                             Loans &amp; Advances
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('increments', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/increments/index.php"
                            class="nav-link <?= _sb_active('/modules/increments/') ?>">
                             Increments
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('promotions', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/promotions/index.php"
                            class="nav-link <?= _sb_active('/modules/promotions/') ?>">
                             Promotions
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('benefits', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/benefits/index.php"
                            class="nav-link <?= _sb_active('/modules/benefits/') ?>">
                             Benefits
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('bonuses', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/bonuses/index.php"
                            class="nav-link <?= _sb_active('/modules/bonuses/') ?>">
                             Bonuses &amp; Incentives
                         </a>
                     </li>
+                    <?php endif; ?>
                 </ul>
             </div>
         </li>
+        <?php endif; ?>
 
         <!-- ── ATTENDANCE ──────────────────────────────────────────────── -->
+        <?php if (can('attendance', 'view') || can('attendance', 'report') || can('attendance', 'mark') || can('leaves', 'view') || can('leave_history', 'view') || can('od', 'view') || can('holidays', 'view') || can('compoff', 'view') || can('compoff_credits', 'view')): ?>
         <li>
             <a class="nav-link <?= $_attActive ?>"
                data-bs-toggle="collapse" href="#attMenu" role="button"
@@ -478,30 +519,38 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             </a>
             <div class="collapse <?= $_attActive ? 'show' : '' ?>" id="attMenu">
                 <ul class="sidebar-submenu">
+                    <?php if (can('attendance', 'mark')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/mark.php"
                            class="nav-link <?= _sb_active('/attendance/mark') ?>">
                             Mark Attendance
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('attendance', 'report')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/report.php"
                            class="nav-link <?= _sb_active('/attendance/report') ?>">
                             Attendance Report
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('leaves', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/leaves.php"
                            class="nav-link <?= _sb_active('/attendance/leaves') ?>">
                             Leave Requests
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('leave_history', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/leave_history.php"
                            class="nav-link <?= _sb_active('/attendance/leave_history') ?>">
                             Leave History
                         </a>
                     </li>
+                    <?php endif; ?>
                     <?php if (can('holidays', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/holidays/index.php"
@@ -510,24 +559,22 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <?php endif; ?>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/attendance/calendar.php"
-                           class="nav-link <?= _sb_active('/attendance/calendar') ?>">
-                            Attendance Calendar
-                        </a>
-                    </li>
+                    <?php if (can('compoff', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/comp_off.php"
                            class="nav-link <?= _sb_active('/attendance/comp_off.php') ?>">
                             Comp Offs
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('compoff_credits', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/comp_off_credits.php"
                            class="nav-link <?= _sb_active('/attendance/comp_off_credits') ?>">
                             Comp Off Credits
                         </a>
                     </li>
+                    <?php endif; ?>
                     <?php if (can('od', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/attendance/od_requests.php"
@@ -539,9 +586,10 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                 </ul>
             </div>
         </li>
+        <?php endif; ?>
 
         <!-- ── REPORTS ─────────────────────────────────────────────────── -->
-        <?php if ($_sbPriv): ?>
+        <?php if (can('report_benefits', 'view') || can('report_bonus', 'view') || can('report_history', 'view') || can('report_impact', 'view')): ?>
         <li>
             <a class="nav-link <?= $_repActive ?>"
                data-bs-toggle="collapse" href="#repMenu" role="button"
@@ -553,36 +601,45 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             </a>
             <div class="collapse <?= $_repActive ? 'show' : '' ?>" id="repMenu">
                 <ul class="sidebar-submenu">
+                    <?php if (can('report_benefits', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/benefits_report.php"
                            class="nav-link <?= _sb_active('/payroll/benefits_report') ?>">
                             Monthly Benefits
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('report_bonus', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/bonus_report.php"
                            class="nav-link <?= _sb_active('/payroll/bonus_report') ?>">
                             Bonus Report
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('report_history', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/employee/history_report.php"
                            class="nav-link <?= _sb_active('/employee/history_report') ?>">
                             Employee History
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('report_impact', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/payroll_impact_report.php"
                            class="nav-link <?= _sb_active('/payroll/payroll_impact_report') ?>">
                             Payroll Impact
                         </a>
                     </li>
+                    <?php endif; ?>
                 </ul>
             </div>
         </li>
         <?php endif; ?>
 
         <!-- ── LEARNING ─────────────────────────────────────────────────── -->
+        <?php if (can('training', 'view')): ?>
         <div class="sidebar-section">Learning</div>
 
         <li>
@@ -593,6 +650,7 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                 <span class="nav-label">Training</span>
             </a>
         </li>
+        <?php endif; ?>
 
         <!-- ── AUDIT (Admin only) ─────────────────────────────────────── -->
         <?php if ($_sbAdmin): ?>
@@ -620,13 +678,15 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
             </a>
             <div class="collapse <?= $_settActive ? 'show' : '' ?>" id="settMenu">
                 <ul class="sidebar-submenu">
-                    <?php if ($_sbAdmin): ?>
+                    <?php if (can('users', 'view')): ?>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=users"
-                           class="nav-link <?= _sb_active('tab=users') ?>">
+                        <a href="<?= BASE_URL ?>/modules/settings/users.php"
+                           class="nav-link <?= _sb_active('/settings/users') ?>">
                             User Management
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if ($_sbAdmin): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/roles/index.php"
                            class="nav-link <?= _sb_active('/modules/roles/') ?>">

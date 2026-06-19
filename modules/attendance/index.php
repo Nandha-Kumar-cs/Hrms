@@ -14,6 +14,10 @@ if (!preg_match('/^\d{4}-\d{2}$/', $month)) $month = date('Y-m');
 $emp_filter = (int)($_GET['emp_id'] ?? 0);
 $activeTab  = in_array($_GET['tab'] ?? '', ['records','report']) ? $_GET['tab'] : 'records';
 
+// Employee self-service: force the filter to the logged-in employee's own id.
+if (is_self_scoped()) $emp_filter = current_employee_id();
+$scopeEmp = is_self_scoped() ? (' AND e.id = ' . current_employee_id()) : '';
+
 // Month bounds
 $monthStart = $month . '-01';
 $monthEnd   = date('Y-m-t', strtotime($monthStart));
@@ -24,7 +28,7 @@ $reqMonth = (int)date('n', strtotime($monthStart));
 
 // Employees for filter dropdown
 $employees = $db->query(
-    "SELECT id, name, employee_id FROM employees WHERE status='Active' ORDER BY name"
+    "SELECT id, name, employee_id FROM employees e WHERE status='Active'{$scopeEmp} ORDER BY name"
 )->fetchAll();
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -116,7 +120,7 @@ if ($activeTab === 'report') {
         "SELECT e.id, e.name, e.employee_id AS emp_code, COALESCE(d.name,'—') AS dept_name
          FROM employees e
          LEFT JOIN departments d ON d.id = e.department_id
-         WHERE e.status='Active' ORDER BY e.name"
+         WHERE e.status='Active'{$scopeEmp} ORDER BY e.name"
     )->fetchAll();
     $empCount = count($mxEmployees);
 
@@ -753,9 +757,6 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
 <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
     <a href="comp_off.php"  class="btn btn-sm"><i class="fa fa-arrows-rotate"></i> Comp Off Requests</a>
     <a href="od_requests.php" class="btn btn-sm"><i class="fa fa-car"></i> OD Requests</a>
-    <a href="calendar.php<?= $emp_filter ? '?employee_id='.$emp_filter : '' ?>" class="btn btn-sm">
-        <i class="fa fa-calendar"></i> Calendar View
-    </a>
 </div>
 
 <!-- ── Edit Modal ─────────────────────────────────────────────────────── -->

@@ -13,9 +13,9 @@
  */
 require_once __DIR__ . '/../../includes/comp_off.php';
 require_login();
-require_permission('attendance', 'view');
+require_permission('compoff_credits', 'view');
 
-$canEdit = can('attendance', 'edit') || can('holidays', 'edit');
+$canEdit = can('compoff_credits', 'edit') || can('attendance', 'edit') || can('holidays', 'edit');
 
 // Employee self-service: an Employee only sees their own credits / balance.
 $user       = current_user();

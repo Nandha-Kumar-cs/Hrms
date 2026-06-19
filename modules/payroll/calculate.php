@@ -9,7 +9,9 @@
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_once __DIR__ . '/../../includes/PayrollCalculator.php';
 require_login();
-require_permission('payroll', 'view');
+require_permission('payroll', 'calculate');
+// Self-scoped employees are not blocked — they see only their own calculation row.
+$scopeEmp = scope_employee_id();
 
 $db          = db();
 $currentYear = (int)date('Y');
@@ -26,17 +28,20 @@ $calDays      = (int)date('t', strtotime($monthStart));
 // ─── Load salary components ──────────────────────────────────────────────────
 $components = $db->query('SELECT * FROM salary_components ORDER BY type, name')->fetchAll();
 
-// ─── Load all active employees with salary structures ────────────────────────
-$employees = $db->query(
-    'SELECT e.*, d.name AS dept_name, des.name AS desig_name,
+// ─── Load active employees with salary structures (own row only if self-scoped) ─
+$empSql = 'SELECT e.*, d.name AS dept_name, des.name AS desig_name,
             ss.gross AS salary_gross, ss.effective_from
      FROM employees e
      LEFT JOIN departments d   ON d.id = e.department_id
      LEFT JOIN designations des ON des.id = e.designation_id
      LEFT JOIN salary_structures ss ON ss.employee_id = e.id AND ss.is_current = 1
-     WHERE e.status = "Active"
-     ORDER BY e.name'
-)->fetchAll();
+     WHERE e.status = "Active"';
+$empParams = [];
+if ($scopeEmp) { $empSql .= ' AND e.id = ?'; $empParams[] = $scopeEmp; }
+$empSql .= ' ORDER BY e.name';
+$empStmt = $db->prepare($empSql);
+$empStmt->execute($empParams);
+$employees = $empStmt->fetchAll();
 
 // ─── Load existing slips for this month ─────────────────────────────────────
 $slipMap = [];
@@ -89,6 +94,10 @@ foreach ($employees as $emp) {
     }
 
     $result = $calc->computePayroll($emp, $components, $month, $year, $fixedSalary, $variableSalary);
+    // Fold in benefits / bonuses (earnings) and loan EMIs (deduction) so the
+    // preview matches the generated slip. (See includes/payroll_extras.php.)
+    require_once __DIR__ . '/../../includes/payroll_extras.php';
+    $result = payroll_apply_extras($db, $result, $empId, $month, $year);
     $as     = $result['attendance_summary'];
 
     // Derive OT amount and absent+late from result

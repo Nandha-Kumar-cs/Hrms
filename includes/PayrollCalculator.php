@@ -31,11 +31,21 @@ class PayrollCalculator
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Resolve the effective fixed & variable salary for a given employee/month.
+     * Resolve the fixed & variable salary that was IN EFFECT at the end of the
+     * given month — so a slip for a past month uses the salary applicable then,
+     * never the current (post-increment) salary.
      *
-     * Look-up order:
-     *   1. Most recent salary_structures row with effective_from ≤ last day of month
-     *   2. Fallback: employees.fixed_salary (if column exists) or 0
+     * Resolution (point-in-time):
+     *   1. The most recent salary EVENT on/before month-end, taking whichever is
+     *      later of:
+     *        • a salary_structures row (covers manual CTC edits), or
+     *        • an employee_increments row (the audit trail of increments).
+     *   2. If the month predates every salary event, the pre-increment original
+     *      salary = the earliest increment's `previous_salary`.
+     *   3. Fallback: employees.fixed_salary, else 0.
+     *
+     * NB: `is_current` is intentionally NOT used here — it marks today's active
+     * salary, which is wrong for historical months.
      *
      * Returns ['fixed' => float, 'variable' => float]
      */
@@ -43,24 +53,54 @@ class PayrollCalculator
     {
         $lastDay = date('Y-m-t', mktime(0, 0, 0, $month, 1, $year));
 
-        $stmt = $this->db->prepare(
-            'SELECT gross, 0 AS variable FROM salary_structures
-              WHERE employee_id = ? AND effective_from <= ? AND is_current = 1
-              ORDER BY effective_from DESC
-              LIMIT 1'
+        // Latest structure effective on/before month-end.
+        $struct = $this->db->prepare(
+            'SELECT gross AS amount, effective_from AS eff FROM salary_structures
+              WHERE employee_id = ? AND effective_from <= ?
+              ORDER BY effective_from DESC, id DESC LIMIT 1'
         );
-        $stmt->execute([$employeeId, $lastDay]);
-        $row = $stmt->fetch();
+        $struct->execute([$employeeId, $lastDay]);
+        $sRow = $struct->fetch();
 
-        if ($row) {
-            return ['fixed' => (float)$row['gross'], 'variable' => (float)$row['variable']];
+        // Latest increment effective on/before month-end.
+        $inc = $this->db->prepare(
+            'SELECT new_salary AS amount, effective_date AS eff FROM employee_increments
+              WHERE employee_id = ? AND effective_date <= ?
+              ORDER BY effective_date DESC, id DESC LIMIT 1'
+        );
+        $inc->execute([$employeeId, $lastDay]);
+        $iRow = $inc->fetch();
+
+        $candidate = null;
+        if ($sRow && $iRow) {
+            // The later event wins; on a tie prefer the increment (explicit change).
+            $candidate = ($iRow['eff'] >= $sRow['eff']) ? $iRow['amount'] : $sRow['amount'];
+        } elseif ($sRow) {
+            $candidate = $sRow['amount'];
+        } elseif ($iRow) {
+            $candidate = $iRow['amount'];
         }
 
-        // Fallback: try employees.fixed_salary column
-        $emp = $this->db->prepare('SELECT * FROM employees WHERE id = ? LIMIT 1');
+        if ($candidate === null) {
+            // Month predates every salary event → original pre-increment salary.
+            $prev = $this->db->prepare(
+                'SELECT previous_salary FROM employee_increments
+                  WHERE employee_id = ? AND effective_date > ?
+                  ORDER BY effective_date ASC, id ASC LIMIT 1'
+            );
+            $prev->execute([$employeeId, $lastDay]);
+            $p = $prev->fetchColumn();
+            if ($p !== false && $p !== null) $candidate = (float)$p;
+        }
+
+        if ($candidate !== null && (float)$candidate > 0) {
+            return ['fixed' => (float)$candidate, 'variable' => 0.0];
+        }
+
+        // Fallback: current CTC on the employee master.
+        $emp = $this->db->prepare('SELECT fixed_salary FROM employees WHERE id = ? LIMIT 1');
         $emp->execute([$employeeId]);
-        $eRow = $emp->fetch();
-        $fixed = isset($eRow['fixed_salary']) ? (float)$eRow['fixed_salary'] : 0.0;
+        $fixed = (float)($emp->fetchColumn() ?: 0);
         return ['fixed' => $fixed, 'variable' => 0.0];
     }
 
@@ -100,8 +140,9 @@ class PayrollCalculator
         $holRows->execute([$monthStart, $monthEnd]);
         $holidayDates = array_flip($holRows->fetchAll(PDO::FETCH_COLUMN));
 
-        $workingDays = 0;
-        $satCount    = 0;                            // counts Saturdays as we pass them
+        $workingDays     = 0;
+        $satCount        = 0;                        // counts Saturdays as we pass them
+        $workingDayDates = [];                       // 'Y-m-d' of each working day
         for ($d = 1; $d <= $calDays; $d++) {
             $ts  = mktime(0, 0, 0, $month, $d, $year);
             $dow = (int)date('N', $ts);              // 1 = Mon … 6 = Sat … 7 = Sun
@@ -114,10 +155,21 @@ class PayrollCalculator
             }
             if (isset($holidayDates[$ds])) continue; // declared holiday
             $workingDays++;
+            $workingDayDates[] = $ds;
         }
 
         // ── Attendance counts ─────────────────────────────────────────────────
         $att = $this->getAttendance($empId, $monthStart, $monthEnd);
+
+        // Approved PAID leave (e.g. Casual Leave) for the month counts as paid
+        // leave: excluded from LOP and shown in the Paid Leave column. Approval
+        // already caps paid leave at 1 per month — we honour what was approved.
+        // Unpaid leave types (e.g. Loss of Pay) are NOT included, so they remain
+        // LOP. Only the existing paid_leave/leave counters are adjusted — no
+        // salary formula or rate is changed.
+        $approvedPaidLeave = $this->getApprovedPaidLeaveDays($empId, $monthStart, $monthEnd, $workingDayDates);
+        $att['paid_leave'] += $approvedPaidLeave;
+        $att['leave']      += $approvedPaidLeave;
 
         $presentDays = $att['present'] + ($att['half_day'] * 0.5);
         $absentDays  = max(0.0, $workingDays - $presentDays - $att['paid_leave']);
@@ -257,6 +309,7 @@ class PayrollCalculator
             'half_days'             => $att['half_day'],
             'leave_days'            => $att['leave'],
             'paid_leave_days'       => $att['paid_leave'],
+            'approved_leave_days'   => $approvedPaidLeave,
             'absent_days'           => (float)$absentDays,
             'late_days'             => $att['late'],
             'no_checkout_absent'    => 0,
@@ -312,6 +365,44 @@ class PayrollCalculator
             return round((float)$comp['value'] / 100 * $ctc, 2);
         }
         return round((float)$comp['value'], 2);
+    }
+
+    /**
+     * Count working-day dates in [$from,$to] covered by APPROVED, paid leave
+     * requests for the employee. Used to credit approved Casual/Sick/etc. leave
+     * as paid leave (no LOP). Unpaid leave types (is_paid = 0) are excluded.
+     * Each working day is counted once even if multiple requests overlap.
+     */
+    private function getApprovedPaidLeaveDays(int $empId, string $from, string $to, array $workingDayDates): int
+    {
+        if (!$workingDayDates) return 0;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT lr.start_date, lr.end_date
+                   FROM leave_requests lr
+                   JOIN leave_types lt ON lt.id = lr.leave_type_id
+                  WHERE lr.employee_id = ?
+                    AND lr.status = 'approved'
+                    AND lt.is_paid = 1
+                    AND lr.end_date >= ? AND lr.start_date <= ?"
+            );
+            $stmt->execute([$empId, $from, $to]);
+            $reqs = $stmt->fetchAll();
+        } catch (Throwable $e) {
+            return 0;   // leave tables not present on this install — no effect
+        }
+
+        $workingSet = array_flip($workingDayDates);
+        $counted    = [];
+        foreach ($reqs as $r) {
+            $d = new DateTime($r['start_date'] < $from ? $from : $r['start_date']);
+            $e = new DateTime($r['end_date']   > $to   ? $to   : $r['end_date']);
+            for (; $d <= $e; $d->modify('+1 day')) {
+                $ds = $d->format('Y-m-d');
+                if (isset($workingSet[$ds])) $counted[$ds] = true;
+            }
+        }
+        return count($counted);
     }
 
     private function getAttendance(int $empId, string $from, string $to): array

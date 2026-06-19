@@ -15,5 +15,11 @@ if (!$letter || $letter['status'] !== 'Draft') {
 db()->prepare("UPDATE letters SET status='Issued', issued_by=:uid WHERE id=:id")
      ->execute([':uid'=>current_user()['id'],':id'=>$id]);
 
+// Keep the promotion-history row's status aligned with the letter.
+if ($letter['type'] === 'Promotion') {
+    require_once __DIR__ . '/../../includes/promotion_sync.php';
+    promotion_sync_status(db(), $id, 'Issued');
+}
+
 flash('success','Letter issued successfully.');
 redirect(BASE_URL . "/modules/letters/view.php?id=$id");

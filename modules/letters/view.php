@@ -1,7 +1,6 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('letters', 'view');
 
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/letters/index.php');
@@ -21,6 +20,9 @@ $letter = db()->query("SELECT l.*, e.name AS emp_name, e.employee_id AS emp_code
     WHERE l.id=$id")->fetch(PDO::FETCH_ASSOC);
 
 if (!$letter) redirect(BASE_URL . '/modules/letters/index.php');
+
+// Sub-menu permission: the user must have access to this letter's type.
+require_permission('letters', strtolower($letter['type']));
 
 // Company identity for the letterhead: prefer the employee's linked entity,
 // fall back to the global company constants when none is assigned.

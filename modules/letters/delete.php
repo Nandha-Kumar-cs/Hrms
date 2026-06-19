@@ -23,6 +23,11 @@ if (is_admin()) {
 }
 
 if ($allowed) {
+    // Unified workflow: deleting a promotion letter removes its history row too.
+    if ($letter['type'] === 'Promotion') {
+        require_once __DIR__ . '/../../includes/promotion_sync.php';
+        promotion_sync_delete(db(), $id);
+    }
     db()->prepare('DELETE FROM letters WHERE id = ?')->execute([$id]);
     flash('success', 'Letter deleted.');
 } elseif ($letter['status'] !== 'Draft') {

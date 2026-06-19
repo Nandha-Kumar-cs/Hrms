@@ -5,18 +5,37 @@ require_permission('assets');
 
 $db = db();
 
+// Self-scoped employees only ever see the assets currently assigned to them.
+$scopeEmp = scope_employee_id();
+
 // ── Status counts for the 4 metric cards ─────────────────────────────────────
-$counts = $db->query(
-    "SELECT
-        SUM(status = 'Available')    AS available,
-        SUM(status = 'Assigned')     AS assigned,
-        SUM(status = 'Under Repair') AS under_repair,
-        SUM(status = 'Retired')      AS retired
-     FROM assets"
-)->fetch();
+if ($scopeEmp) {
+    // For an employee, the only assets in view are their own (all "Assigned").
+    $cs = $db->prepare(
+        "SELECT
+            SUM(a.status = 'Available')    AS available,
+            SUM(a.status = 'Assigned')     AS assigned,
+            SUM(a.status = 'Under Repair') AS under_repair,
+            SUM(a.status = 'Retired')      AS retired
+         FROM assets a
+         JOIN asset_assignments aa ON aa.asset_id = a.id AND aa.is_returned = 0
+         WHERE aa.employee_id = ?"
+    );
+    $cs->execute([$scopeEmp]);
+    $counts = $cs->fetch();
+} else {
+    $counts = $db->query(
+        "SELECT
+            SUM(status = 'Available')    AS available,
+            SUM(status = 'Assigned')     AS assigned,
+            SUM(status = 'Under Repair') AS under_repair,
+            SUM(status = 'Retired')      AS retired
+         FROM assets"
+    )->fetch();
+}
 
 // ── Full asset list with category + currently assigned employee ───────────────
-$assets = $db->query(
+$assetSql =
     "SELECT a.*,
             c.name  AS cat_name,
             e.name  AS assigned_to,
@@ -25,9 +44,13 @@ $assets = $db->query(
      FROM assets a
      LEFT JOIN asset_categories c  ON c.id = a.category_id
      LEFT JOIN asset_assignments aa ON aa.asset_id = a.id AND aa.is_returned = 0
-     LEFT JOIN employees e          ON e.id = aa.employee_id
-     ORDER BY a.asset_code"
-)->fetchAll();
+     LEFT JOIN employees e          ON e.id = aa.employee_id";
+$assetParams = [];
+if ($scopeEmp) { $assetSql .= " WHERE aa.employee_id = ?"; $assetParams[] = $scopeEmp; }
+$assetSql .= " ORDER BY a.asset_code";
+$assetStmt = $db->prepare($assetSql);
+$assetStmt->execute($assetParams);
+$assets = $assetStmt->fetchAll();
 ?>
 
 <!-- Page header -->
@@ -195,12 +218,15 @@ $assets = $db->query(
                         <i class="fa fa-user-plus"></i>
                     </a>
                     <?php endif; ?>
-                    <?php if ($a['status'] === 'Assigned'): ?>
+                    <?php endif; ?>
+                    <?php /* Process Return is gated by its OWN permission, independent of Assign. */ ?>
+                    <?php if (can('assets', 'return') && $a['status'] === 'Assigned'): ?>
                     <a href="<?= BASE_URL ?>/modules/assets/view.php?id=<?= $a['id'] ?>"
                        class="btn btn-xs btn-outline-warning" title="Process return">
                         <i class="fa fa-rotate-left"></i>
                     </a>
                     <?php endif; ?>
+                    <?php if (can('assets', 'assign')): ?>
                     <button type="button"
                             class="btn btn-xs btn-outline-danger btn-delete"
                             data-id="<?= $a['id'] ?>"

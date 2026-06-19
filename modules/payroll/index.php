@@ -45,6 +45,11 @@ if ($fYear >= 2000) {
     $where[]  = 'YEAR(CONCAT(ss.payroll_month, "-01")) = ?';
     $params[] = $fYear;
 }
+// Employee self-service: restrict the list to the logged-in employee's own slips.
+if (is_self_scoped()) {
+    $where[]  = 'e.id = ?';
+    $params[] = current_employee_id();
+}
 $whereStr = implode(' AND ', $where);
 
 // Count

@@ -1,7 +1,7 @@
 <?php
 $page_title = 'Promotion History';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
+require_permission('promotions', 'view');
 
 $db = db();
 
@@ -18,6 +18,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_promotions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp = (int)($_GET['employee_id'] ?? 0);
+ if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
 
 $sql    = 'SELECT ep.*,
                   e.name AS emp_name, e.employee_id AS emp_code,
@@ -37,14 +38,15 @@ $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $promotions = $stmt->fetchAll();
 
-$employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees ORDER BY name')->fetchAll();
+$employees = scope_employees_for_dropdown($db);
 ?>
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
         <h5 class="mb-0 fw-semibold">Promotion History</h5>
-        <?php if (can('employee','edit')): ?>
-        <a href="<?= BASE_URL ?>/modules/promotions/create.php" class="btn btn-sm btn-primary">
+        <?php if (can('letters','create')): ?>
+        <!-- Single creation workflow: promotions are created via the promotion letter. -->
+        <a href="<?= BASE_URL ?>/modules/letters/create.php?type=Promotion" class="btn btn-sm btn-primary">
             <i class="fa fa-plus me-1"></i>Add Promotion
         </a>
         <?php endif; ?>
@@ -102,9 +104,35 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                         <td><strong><?= h($p['new_desig'] ?? '—') ?></strong></td>
                         <td><?= h($p['dept_name'] ?? '—') ?></td>
                         <td class="small text-muted"><?= h($p['remarks'] ?? '—') ?></td>
-                        <td class="text-center">
-                            <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $p['employee_id'] ?>#promotions"
-                               class="btn btn-xs btn-outline-primary" title="View Employee"><i class="fa fa-eye"></i></a>
+                        <td class="text-center text-nowrap">
+                            <?php
+                            $proDetail = [
+                                'Employee'             => $p['emp_name'] . ' (' . $p['emp_code'] . ')',
+                                'Effective Date'       => date('d M Y', strtotime($p['effective_date'])),
+                                'Promotion Date'       => !empty($p['promotion_date']) ? date('d M Y', strtotime($p['promotion_date'])) : '—',
+                                'Previous Designation' => $p['prev_desig'] ?? '—',
+                                'New Designation'      => $p['new_desig'] ?? '—',
+                                'Department'           => $p['dept_name'] ?? '—',
+                                'Salary Revision'      => ($p['salary_revision'] !== null && $p['salary_revision'] !== '') ? money($p['salary_revision']) : '—',
+                                'Status'               => $p['status'] ?? '—',
+                                'Letter Reference'     => $p['letter_reference'] ?? '—',
+                                'Remarks'              => $p['remarks'] ?? '—',
+                            ];
+                            ?>
+                            <button type="button" class="btn btn-xs btn-outline-info" title="View Details"
+                                    data-bs-toggle="modal" data-bs-target="#recModal"
+                                    data-rec-title="Promotion — <?= h($p['emp_name']) ?>"
+                                    data-rec="<?= h(json_encode($proDetail)) ?>"><i class="fa fa-eye"></i></button>
+                            <?php if (can('promotions','create')): ?>
+                            <a href="<?= BASE_URL ?>/modules/promotions/create.php?id=<?= $p['id'] ?>"
+                               class="btn btn-xs btn-outline-primary" title="Edit"><i class="fa fa-pen"></i></a>
+                            <form method="POST" action="<?= BASE_URL ?>/modules/promotions/delete.php" class="d-inline"
+                                  onsubmit="return confirm('Delete this promotion record?')">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="id" value="<?= $p['id'] ?>">
+                                <button type="submit" class="btn btn-xs btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -115,4 +143,5 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
     </div>
 </div>
 
+<?php include __DIR__ . '/../../includes/record_modal.php'; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

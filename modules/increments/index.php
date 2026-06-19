@@ -1,7 +1,7 @@
 <?php
 $page_title = 'Increment History';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
+require_permission('increments', 'view');
 
 $db = db();
 
@@ -17,6 +17,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_increments (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp = (int)($_GET['employee_id'] ?? 0);
+ if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
 
 $sql    = 'SELECT ei.*, e.name AS emp_name, e.employee_id AS emp_code,
                   e.department_id, d.name AS dept_name
@@ -32,13 +33,13 @@ $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $increments = $stmt->fetchAll();
 
-$employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees ORDER BY name')->fetchAll();
+$employees = scope_employees_for_dropdown($db);
 ?>
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
         <h5 class="mb-0 fw-semibold">Increment History</h5>
-        <?php if (can('employee','edit')): ?>
+        <?php if (can('increments','create')): ?>
         <a href="<?= BASE_URL ?>/modules/increments/create.php" class="btn btn-sm btn-primary">
             <i class="fa fa-plus me-1"></i>Add Increment
         </a>
@@ -105,9 +106,33 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                         <td class="text-end text-success fw-semibold">+<?= money($diff) ?></td>
                         <td class="text-center"><span class="badge bg-success"><?= $pct ?>%</span></td>
                         <td class="small text-muted"><?= h($inc['remarks'] ?? '—') ?></td>
-                        <td class="text-center">
-                            <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $inc['employee_id'] ?>#increments"
-                               class="btn btn-xs btn-outline-primary" title="View Employee"><i class="fa fa-eye"></i></a>
+                        <td class="text-center text-nowrap">
+                            <?php
+                            $incDetail = [
+                                'Employee'        => $inc['emp_name'] . ' (' . $inc['emp_code'] . ')',
+                                'Department'      => $inc['dept_name'] ?? '—',
+                                'Effective Date'  => date('d M Y', strtotime($inc['effective_date'])),
+                                'Previous Salary' => money($inc['previous_salary']),
+                                'New Salary'      => money($inc['new_salary']),
+                                'Increment'       => '+' . money($diff),
+                                'Increment %'     => $pct . '%',
+                                'Remarks'         => $inc['remarks'] ?? '—',
+                            ];
+                            ?>
+                            <button type="button" class="btn btn-xs btn-outline-info" title="View Details"
+                                    data-bs-toggle="modal" data-bs-target="#recModal"
+                                    data-rec-title="Increment — <?= h($inc['emp_name']) ?>"
+                                    data-rec="<?= h(json_encode($incDetail)) ?>"><i class="fa fa-eye"></i></button>
+                            <?php if (can('increments','create')): ?>
+                            <a href="<?= BASE_URL ?>/modules/increments/create.php?id=<?= $inc['id'] ?>"
+                               class="btn btn-xs btn-outline-primary" title="Edit"><i class="fa fa-pen"></i></a>
+                            <form method="POST" action="<?= BASE_URL ?>/modules/increments/delete.php" class="d-inline"
+                                  onsubmit="return confirm('Delete this increment record?')">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="id" value="<?= $inc['id'] ?>">
+                                <button type="submit" class="btn btn-xs btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -118,4 +143,5 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
     </div>
 </div>
 
+<?php include __DIR__ . '/../../includes/record_modal.php'; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

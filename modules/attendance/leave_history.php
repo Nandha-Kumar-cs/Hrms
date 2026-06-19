@@ -5,7 +5,7 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('leaves', 'view');
+require_permission('leave_history', 'view');
 
 $db = db();
 
@@ -59,7 +59,8 @@ $topEmps = $topStmt->fetchAll();
 $listWhere = $baseWhere; $listParams = $baseParams;
 if ($fStatus !== 'all') { $listWhere .= ' AND lr.status = ?'; $listParams[] = $fStatus; }
 $listStmt = $db->prepare(
-    "SELECT lr.*, e.name AS emp_name, e.employee_id AS emp_code, lt.name AS type_name, u.name AS approver
+    "SELECT lr.*, e.name AS emp_name, e.employee_id AS emp_code, lt.name AS type_name,
+            lt.is_paid, lt.is_comp_off, u.name AS approver
      FROM leave_requests lr
      JOIN employees e ON e.id = lr.employee_id
      JOIN leave_types lt ON lt.id = lr.leave_type_id
@@ -118,6 +119,19 @@ require_once __DIR__ . '/../../includes/header.php';
     </form>
 </div></div>
 
+<!-- Summary strip -->
+<div class="row g-3 mb-3">
+    <div class="col-6 col-md-3"><div class="border rounded p-3 text-center h-100">
+        <div class="fs-3 fw-bold text-dark"><?= $counts['all'] ?></div><div class="small text-muted">Total Requests</div></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-3 text-center h-100" style="border-color:#198754 !important;background:#f0fdf4">
+        <div class="fs-3 fw-bold text-success"><?= $counts['approved'] ?></div>
+        <div class="small text-muted">Approved &nbsp;<span class="badge bg-success"><?= rtrim(rtrim(number_format($approvedDays, 1), '0'), '.') ?>d</span></div></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-3 text-center h-100" style="border-color:#ffc107 !important;background:#fffbeb">
+        <div class="fs-3 fw-bold text-warning"><?= $counts['pending'] ?></div><div class="small text-muted">Pending</div></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-3 text-center h-100" style="border-color:#dc3545 !important;background:#fff5f5">
+        <div class="fs-3 fw-bold text-danger"><?= $counts['rejected'] ?></div><div class="small text-muted">Rejected</div></div></div>
+</div>
+
 <?php if ($topEmps && !$isEmployee): ?>
 <div class="card page-card mb-3"><div class="card-body">
     <h6 class="fw-semibold mb-2"><i class="fa fa-trophy me-1 text-warning"></i>Top Employees by Approved Leave (<?= $fYear ?>)</h6>
@@ -135,20 +149,37 @@ require_once __DIR__ . '/../../includes/header.php';
 </ul>
 
 <div class="card page-card"><div class="card-body table-responsive">
-    <table class="table table-hover table-bordered align-middle" id="tbl-history">
-        <thead class="table-dark"><tr><th>Employee</th><th>Leave Type</th><th>Period</th><th class="text-center">Days</th><th class="text-center">Status</th><th>Approved By</th></tr></thead>
+    <table class="table table-hover table-bordered align-middle" id="tbl-history" style="font-size:.875rem">
+        <thead class="table-dark"><tr>
+            <th style="width:36px">#</th><th>Employee</th><th>Leave Type</th><th>From</th><th>To</th>
+            <th class="text-center">Days</th><th>Reason</th><th class="text-center">Status</th>
+            <th>Approved / Rejected By</th><th>Date</th><th class="text-center" style="width:60px">Action</th>
+        </tr></thead>
         <tbody>
-        <?php foreach ($leaves as $r): $sO = new DateTime($r['start_date']); $eO = new DateTime($r['end_date']); ?>
-            <tr>
-                <td><strong><?= h($r['emp_code']) ?></strong> <span class="text-muted">— <?= h($r['emp_name']) ?></span></td>
-                <td><?= h($r['type_name']) ?></td>
-                <td><?= $sO->format('d M Y') ?><?= $r['start_date'] !== $r['end_date'] ? ' – ' . $eO->format('d M Y') : '' ?></td>
-                <td class="text-center"><?= rtrim(rtrim(number_format((float)$r['days_requested'], 1), '0'), '.') ?></td>
+        <?php foreach ($leaves as $i => $r):
+            $sO = new DateTime($r['start_date']); $eO = new DateTime($r['end_date']);
+            $rowCls = $r['status'] === 'rejected' ? 'table-danger' : ($r['status'] === 'pending' ? 'table-warning' : '');
+            $payLbl = $r['is_comp_off'] ? '<small class="text-primary">Comp Off</small>' : ($r['is_paid'] ? '<small class="text-success">Paid</small>' : '<small class="text-muted">Unpaid</small>');
+        ?>
+            <tr class="<?= $rowCls ?>">
+                <td class="text-muted small"><?= $i + 1 ?></td>
+                <td><div class="fw-semibold"><?= h($r['emp_name']) ?></div><small class="text-muted"><?= h($r['emp_code']) ?></small></td>
+                <td><span class="badge bg-primary bg-opacity-75"><?= h($r['type_name']) ?></span><br><?= $payLbl ?></td>
+                <td class="fw-semibold text-primary"><?= $sO->format('d M Y') ?></td>
+                <td class="<?= $r['start_date'] !== $r['end_date'] ? 'fw-semibold text-primary' : 'text-muted' ?>"><?= $r['start_date'] === $r['end_date'] ? '—' : $eO->format('d M Y') ?></td>
+                <td class="text-center"><span class="badge bg-secondary"><?= rtrim(rtrim(number_format((float)$r['days_requested'], 1), '0'), '.') ?>d</span></td>
+                <td class="text-muted small" style="max-width:180px"><?= $r['reason'] ? h(mb_strimwidth($r['reason'], 0, 60, '…')) : '—' ?></td>
                 <td class="text-center"><span class="badge bg-<?= $statusBadge[$r['status']] ?? 'secondary' ?>"><?= ucfirst($r['status']) ?></span></td>
-                <td><?= h($r['approver'] ?? '—') ?><?= $r['approved_at'] ? '<br><small class="text-muted">' . date_fmt($r['approved_at'], 'd M Y') . '</small>' : '' ?></td>
+                <td class="small">
+                    <?php if ($r['approver']): ?><div><?= h($r['approver']) ?></div><small class="text-muted"><?= $r['approved_at'] ? date_fmt($r['approved_at'], 'd M Y, h:i A') : '' ?></small>
+                    <?php elseif ($r['status'] === 'pending'): ?><span class="text-muted fst-italic">Awaiting</span><?php else: ?><span class="text-muted">—</span><?php endif; ?>
+                    <?php if ($r['remarks']): ?><br><small class="text-info" title="<?= h($r['remarks']) ?>"><i class="fa fa-comment-dots me-1"></i><?= h(mb_strimwidth($r['remarks'], 0, 40, '…')) ?></small><?php endif; ?>
+                </td>
+                <td class="small text-muted"><?= $r['created_at'] ? date_fmt($r['created_at'], 'd M Y') : '—' ?></td>
+                <td class="text-center"><a href="<?= BASE_URL ?>/modules/attendance/leaves.php?view=<?= $r['id'] ?>" class="btn btn-sm btn-outline-primary" title="View details"><i class="fa fa-eye"></i></a></td>
             </tr>
         <?php endforeach; ?>
-        <?php if (!$leaves): ?><tr><td colspan="6" class="text-center text-muted py-4">No leave records match these filters.</td></tr><?php endif; ?>
+        <?php if (!$leaves): ?><tr><td colspan="11" class="text-center text-muted py-5"><i class="fa fa-calendar-xmark fa-2x mb-2 d-block text-secondary"></i>No leave records found for the selected filters.</td></tr><?php endif; ?>
         </tbody>
     </table>
 </div></div>

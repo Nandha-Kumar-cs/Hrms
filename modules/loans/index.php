@@ -1,7 +1,7 @@
 <?php
 $page_title = 'Loans & Advances';
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('employee');
+require_permission('loans', 'view');
 
 $db = db();
 
@@ -21,6 +21,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_loans (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp    = (int)($_GET['employee_id'] ?? 0);
+ if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
 $filterType   = trim($_GET['type']   ?? '');
 $filterStatus = trim($_GET['status'] ?? '');
 
@@ -38,13 +39,13 @@ $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $loans = $stmt->fetchAll();
 
-$employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees ORDER BY name')->fetchAll();
+$employees = scope_employees_for_dropdown($db);
 ?>
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
         <h5 class="mb-0 fw-semibold"><i class="fa fa-hand-holding-dollar me-2 text-primary"></i>Loans &amp; Advances</h5>
-        <?php if (can('employee','edit')): ?>
+        <?php if (can('loans','create')): ?>
         <a href="<?= BASE_URL ?>/modules/loans/create.php" class="btn btn-sm btn-primary">
             <i class="fa fa-plus me-1"></i>Add Loan / Advance
         </a>
@@ -97,8 +98,8 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                         <th>Employee</th>
                         <th>Type</th>
                         <th class="text-end">Principal</th>
-                        <th class="text-end">Interest %</th>
-                        <th>Date Given</th>
+                        <th class="text-end">Interest</th>
+                        <th class="text-end">Total Due</th>
                         <th class="text-end">Monthly EMI</th>
                         <th class="text-end">Returned</th>
                         <th class="text-end">Pending</th>
@@ -111,7 +112,14 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                     <tr><td colspan="11" class="text-center text-muted py-4">No loan / advance records found.</td></tr>
                     <?php else: ?>
                     <?php foreach ($loans as $i => $loan):
-                        $pending = max(0, (float)$loan['amount'] - (float)$loan['returned_amount']);
+                        // Simple interest over the full tenure: P × R/100 × (months/12).
+                        $months    = max(1, (int)($loan['total_months'] ?? 1));
+                        $interest  = (float)$loan['interest_rate'] > 0
+                                   ? round((float)$loan['amount'] * ((float)$loan['interest_rate'] / 100) * ($months / 12), 2)
+                                   : 0.0;
+                        $totalDue  = round((float)$loan['amount'] + $interest, 2);
+                        $pending   = max(0, round($totalDue - (float)$loan['returned_amount'], 2));
+                        $statusBadge = ['active' => 'success', 'completed' => 'primary'][$loan['status']] ?? 'secondary';
                     ?>
                     <tr>
                         <td><?= $i + 1 ?></td>
@@ -125,21 +133,31 @@ $employees = $db->query('SELECT id, name, employee_id AS emp_code FROM employees
                             </span>
                         </td>
                         <td class="text-end"><?= money($loan['amount']) ?></td>
-                        <td class="text-end"><?= $loan['interest_rate'] > 0 ? $loan['interest_rate'] . '%' : '—' ?></td>
-                        <td><?= date('d M Y', strtotime($loan['date_given'])) ?></td>
+                        <td class="text-end"><?= $interest > 0 ? '<span class="text-warning">' . money($interest) . '</span>' : '<span class="text-muted">—</span>' ?></td>
+                        <td class="text-end fw-semibold"><?= money($totalDue) ?></td>
                         <td class="text-end"><?= money($loan['monthly_deduction']) ?></td>
                         <td class="text-end text-success fw-semibold"><?= money($loan['returned_amount']) ?></td>
                         <td class="text-end <?= $pending > 0 ? 'text-danger fw-semibold' : 'text-success' ?>">
                             <?= money($pending) ?>
                         </td>
                         <td>
-                            <span class="badge bg-<?= $loan['status'] === 'active' ? 'success' : 'secondary' ?>">
+                            <span class="badge bg-<?= $statusBadge ?>">
                                 <?= ucfirst($loan['status']) ?>
                             </span>
                         </td>
-                        <td class="text-center">
-                            <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $loan['employee_id'] ?>#loans"
-                               class="btn btn-xs btn-outline-primary" title="View Employee"><i class="fa fa-eye"></i></a>
+                        <td class="text-center text-nowrap">
+                            <a href="<?= BASE_URL ?>/modules/loans/show.php?id=<?= $loan['id'] ?>"
+                               class="btn btn-xs btn-outline-info" title="Repayment History"><i class="fa fa-history"></i></a>
+                            <?php if (can('loans','create')): ?>
+                            <a href="<?= BASE_URL ?>/modules/loans/create.php?id=<?= $loan['id'] ?>"
+                               class="btn btn-xs btn-outline-primary" title="Edit"><i class="fa fa-pen"></i></a>
+                            <form method="POST" action="<?= BASE_URL ?>/modules/loans/delete.php" class="d-inline"
+                                  onsubmit="return confirm('Delete this loan / advance record?')">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="id" value="<?= $loan['id'] ?>">
+                                <button type="submit" class="btn btn-xs btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></button>
+                            </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>
