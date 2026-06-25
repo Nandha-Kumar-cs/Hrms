@@ -91,13 +91,22 @@ $rows = ($ext === 'csv')
     ? _attm_parse_csv($file['tmp_name'])
     : _attm_parse_xlsx($file['tmp_name']);
 
-if (empty($rows)) {
+// Raw grid (no header combine) — needed to recognise the blocked biometric
+// punch report (Format C), whose employee codes live inside the sheet body.
+$grid = ($ext === 'csv')
+    ? _attm_parse_csv_grid($file['tmp_name'])
+    : _attm_parse_xlsx_grid($file['tmp_name']);
+
+if (empty($rows) && empty($grid)) {
     flash('error', 'The file is empty or could not be parsed. Check the format and try again.');
     redirect(BASE_URL . '/modules/attendance/index.php');
 }
 
+/* ── Format C — biometric punch report (per-employee blocks) ──────────────── */
+$isFormatC = _attm_detect_punch_report($grid);
+
 /* ── Detect format by inspecting header keys ─────────────────────────────── */
-$sampleHeaders = array_keys($rows[0]);
+$sampleHeaders = array_keys($rows[0] ?? []);
 $normalizedHeaders = array_map(
     fn($h) => strtolower(trim(str_replace([' ', '-'], '_', (string)$h))),
     $sampleHeaders
@@ -154,11 +163,122 @@ $inserted = 0;
 $updated  = 0;
 $skipped  = 0;
 $errors   = [];
+$empProcessed = 0;
+
+/* ════════════════════════════════════════════════════════════════════════════
+   FORMAT C — Biometric punch report (per-employee blocks)
+   Layout (one block per employee):
+     Row:  Empcode | <code> | … | Name | <name>
+     Row:  Date | Shift | IN | Out1 | In2 | … | Out | Work+OT | OT | Break
+     Rows: <dd/mm/yyyy> | <shift> | <first-in> | … | <last-out> | … | <OT>
+   First punch (IN) → in_time, final punch (Out) → out_time, OT column → ot_hours.
+   "--:--", blank or shift "X" mean no punch → Absent.
+   ════════════════════════════════════════════════════════════════════════════ */
+if ($isFormatC) {
+
+    // Format C upsert also carries ot_hours (the report provides it).
+    $upsertC = $db->prepare(
+        "INSERT INTO attendance
+            (employee_id, att_date, status, in_time, out_time, ot_hours, remarks, marked_by, created_at)
+         VALUES
+            (:emp_id, :att_date, :status, :in_time, :out_time, :ot_hours, :remarks, :marked_by, NOW())
+         ON DUPLICATE KEY UPDATE
+            status   = VALUES(status),   in_time  = VALUES(in_time),
+            out_time = VALUES(out_time), ot_hours = VALUES(ot_hours),
+            remarks  = VALUES(remarks),  marked_by = VALUES(marked_by)"
+    );
+
+    $curCode  = '';
+    $curEmpId = null;          // null = no current/valid employee block
+    $colMap   = ['date' => 0, 'in' => 2, 'out' => 17, 'ot' => 19]; // sensible defaults
+    $seenCodes = [];
+
+    foreach ($grid as $cells) {
+        $cells = array_map(fn($v) => trim((string)$v), $cells);
+
+        // (1) Employee header row: "Empcode" label followed by the code.
+        $empLabelIdx = null;
+        foreach ($cells as $idx => $val) {
+            if (strtolower($val) === 'empcode') { $empLabelIdx = $idx; break; }
+        }
+        if ($empLabelIdx !== null) {
+            $curCode = '';
+            for ($k = $empLabelIdx + 1; $k <= max(array_keys($cells)); $k++) {
+                if (isset($cells[$k]) && $cells[$k] !== '') { $curCode = strtoupper($cells[$k]); break; }
+            }
+            $curEmpId = $empMap[$curCode] ?? null;
+            if ($curCode !== '' && !isset($seenCodes[$curCode])) {
+                $seenCodes[$curCode] = true;
+                $empProcessed++;
+                if ($curEmpId === null) {
+                    $errors[] = "Employee '$curCode' not found or inactive — block skipped.";
+                }
+            }
+            continue;
+        }
+
+        // (2) Column-header row: "Date | Shift | IN | … | Out | … | OT".
+        if (strtolower($cells[0] ?? '') === 'date') {
+            $colMap = [];
+            foreach ($cells as $idx => $val) {
+                $lab = strtolower($val);
+                // First occurrence wins, so "IN" beats "In2…" and "Out" the lone final column.
+                if ($lab !== '' && !isset($colMap[$lab])) $colMap[$lab] = $idx;
+            }
+            $colMap += ['date' => 0, 'in' => 2, 'out' => 17, 'ot' => 19];
+            continue;
+        }
+
+        // (3) Daily record row: column A holds a real date.
+        $rawDate = $cells[$colMap['date']] ?? '';
+        $useDate = _attm_parse_date($rawDate);
+        if (!$useDate) continue;                 // totals/blank/separator row
+        if ($curEmpId === null) { $skipped++; continue; }
+        if (substr($useDate, 0, 7) !== $attMonth) { $skipped++; continue; }
+        if ($skipWeekends && _attm_is_weekend($useDate)) { $skipped++; continue; }
+        if ($skipExisting && isset($existingSet[$curEmpId . '|' . $useDate])) { $skipped++; continue; }
+
+        $inRaw  = $cells[$colMap['in']  ?? 2]  ?? '';
+        $outRaw = $cells[$colMap['out'] ?? 17] ?? '';
+        $otRaw  = $cells[$colMap['ot']  ?? 19] ?? '';
+
+        // "--:--" and "0:00"/"00:00" mean no real punch.
+        $inTime  = ($inRaw  === '--:--') ? null : _attm_normalize_time($inRaw);
+        $outTime = ($outRaw === '--:--') ? null : _attm_normalize_time($outRaw);
+        $otHours = _attm_hhmm_to_hours($otRaw);
+
+        if ($inTime) {
+            $status = $autoClassify ? _attm_classify_from_time($inTime, $useDate) : 'On Time';
+        } else {
+            $status = 'Absent';
+            $inTime = $outTime = null;
+            $otHours = 0;
+        }
+
+        $wasExisting = isset($existingSet[$curEmpId . '|' . $useDate]);
+        try {
+            $upsertC->execute([
+                ':emp_id'    => $curEmpId,
+                ':att_date'  => $useDate,
+                ':status'    => $status,
+                ':in_time'   => $inTime,
+                ':out_time'  => $outTime,
+                ':ot_hours'  => $otHours ?: null,
+                ':remarks'   => null,
+                ':marked_by' => $user['id'],
+            ]);
+            if ($wasExisting) { $updated++; } else { $inserted++; }
+        } catch (PDOException $e) {
+            $skipped++;
+            $errors[] = "$curCode / $useDate: DB error — " . $e->getMessage();
+        }
+    }
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
    FORMAT A — Row-per-record
    ════════════════════════════════════════════════════════════════════════════ */
-if (!$isFormatB) {
+elseif (!$isFormatB) {
 
     foreach ($rows as $i => $row) {
         $lineNo = $i + 2;
@@ -340,11 +460,16 @@ else {
 }
 
 /* ── Store rich result in session for the index banner ───────────────────── */
-$formatLabel = $isFormatB ? 'Matrix (Format B)' : 'Row-per-record (Format A)';
+$formatLabel = $isFormatC ? 'Biometric punch report (Format C)'
+             : ($isFormatB ? 'Matrix (Format B)' : 'Row-per-record (Format A)');
+
+$empCount = $isFormatC
+    ? $empProcessed
+    : count(array_unique(array_column($rows, array_key_first($rows[0] ?? []))));
 
 $_SESSION['att_monthly_result'] = [
     'month'     => date('F Y', strtotime($attMonth . '-01')) . " [$formatLabel]",
-    'employees' => count(array_unique(array_column($rows, array_key_first($rows[0] ?? [])))),
+    'employees' => $empCount,
     'saved'     => $inserted,
     'updated'   => $updated,
     'skipped'   => $skipped,
@@ -359,7 +484,8 @@ flash($type, sprintf(
     $attMonth, $formatLabel, $inserted, $updated, $skipped
 ));
 
-redirect(BASE_URL . "/modules/attendance/index.php?month=$attMonth&tab=report");
+// Land on the standalone matrix report (report.php expects numeric month + year).
+redirect(BASE_URL . "/modules/attendance/report.php?month=" . (int)$mMon . "&year=" . (int)$mYear);
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -480,6 +606,107 @@ function _attm_parse_date(string $raw): string
 function _attm_is_weekend(string $date): bool
 {
     return (int)date('N', strtotime($date)) >= 6;
+}
+
+/**
+ * Convert an "HH:MM" duration (e.g. OT "02:06") to decimal hours. Returns 0.0
+ * for blank, "--:--", "00:00" or anything unparseable.
+ */
+function _attm_hhmm_to_hours(string $raw): float
+{
+    $raw = trim($raw);
+    if ($raw === '' || $raw === '--:--') return 0.0;
+    if (preg_match('/^(\d{1,2}):(\d{2})$/', $raw, $m)) {
+        return round((int)$m[1] + (int)$m[2] / 60, 2);
+    }
+    return 0.0;
+}
+
+/**
+ * Recognise the blocked biometric punch report (Format C): it carries an
+ * "Empcode" label cell and a "Date"+"IN"/"Out" column-header row somewhere in
+ * the body, rather than a single header row at the top.
+ */
+function _attm_detect_punch_report(array $grid): bool
+{
+    if (!$grid) return false;
+    $hasEmpcode = false; $hasDateHeader = false;
+    foreach ($grid as $cells) {
+        foreach ($cells as $val) {
+            $v = strtolower(trim((string)$val));
+            if ($v === 'empcode') $hasEmpcode = true;
+            if ($v === 'date')    $hasDateHeader = true;
+            if ($hasEmpcode && $hasDateHeader) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Parse a CSV file into a raw 0-indexed grid (no header combine).
+ */
+function _attm_parse_csv_grid(string $path): array
+{
+    $grid = [];
+    $fh = fopen($path, 'r');
+    if ($fh === false) return [];
+    $bom = fread($fh, 3);
+    if ($bom !== "\xEF\xBB\xBF") rewind($fh);
+    while (($line = fgetcsv($fh, 0, ',')) !== false) {
+        $grid[] = array_map(fn($v) => (string)$v, $line);
+    }
+    fclose($fh);
+    return $grid;
+}
+
+/**
+ * Parse an XLSX file into a raw 0-indexed grid (no header combine), preserving
+ * column positions so blocked layouts can be walked by column index.
+ */
+function _attm_parse_xlsx_grid(string $path): array
+{
+    if (!class_exists('ZipArchive')) return [];
+    $zip = new ZipArchive();
+    if ($zip->open($path) !== true) return [];
+
+    $shared = [];
+    $ssXml  = $zip->getFromName('xl/sharedStrings.xml');
+    if ($ssXml) {
+        $ss = simplexml_load_string($ssXml);
+        foreach ($ss->si as $si) {
+            if (isset($si->t)) {
+                $shared[] = (string)$si->t;
+            } else {
+                $text = '';
+                foreach ($si->r as $rr) $text .= (string)$rr->t;
+                $shared[] = $text;
+            }
+        }
+    }
+
+    $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
+    $zip->close();
+    if (!$sheetXml) return [];
+
+    $sheet   = simplexml_load_string($sheetXml);
+    $rawRows = [];
+    foreach ($sheet->sheetData->row as $xmlRow) {
+        $rowIdx = (int)$xmlRow['r'] - 1;
+        $cells  = [];
+        foreach ($xmlRow->c as $c) {
+            $colIdx = _attm_xlsx_col_index((string)$c['r']);
+            $v      = isset($c->v) ? (string)$c->v : '';
+            if ((string)$c['t'] === 's') $v = $shared[(int)$v] ?? '';
+            $cells[$colIdx] = $v;
+        }
+        if (!$cells) { $rawRows[$rowIdx] = []; continue; }
+        $max = max(array_keys($cells));
+        $row = [];
+        for ($j = 0; $j <= $max; $j++) $row[] = $cells[$j] ?? '';
+        $rawRows[$rowIdx] = $row;
+    }
+    ksort($rawRows);
+    return array_values($rawRows);
 }
 
 /**

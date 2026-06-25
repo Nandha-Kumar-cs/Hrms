@@ -9,6 +9,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect(BASE_URL . '/modules/employe
 $db     = db();
 $emp_id = (int)($_POST['emp_id'] ?? 0);
 
+// Honour where the upload form was opened from (Documents list vs. employee
+// profile) so Upload/errors return the user to the same place.
+$from      = ($_POST['from'] ?? '') === 'docs' ? 'docs' : '';
+$createUrl = BASE_URL . '/modules/documents/create.php?emp_id=' . $emp_id . ($from ? '&from=docs' : '');
+$returnUrl = $from === 'docs'
+    ? BASE_URL . '/modules/documents/index.php?emp=' . $emp_id
+    : BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#documents';
+
 $db->exec('CREATE TABLE IF NOT EXISTS employee_documents (
     id INT AUTO_INCREMENT PRIMARY KEY,
     employee_id INT NOT NULL,
@@ -47,7 +55,7 @@ if (!$errors) {
 if ($errors) {
     $_SESSION['errors']   = $errors;
     $_SESSION['form_old'] = $_POST;
-    redirect(BASE_URL . '/modules/documents/create.php?emp_id=' . $emp_id);
+    redirect($createUrl);
 }
 
 // Store file
@@ -61,11 +69,11 @@ $filePath = 'uploads/employee_docs/' . $emp_id . '/' . $fileName;
 
 if (!move_uploaded_file($file['tmp_name'], $hrmsRoot . '/' . $filePath)) {
     flash('error', 'File upload failed. Please try again.');
-    redirect(BASE_URL . '/modules/documents/create.php?emp_id=' . $emp_id);
+    redirect($createUrl);
 }
 
 $db->prepare('INSERT INTO employee_documents (employee_id,document_type,document_name,file_path,file_size,description) VALUES (?,?,?,?,?,?)')
    ->execute([$emp_id, $document_type, $document_name, $filePath, (int)$file['size'], $description]);
 
 flash('success', 'Document uploaded successfully.');
-redirect(BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#documents');
+redirect($returnUrl);

@@ -79,7 +79,7 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
     // ── Benefit Funds → earnings (recurring-aware, mirrors EmployeeBenefit) ──
     try {
         $bs = $db->prepare(
-            "SELECT fund_type, amount, frequency, start_date, end_date, effective_month
+            "SELECT fund_type, amount, frequency, start_date, end_date, effective_month, payment_mode
                FROM employee_benefits
               WHERE employee_id = ? AND status = 'active'
               ORDER BY id"
@@ -94,6 +94,16 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
             $key  = '[BENEFIT] ' . $name . ($occ > 1 ? ' (×' . $occ . ')' : '');
             while (isset($allowances[$key])) $key .= ' ';   // keep duplicate names distinct
             $allowances[$key] = $amt;
+
+            // Cashless benefit: the money is paid directly to the provider (insurance
+            // company, education fund, …), NOT handed to the employee with salary. So
+            // it is earned (above) AND deducted here — net take-home is unaffected.
+            // A Cash benefit has no matching deduction, so it adds to take-home as before.
+            if (($b['payment_mode'] ?? 'cash') === 'cashless') {
+                $dkey = $name . ' (Cashless — paid to provider)';
+                while (isset($deductions[$dkey])) $dkey .= ' ';
+                $deductions[$dkey] = $amt;
+            }
         }
     } catch (Throwable $e) { /* benefits columns absent — no effect */ }
 
@@ -125,27 +135,43 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
         }
     } catch (Throwable $e) { /* bonuses table absent — no effect */ }
 
-    // ── Loans & Advances (active within tenure) → deduction ──────────────────
+    // ── Loans & Advances → deduction (final instalment clears the exact balance) ──
+    if (!function_exists('loan_due')) {
+        require_once __DIR__ . '/loan_history.php';
+    }
     try {
         $ln = $db->prepare(
-            "SELECT id, type, monthly_deduction, date_given, total_months
+            "SELECT id, employee_id, type, amount, interest_rate, monthly_deduction, date_given, total_months
                FROM employee_loans
               WHERE employee_id = ? AND status = 'active' AND monthly_deduction > 0
               ORDER BY id"
         );
         $ln->execute([$empId]);
-        $payrollStart = sprintf('%04d-%02d-01', $year, $month);
+        $curYm = sprintf('%04d-%02d', $year, $month);
         foreach ($ln->fetchAll() as $loan) {
             // Disbursed after this payroll period → not yet deductible.
             if (!empty($loan['date_given']) && $loan['date_given'] > $monthEnd) continue;
-            // Past the loan's final deduction month → tenure finished.
-            $months     = max(1, (int) $loan['total_months']);
-            $start      = $loan['date_given'] ? date('Y-m-01', strtotime($loan['date_given'])) : $payrollStart;
-            $finalMonth = date('Y-m-01', strtotime($start . ' +' . $months . ' months'));
-            if ($payrollStart > $finalMonth) continue;
-            $emi = round((float) $loan['monthly_deduction'], 2);
+
+            $months   = max(1, (int) $loan['total_months']);
+            $totalDue = (float) (loan_due($loan)['total_due'] ?? 0);   // principal + interest
+
+            // Amount already deducted in PRIOR months (from generated slips).
+            $actual = function_exists('loan_actual_deductions') ? loan_actual_deductions($db, $loan) : [];
+            $returnedBefore = 0.0; $paidCount = 0;
+            foreach ($actual as $ym => $row) {
+                if ($ym < $curYm) { $returnedBefore += (float) $row['amount']; $paidCount++; }
+            }
+            $remaining = round($totalDue - $returnedBefore, 2);
+            if ($remaining <= 0.0) continue;                          // already fully repaid
+
+            $emi    = round((float) $loan['monthly_deduction'], 2);
             if ($emi <= 0) continue;
-            $deductions[ucfirst((string) $loan['type']) . ' Deduction #' . (int) $loan['id']] = $emi;
+            // On the final instalment (or when ≤ one EMI is left), deduct the EXACT
+            // remaining balance so rounding never leaves a stray pending amount.
+            $deduct = (($paidCount + 1) >= $months || $remaining <= $emi) ? $remaining : min($emi, $remaining);
+            $deduct = round($deduct, 2);
+            if ($deduct <= 0) continue;
+            $deductions[ucfirst((string) $loan['type']) . ' Deduction #' . (int) $loan['id']] = $deduct;
         }
     } catch (Throwable $e) { /* loans table absent — no effect */ }
 

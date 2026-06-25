@@ -27,8 +27,7 @@ $year   = (int)($_GET['year']  ?? date('Y'));
 if ($month < 1 || $month > 12)    $month = (int)date('n');
 if ($year < 2000 || $year > 2100) $year  = (int)date('Y');
 $deptId = (int)($_GET['department'] ?? 0);
-$search = trim((string)($_GET['search'] ?? ''));
-if (mb_strlen($search) > 100) $search = mb_substr($search, 0, 100);
+$empId  = (int)($_GET['emp_id'] ?? 0);
 $status = (string)($_GET['status'] ?? 'active');
 if (!in_array($status, ['active', 'inactive', 'all'], true)) $status = 'active';
 $export = (string)($_GET['export'] ?? '');
@@ -50,7 +49,7 @@ $params = [$month, $year];
 if ($scopeEmp)         { $sql .= ' AND e.id = ?';            $params[] = $scopeEmp; }
 if ($status !== 'all') { $sql .= ' AND eb.status = ?';        $params[] = $status; }
 if ($deptId)           { $sql .= ' AND e.department_id = ?';  $params[] = $deptId; }
-if ($search !== '')    { $sql .= ' AND (e.name LIKE ? OR e.employee_id LIKE ?)'; $params[] = "%$search%"; $params[] = "%$search%"; }
+if ($empId)            { $sql .= ' AND e.id = ?';             $params[] = $empId; }
 $sql .= ' ORDER BY eb.fund_type ASC, e.name ASC';
 
 $stmt = $db->prepare($sql);
@@ -83,6 +82,14 @@ $typeCount  = count($groups);
 
 $deptName = $deptId ? (string)$db->query('SELECT name FROM departments WHERE id=' . $deptId)->fetchColumn() : '';
 
+// Selected-employee label for export headers.
+$empLabel = '';
+if ($empId) {
+    $el = $db->prepare('SELECT CONCAT(name, " (", employee_id, ")") FROM employees WHERE id = ?');
+    $el->execute([$empId]);
+    $empLabel = (string)($el->fetchColumn() ?: '');
+}
+
 // ── CSV (Excel) export ───────────────────────────────────────────────────────
 if ($export === 'csv') {
     $fn = 'monthly_benefits_' . $year . '_' . str_pad((string)$month, 2, '0', STR_PAD_LEFT) . '.csv';
@@ -92,7 +99,7 @@ if ($export === 'csv') {
     fputcsv($out, ['Monthly Benefits Report — ' . $monthName . ' ' . $year]);
     $filterLine = 'Status: ' . ucfirst($status);
     if ($deptName) $filterLine .= ' | Department: ' . $deptName;
-    if ($search !== '') $filterLine .= ' | Search: ' . $search;
+    if ($empLabel !== '') $filterLine .= ' | Employee: ' . $empLabel;
     fputcsv($out, [$filterLine]);
     fputcsv($out, []);
     fputcsv($out, ['Fund Type', 'Emp Code', 'Employee', 'Department', 'Effective Month', 'Amount', 'Status']);
@@ -128,8 +135,8 @@ if ($export === 'pdf') {
     $pdf->SetFont('Arial', '', 11);
     $pdf->Cell(0, 6, $t($monthName . ' ' . $year), 0, 1, 'C');
     $filters = 'Status: ' . ucfirst($status);
-    if ($deptName)      $filters .= '   Department: ' . $deptName;
-    if ($search !== '') $filters .= '   Search: ' . $search;
+    if ($deptName)        $filters .= '   Department: ' . $deptName;
+    if ($empLabel !== '') $filters .= '   Employee: ' . $empLabel;
     $pdf->SetFont('Arial', 'I', 9);
     $pdf->Cell(0, 5, $t($filters), 0, 1, 'C');
     $pdf->Ln(1);
@@ -196,12 +203,22 @@ if ($export === 'pdf') {
 
 // ── Screen ───────────────────────────────────────────────────────────────────
 $departments = $db->query('SELECT id, name FROM departments ORDER BY name')->fetchAll(PDO::FETCH_ASSOC);
+
+// Employee list for the selector (self-scoped users only see themselves).
+$empSql = 'SELECT id, name, employee_id FROM employees';
+$empParams = [];
+if ($scopeEmp) { $empSql .= ' WHERE id = ?'; $empParams[] = $scopeEmp; }
+$empSql .= ' ORDER BY name';
+$empStmt = $db->prepare($empSql);
+$empStmt->execute($empParams);
+$employees = $empStmt->fetchAll(PDO::FETCH_ASSOC);
+
 $exportQs = http_build_query([
     'month' => $month, 'year' => $year,
-    'department' => $deptId ?: '', 'search' => $search,
+    'department' => $deptId ?: '', 'emp_id' => $empId ?: '',
     'status' => $status,
 ]);
-$hasFilters = ($search !== '' || $deptId || $status !== 'active');
+$hasFilters = ($empId || $deptId || $status !== 'active');
 
 $page_title = 'Monthly Benefits Report';
 require_once __DIR__ . '/../../includes/header.php';
@@ -227,8 +244,15 @@ require_once __DIR__ . '/../../includes/header.php';
     <div class="card-body py-3">
         <form method="GET" class="row g-2 align-items-end">
             <div class="col-sm-3">
-                <label class="form-label fw-semibold mb-1">Search Employee</label>
-                <input type="text" name="search" class="form-control form-control-sm" placeholder="Name or code…" value="<?= h($search) ?>">
+                <label class="form-label fw-semibold mb-1">Employee</label>
+                <select name="emp_id" class="form-select form-select-sm">
+                    <option value="">All Employees</option>
+                    <?php foreach ($employees as $e): ?>
+                    <option value="<?= $e['id'] ?>" <?= $empId === (int)$e['id'] ? 'selected' : '' ?>>
+                        <?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)
+                    </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
             <div class="col-sm-2">
                 <label class="form-label fw-semibold mb-1">Department</label>

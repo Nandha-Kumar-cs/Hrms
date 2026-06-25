@@ -84,20 +84,37 @@ if ($file['size'] > UPLOAD_MAX_MB * 1024 * 1024) {
     redirect(BASE_URL . '/modules/attendance/index.php');
 }
 $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-if (!in_array($ext, ['csv', 'xlsx'], true)) {
-    flash('error', 'Only .csv and .xlsx files are accepted.');
+if (!in_array($ext, ['csv', 'xls', 'xlsx'], true)) {
+    flash('error', 'Only .csv, .xls and .xlsx files are accepted.');
     redirect(BASE_URL . '/modules/attendance/index.php');
 }
 
-/* ── Parse file ──────────────────────────────────────────────────────────── */
-$rows = ($ext === 'csv')
-    ? _att_parse_csv($file['tmp_name'])
-    : _att_parse_xlsx($file['tmp_name']);
+/* ── Parse file ──────────────────────────────────────────────────────────────
+   Biometric devices often export legacy OLE2 .xls (sometimes mis-named .xlsx).
+   Detect the real container by its magic bytes, not the extension. The flat
+   "Daily IN/OUT" punch report is handled from a raw grid (Format D); clean
+   row-per-record templates keep the header-keyed path. ── */
+require_once __DIR__ . '/../../includes/xls_reader.php';
 
-if (empty($rows)) {
+$rows = [];          // header-keyed rows (template path)
+$grid = [];          // raw 0-indexed grid (biometric path)
+
+if ($ext === 'csv') {
+    $rows = _att_parse_csv($file['tmp_name']);
+    $grid = _att_parse_csv_grid($file['tmp_name']);
+} elseif (xls_is_ole2($file['tmp_name'])) {
+    $grid = xls_read_grid($file['tmp_name']);          // legacy binary .xls
+} else {
+    $rows = _att_parse_xlsx($file['tmp_name']);         // real (zip) .xlsx
+    $grid = _att_parse_xlsx_grid($file['tmp_name']);
+}
+
+if (empty($rows) && empty($grid)) {
     flash('error', 'The file is empty or could not be parsed. Check the format and try again.');
     redirect(BASE_URL . '/modules/attendance/index.php');
 }
+
+$isDailyReport = _att_detect_daily_report($grid);
 
 /* ── Pre-load employee map: employee_id code → DB id ──────────────────────── */
 $empMap = [];
@@ -132,6 +149,114 @@ $upsertSql = "INSERT INTO attendance
     marked_by = VALUES(marked_by)";
 $upsertStmt = $db->prepare($upsertSql);
 
+/* ════════════════════════════════════════════════════════════════════════════
+   FORMAT D — Biometric "Daily IN/OUT" punch report (flat grid)
+   Layout: a global "Date :- dd/mm/yyyy", optional dept sections, then a header
+   row "Empcode | Name | Shift | INTime | … | OUTTime | … | OT" and one row per
+   employee. First punch (INTime) → in_time, last (OUTTime) → out_time.
+   ════════════════════════════════════════════════════════════════════════════ */
+if ($isDailyReport) {
+
+    // The report's own date wins over the form field (fall back if absent/future).
+    $reportDate = '';
+    foreach ($grid as $ri => $cells) {
+        if ($ri > 6) break;
+        foreach ($cells as $val) {
+            $d = _att_parse_date(trim((string)$val));
+            if ($d) { $reportDate = $d; break 2; }
+        }
+    }
+    $attDate = ($reportDate && $reportDate <= date('Y-m-d')) ? $reportDate : $attDate;
+
+    $exG = $db->prepare("SELECT employee_id FROM attendance WHERE att_date = ?");
+    $exG->execute([$attDate]);
+    $existDay = array_flip($exG->fetchAll(PDO::FETCH_COLUMN));
+
+    // This format carries an OT column, so upsert ot_hours too.
+    $upsertD = $db->prepare(
+        "INSERT INTO attendance
+            (employee_id, att_date, status, in_time, out_time, ot_hours, remarks, marked_by, created_at)
+         VALUES
+            (:emp_id, :att_date, :status, :in_time, :out_time, :ot_hours, :remarks, :marked_by, NOW())
+         ON DUPLICATE KEY UPDATE
+            status   = VALUES(status),   in_time  = VALUES(in_time),
+            out_time = VALUES(out_time), ot_hours = VALUES(ot_hours),
+            remarks  = VALUES(remarks),  marked_by = VALUES(marked_by)"
+    );
+
+    $colMap = ['emp' => 0, 'in' => 3, 'out' => 18, 'ot' => 20]; // sensible defaults
+    $seenHeader = false;
+    foreach ($grid as $cells) {
+        $cells = array_map(fn($v) => trim((string)$v), $cells);
+
+        // Header row: "Empcode | Name | … | INTime | … | OUTTime | … | OT".
+        if (strtolower($cells[0] ?? '') === 'empcode') {
+            $map = [];
+            foreach ($cells as $idx => $val) {
+                $lab = preg_replace('/[^a-z0-9]/', '', strtolower($val));
+                if ($lab === 'empcode' && !isset($map['emp'])) $map['emp'] = $idx;
+                if ($lab === 'intime'  && !isset($map['in']))  $map['in']  = $idx;
+                if ($lab === 'outtime' && !isset($map['out'])) $map['out'] = $idx;
+                if ($lab === 'ot'      && !isset($map['ot']))  $map['ot']  = $idx;
+            }
+            $colMap = $map + ['emp' => 0, 'in' => 3, 'out' => 18, 'ot' => 20];
+            $seenHeader = true;
+            continue;
+        }
+
+        // Title / company / date / dept rows sit above the header — ignore them.
+        if (!$seenHeader) continue;
+
+        $code = $cells[$colMap['emp']] ?? '';
+        if ($code === '') continue;
+        $cl = strtolower($code);
+        if (str_contains($cl, 'dept') || str_contains($cl, 'report') || str_contains($cl, 'total')) continue;
+
+        $empU = strtoupper($code);
+        if (!isset($empMap[$empU])) {
+            $skipped++;
+            $errors[] = "Employee '$empU' not found or inactive — skipped.";
+            continue;
+        }
+        $empDbId = $empMap[$empU];
+
+        $inRaw  = $cells[$colMap['in']]  ?? '';
+        $outRaw = $cells[$colMap['out']] ?? '';
+        $otRaw  = isset($colMap['ot']) ? ($cells[$colMap['ot']] ?? '') : '';
+        $inTime  = ($inRaw  === '--:--') ? null : _att_normalize_time($inRaw);
+        $outTime = ($outRaw === '--:--') ? null : _att_normalize_time($outRaw);
+        $otHours = _att_hhmm_to_hours($otRaw);
+
+        if ($inTime) {
+            $status = $autoClassify ? _att_classify_from_time($inTime, $attDate) : 'On Time';
+        } else {
+            $status = 'Absent';
+            $inTime = $outTime = null;
+            $otHours = 0;
+        }
+
+        $wasExisting = isset($existDay[$empDbId]);
+        try {
+            $upsertD->execute([
+                ':emp_id'    => $empDbId,
+                ':att_date'  => $attDate,
+                ':status'    => $status,
+                ':in_time'   => $inTime,
+                ':out_time'  => $outTime,
+                ':ot_hours'  => $otHours ?: null,
+                ':remarks'   => null,
+                ':marked_by' => $user['id'],
+            ]);
+            if ($wasExisting) { $updated++; } else { $inserted++; }
+        } catch (PDOException $e) {
+            $skipped++;
+            $errors[] = "$empU: DB error — " . $e->getMessage();
+        }
+    }
+}
+
+/* ── Template path — clean row-per-record CSV/XLSX ────────────────────────── */
+else
 foreach ($rows as $i => $row) {
     $lineNo = $i + 2; // 1-based, account for header
 
@@ -220,8 +345,8 @@ flash($type, sprintf(
     date_fmt($attDate), $inserted, $updated, $skipped
 ));
 
-$redirectMonth = substr($attDate, 0, 7);
-redirect(BASE_URL . "/modules/attendance/index.php?month=$redirectMonth");
+// Land on the standalone matrix report for the imported date's month.
+redirect(BASE_URL . '/modules/attendance/report.php?month=' . (int)date('n', strtotime($attDate)) . '&year=' . (int)date('Y', strtotime($attDate)));
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -463,4 +588,102 @@ function _att_xlsx_col_index(string $cellRef): int
         $n = $n * 26 + (ord($col[$i]) - 64);
     }
     return $n - 1;
+}
+
+/**
+ * Recognise the biometric "Daily IN/OUT" punch report: a grid carrying an
+ * "Empcode" header cell together with an "INTime"/"OUTTime" column.
+ */
+function _att_detect_daily_report(array $grid): bool
+{
+    if (!$grid) return false;
+    $hasEmp = false; $hasInOut = false;
+    foreach ($grid as $cells) {
+        foreach ($cells as $val) {
+            $lab = preg_replace('/[^a-z0-9]/', '', strtolower((string)$val));
+            if ($lab === 'empcode') $hasEmp = true;
+            if ($lab === 'intime' || $lab === 'outtime') $hasInOut = true;
+            if ($hasEmp && $hasInOut) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Convert an "HH:MM" duration (OT column) to decimal hours; 0.0 when blank/--:--.
+ */
+function _att_hhmm_to_hours(string $raw): float
+{
+    $raw = trim($raw);
+    if ($raw === '' || $raw === '--:--') return 0.0;
+    if (preg_match('/^(\d{1,2}):(\d{2})$/', $raw, $m)) {
+        return round((int)$m[1] + (int)$m[2] / 60, 2);
+    }
+    return 0.0;
+}
+
+/**
+ * Parse a CSV into a raw 0-indexed grid (no header combine).
+ */
+function _att_parse_csv_grid(string $path): array
+{
+    $grid = [];
+    $fh = fopen($path, 'r');
+    if ($fh === false) return [];
+    $bom = fread($fh, 3);
+    if ($bom !== "\xEF\xBB\xBF") rewind($fh);
+    while (($line = fgetcsv($fh, 0, ',')) !== false) {
+        $grid[] = array_map(fn($v) => (string)$v, $line);
+    }
+    fclose($fh);
+    return $grid;
+}
+
+/**
+ * Parse a real (zip) XLSX into a raw 0-indexed grid (no header combine).
+ */
+function _att_parse_xlsx_grid(string $path): array
+{
+    if (!class_exists('ZipArchive')) return [];
+    $zip = new ZipArchive();
+    if ($zip->open($path) !== true) return [];
+
+    $shared = [];
+    $ssXml  = $zip->getFromName('xl/sharedStrings.xml');
+    if ($ssXml) {
+        $ss = simplexml_load_string($ssXml);
+        foreach ($ss->si as $si) {
+            if (isset($si->t)) {
+                $shared[] = (string)$si->t;
+            } else {
+                $text = '';
+                foreach ($si->r as $rr) $text .= (string)$rr->t;
+                $shared[] = $text;
+            }
+        }
+    }
+
+    $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
+    $zip->close();
+    if (!$sheetXml) return [];
+
+    $sheet   = simplexml_load_string($sheetXml);
+    $rawRows = [];
+    foreach ($sheet->sheetData->row as $xmlRow) {
+        $rowIdx = (int)$xmlRow['r'] - 1;
+        $cells  = [];
+        foreach ($xmlRow->c as $c) {
+            $colIdx = _att_xlsx_col_index((string)$c['r']);
+            $v      = isset($c->v) ? (string)$c->v : '';
+            if ((string)$c['t'] === 's') $v = $shared[(int)$v] ?? '';
+            $cells[$colIdx] = $v;
+        }
+        if (!$cells) { $rawRows[$rowIdx] = []; continue; }
+        $max = max(array_keys($cells));
+        $row = [];
+        for ($j = 0; $j <= $max; $j++) $row[] = $cells[$j] ?? '';
+        $rawRows[$rowIdx] = $row;
+    }
+    ksort($rawRows);
+    return array_values($rawRows);
 }

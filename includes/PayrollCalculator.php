@@ -122,7 +122,9 @@ class PayrollCalculator
         int   $month,
         int   $year,
         float $fixedSalary,
-        float $variableSalary = 0.0
+        float $variableSalary = 0.0,
+        bool  $persist = false,       // when true, store per-day worked_hours + deduction_amount on attendance rows
+        int   $manualPaidLeaveDays = 0 // admin-entered paid leave days that convert absent days to paid (no deduction)
     ): array {
         $empId       = (int)$employee['id'];
         $monthStart  = sprintf('%04d-%02d-01', $year, $month);
@@ -171,9 +173,28 @@ class PayrollCalculator
         $att['paid_leave'] += $approvedPaidLeave;
         $att['leave']      += $approvedPaidLeave;
 
-        $presentDays = $att['present'] + ($att['half_day'] * 0.5);
+        // Absences classified as Paid Leave on the Attendance Report (attendance
+        // .leave_classification = 'paid') are paid: excluded from LOP, counted as
+        // paid leave. 'unpaid' / unclassified absences remain LOP. Restricted to
+        // working days so a Sunday/holiday row can't accidentally pay.
+        $classifiedPaidLeave = $this->getClassifiedPaidLeaveDays($empId, $monthStart, $monthEnd, $workingDayDates);
+        $att['paid_leave'] += $classifiedPaidLeave;
+        $att['leave']      += $classifiedPaidLeave;
+
+        // 'present' already includes full + half + short + OD + Comp Off (all "not
+        // absent"). Half and short days then incur their own deductions below.
+        $presentDays = $att['present'];
         $absentDays  = max(0.0, $workingDays - $presentDays - $att['paid_leave']);
-        $lopDays     = $absentDays;  // LOP = absent after leave is accounted
+
+        // Admin-entered paid leave: convert up to that many ABSENT days into paid
+        // leave (no deduction). E.g. 4 absent + 2 paid leaves entered → deduct only 2.
+        $manualPaid = max(0, min($manualPaidLeaveDays, (int) floor($absentDays)));
+        if ($manualPaid > 0) {
+            $att['paid_leave'] += $manualPaid;
+            $att['leave']      += $manualPaid;
+            $absentDays         = max(0.0, $absentDays - $manualPaid);
+        }
+        $lopDays     = $absentDays;  // LOP = full absent days after leave is accounted
 
         // ── Step 1-3: Build allowances from components ────────────────────────
         $allowances = [];
@@ -282,6 +303,31 @@ class PayrollCalculator
             $absentDeduction = 0.0;
         }
 
+        // Half days (check-in after ~11:00, or net ≤ 4h) → NO late penalty; salary
+        // pro-rated on worked hours (≥ ½ day; at exactly 4h this equals ½ day).
+        $halfDayCount     = (int)($att['half_day'] ?? 0);
+        $halfDayDeduction = round((float)($att['half_ded_days'] ?? 0) * $perDay, 2);
+        if ($halfDayDeduction > 0) {
+            $deductions['Half Day Deduction (' . $halfDayCount . ' day' . ($halfDayCount === 1 ? '' : 's') . ')'] = $halfDayDeduction;
+        }
+        // Present but under 8h (check-in within cutoff, worked > 4h, early checkout) →
+        // pro-rate the shortfall hours. These days still incur the late penalty below.
+        $shortDays      = (int)($att['short_days'] ?? 0);
+        $shortDeduction = round((float)($att['short_ded_days'] ?? 0) * $perDay, 2);
+        if ($shortDeduction > 0) {
+            $deductions['Short Hours Deduction (' . $shortDays . ' day' . ($shortDays === 1 ? '' : 's') . ')'] = $shortDeduction;
+        }
+
+        // Persist per-day worked hours + deduction to the attendance rows (audit/history).
+        if ($persist && !empty($att['worked_days'])) {
+            $upd = $this->db->prepare('UPDATE attendance SET worked_hours = ?, deduction_amount = ? WHERE employee_id = ? AND att_date = ?');
+            foreach ($att['worked_days'] as $wd) {
+                $workedH = round(((int)$wd['net']) / 60, 2);
+                $dedAmt  = round(((float)($wd['ded_days'] ?? 0)) * $perDay, 2);
+                $upd->execute([$workedH, $dedAmt, $empId, $wd['date']]);
+            }
+        }
+
         // Late penalty: once total late for the month exceeds the grace allowance,
         // charge the FULL total late doubled (NOT just the minutes beyond grace).
         //   deductable minutes = total late × 2
@@ -313,6 +359,9 @@ class PayrollCalculator
             'absent_days'           => (float)$absentDays,
             'late_days'             => $att['late'],
             'no_checkout_absent'    => 0,
+            'half_day_deduction'    => $halfDayDeduction,
+            'short_days'            => $shortDays,
+            'short_deduction'       => $shortDeduction,
             'ot_hours'              => $otHours,
             'ot_amount'             => $otAmount,
             'ot_per_hour_rate'      => round($otPerHour, 2),
@@ -405,6 +454,34 @@ class PayrollCalculator
         return count($counted);
     }
 
+    /**
+     * Working days in the month where an Absent attendance row was classified as
+     * Paid Leave (attendance.leave_classification = 'paid'). These are paid and
+     * excluded from LOP. Capped implicitly at 1/month by the report's save guard.
+     */
+    private function getClassifiedPaidLeaveDays(int $empId, string $from, string $to, array $workingDayDates): int
+    {
+        if (!$workingDayDates) return 0;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT att_date FROM attendance
+                  WHERE employee_id = ? AND status = 'Absent'
+                    AND leave_classification = 'paid'
+                    AND att_date BETWEEN ? AND ?"
+            );
+            $stmt->execute([$empId, $from, $to]);
+            $dates = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Throwable $e) {
+            return 0;   // leave_classification column absent on this install — no effect
+        }
+        $workingSet = array_flip($workingDayDates);
+        $counted = 0;
+        foreach ($dates as $ds) {
+            if (isset($workingSet[$ds])) $counted++;
+        }
+        return $counted;
+    }
+
     private function getAttendance(int $empId, string $from, string $to): array
     {
         // Timing pulled from app_settings (OT Settings / Grace Settings pages).
@@ -440,37 +517,75 @@ class PayrollCalculator
             ];
         }
 
-        $presentStatuses = ['On Time', 'OD', 'Comp Off'];
-        $present = 0;
-        foreach ($presentStatuses as $s) {
-            $present += $map[$s]['cnt'] ?? 0;
-        }
-        $lateCnt  = $map['Late']['cnt']     ?? 0;
-        $present += $lateCnt;               // late is still present
-        $halfDay  = $map['Half Day']['cnt'] ?? 0;
-        $leave    = $map['Holiday']['cnt']  ?? 0; // holidays in attendance = paid
-        $absent   = $map['Absent']['cnt']   ?? 0;
+        $leave   = $map['Holiday']['cnt']  ?? 0;   // holidays in attendance = paid
+        $absent  = $map['Absent']['cnt']   ?? 0;
+        $odCnt   = $map['OD']['cnt']        ?? 0;
+        $compCnt = $map['Comp Off']['cnt']  ?? 0;
 
-        // Late minutes only from rows marked Late (already worked but arrived late)
-        $lateMinutes = (int)($map['Late']['late'] ?? 0);
-
-        // OT hours: minutes worked past office-end across all present statuses
-        // (On Time, Late, OD all eligible — Comp Off and Half Day intentionally excluded)
+        // OT hours: minutes worked past office-end across present statuses.
+        // OT applies to any worked day whose checkout reaches the OT trigger —
+        // including Half Day (an employee can still work past the OT baseline).
         $otMinutes = 0.0;
-        foreach (['On Time', 'Late', 'OD'] as $s) {
+        foreach (['On Time', 'Late', 'Half Day', 'OD'] as $s) {
             $otMinutes += $map[$s]['ot'] ?? 0;
         }
         $otHours = round($otMinutes / 60, 2);
 
+        // ── Classify each punched worked day (see attendance_classify) ────────
+        // Net worked = (check-out − check-in) − the break windows (the employee's
+        // lunch batch + the 2 tea breaks) that fall within the presence window.
+        //   check-in after ~11:00     → HALF    (no late; ≥ ½ day off)        → "Half Day Deduction"
+        //   net < 4h (on-time-ish)    → SHORT   (no late; pro-rated on hours)  → "Short Hours Deduction"
+        //   net = 4h (on-time-ish)    → HALF    (no late; ½ day)               → "Half Day Deduction"
+        //   net > 4h (on-time-ish)    → PRESENT (late applies; pro-rated)      → "Short Hours Deduction"
+        //                               (FULL when net ≥ 8h → no shortfall)
+        $officeStartM = (int) setting_office_start_mins();
+        $officeEndM   = (int) setting_office_end_mins();
+        $graceM       = (int) setting_daily_grace_mins();
+        $lunchWin     = function_exists('employee_lunch_window') ? employee_lunch_window($empId) : null;
+        $eoStmt = $this->db->prepare(
+            "SELECT att_date, in_time, out_time, status FROM attendance
+              WHERE employee_id = ? AND att_date BETWEEN ? AND ?
+                AND status IN ('On Time','Late','Half Day')
+                AND in_time IS NOT NULL AND out_time IS NOT NULL"
+        );
+        $eoStmt->execute([$empId, $from, $to]);
+        $fullWorked = 0; $halfWorked = 0; $presentPartial = 0;
+        $halfDedDays = 0.0; $shortDedDays = 0.0;
+        $lateMinsPool = 0; $lateDaysPool = 0; $workedDays = [];
+        foreach ($eoStmt->fetchAll() as $r) {
+            $inM  = time_to_mins((string)$r['in_time']);
+            $outM = time_to_mins((string)$r['out_time']);
+            if ($outM <= $inM) continue;
+            $net = max(0, ($outM - $inM) - break_minutes_within($inM, $outM, $lunchWin));
+            // Type (short / half / present) is decided by the actual hours + check-in
+            // time, not by the stored status label — see attendance_classify().
+            $c   = attendance_classify($net, $inM, $officeStartM, $graceM, $outM, $officeEndM);
+            if ($c['status'] === 'half') {
+                $halfWorked++;     $halfDedDays  += $c['ded_days'];   // "Half Day" line, no late
+            } elseif ($c['status'] === 'short' || $c['status'] === 'present') {
+                $presentPartial++; $shortDedDays += $c['ded_days'];   // "Short Hours" line (late only if 'present')
+            } else {                                                  // 'full'
+                $fullWorked++;
+            }
+            if ($c['late']) { $lateMinsPool += ($inM - $officeStartM); $lateDaysPool++; }
+            $workedDays[] = ['date' => $r['att_date'], 'net' => $net, 'status' => $c['status'], 'ded_days' => $c['ded_days']];
+        }
+        $present = $fullWorked + $presentPartial + $halfWorked + $odCnt + $compCnt;   // all "not absent"
+
         return [
-            'present'      => $present,
-            'half_day'     => $halfDay,
-            'leave'        => $leave,
-            'paid_leave'   => $leave,          // holidays counted as paid leave
-            'absent'       => $absent,
-            'late'         => $lateCnt,
-            'late_minutes' => $lateMinutes,
-            'ot_hours'     => $otHours,
+            'present'        => $present,
+            'half_day'       => $halfWorked,
+            'half_ded_days'  => round($halfDedDays, 4),    // total ½-day-equivalent to deduct
+            'short_days'     => $presentPartial,           // present-but-under-8h days
+            'short_ded_days' => round($shortDedDays, 4),   // total shortfall (in days) to deduct
+            'worked_days'    => $workedDays,               // per-day [date, net, status, ded_days] for write-back
+            'leave'          => $leave,
+            'paid_leave'     => $leave,                    // holidays counted as paid leave
+            'absent'         => $absent,
+            'late'           => $lateDaysPool,             // late present/full days
+            'late_minutes'   => $lateMinsPool,             // late-penalty pool
+            'ot_hours'       => $otHours,
         ];
     }
 

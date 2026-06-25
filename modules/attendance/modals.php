@@ -244,7 +244,7 @@ if (!defined('BASE_URL')) die(); // safety guard — must be included, not acces
                         margin-bottom:16px;font-size:13px">
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
                     <input type="checkbox" name="auto_classify" value="1" checked>
-                    Auto-classify Late / On Time from In Time (Format A)
+                    Auto-classify Late / On Time from In Time (row & punch-report formats)
                 </label>
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
                     <input type="checkbox" name="skip_existing" value="1">

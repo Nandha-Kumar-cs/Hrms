@@ -57,6 +57,39 @@ $sumStmt->execute($emp_filter ? [$monthStart, $monthEnd, $emp_filter] : [$monthS
 $summaryMap = [];
 foreach ($sumStmt->fetchAll() as $s) $summaryMap[$s['status']] = (int)$s['cnt'];
 
+/* ── Matrix report helpers (used by the matrix tab and by standalone report.php).
+   Defined BEFORE the report computation below — they are wrapped in
+   function_exists() guards, so PHP does not hoist them; declaring them here
+   ensures they exist when the report tab runs. ── */
+if (!function_exists('_rep_timeToMins')) {
+    function _rep_timeToMins(string $t): int {
+        $t = trim($t);
+        if (str_contains($t, ' ')) $t = trim(substr(strrchr($t, ' '), 1));
+        if (str_contains($t, 'T')) $t = trim(substr(strrchr($t, 'T'), 1));
+        $parts = explode(':', $t);
+        return (int)($parts[0] ?? 0) * 60 + (int)($parts[1] ?? 0);
+    }
+}
+if (!function_exists('_rep_satCountUpTo')) {
+    function _rep_satCountUpTo(DateTime $d): int {
+        $n = 0; $t = (clone $d)->modify('first day of this month');
+        while ($t <= $d) { if ((int)$t->format('N') === 6) $n++; $t->modify('+1 day'); }
+        return $n;
+    }
+}
+if (!function_exists('_rep_is13Sat')) {
+    function _rep_is13Sat(DateTime $d): bool {
+        if ((int)$d->format('N') !== 6) return false;
+        return in_array(_rep_satCountUpTo($d), [1, 3]);
+    }
+}
+if (!function_exists('_rep_fmtMins')) {
+    function _rep_fmtMins(int $m): string {
+        if ($m <= 0) return '0m';
+        return ($m >= 60 ? intdiv($m, 60) . 'h ' : '') . ($m % 60) . 'm';
+    }
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
    MATRIX TAB: additional computation (only executed when tab=matrix)
    ────────────────────────────────────────────────────────────────────────── */
@@ -797,10 +830,12 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
 
 <?php
 $_canEdit = can('attendance', 'edit');
+$_hasRecords = !empty($records) ? 'true' : 'false';
 $page_scripts = '<script>
 $(document).ready(function () {
-    // Records table
-    if ($("#tbl-records").length) {
+    // Records table — skip DataTables when the only row is the empty-state
+    // colspan cell (its column count mismatches the header → tn/18 warning).
+    if (' . $_hasRecords . ' && $("#tbl-records").length) {
         $("#tbl-records").DataTable({
             pageLength: 50,
             order: [[0,"desc"]],
@@ -864,35 +899,4 @@ window.PAGE_SHORTCUTS = {
     'o': () => window.location.href = '<?= BASE_URL ?>/modules/attendance/od_requests.php'
 };
 </script>
-<?php
-/* ── Matrix report helpers (used by the matrix tab and by standalone report.php) ── */
-if (!function_exists('_rep_timeToMins')) {
-    function _rep_timeToMins(string $t): int {
-        $t = trim($t);
-        if (str_contains($t, ' ')) $t = trim(substr(strrchr($t, ' '), 1));
-        if (str_contains($t, 'T')) $t = trim(substr(strrchr($t, 'T'), 1));
-        $parts = explode(':', $t);
-        return (int)($parts[0] ?? 0) * 60 + (int)($parts[1] ?? 0);
-    }
-}
-if (!function_exists('_rep_satCountUpTo')) {
-    function _rep_satCountUpTo(DateTime $d): int {
-        $n = 0; $t = (clone $d)->modify('first day of this month');
-        while ($t <= $d) { if ((int)$t->format('N') === 6) $n++; $t->modify('+1 day'); }
-        return $n;
-    }
-}
-if (!function_exists('_rep_is13Sat')) {
-    function _rep_is13Sat(DateTime $d): bool {
-        if ((int)$d->format('N') !== 6) return false;
-        return in_array(_rep_satCountUpTo($d), [1, 3]);
-    }
-}
-if (!function_exists('_rep_fmtMins')) {
-    function _rep_fmtMins(int $m): string {
-        if ($m <= 0) return '0m';
-        return ($m >= 60 ? intdiv($m, 60) . 'h ' : '') . ($m % 60) . 'm';
-    }
-}
-?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

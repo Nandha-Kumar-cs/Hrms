@@ -20,12 +20,57 @@
 /** Logged-in user's linked employee id (0 if none). */
 function current_employee_id(): int {
     $u = function_exists('current_user') ? current_user() : null;
-    return (int)($u['employee_id'] ?? 0);
+    if (!$u) return 0;
+
+    $eid = (int)($u['employee_id'] ?? 0);
+    if ($eid > 0) return $eid;
+
+    // Fallback: the user account was never linked via users.employee_id. Resolve
+    // it by matching the login email to an employee record so self-scoping still
+    // works (and isn't silently disabled). Cached per request.
+    static $resolved = null;
+    if ($resolved !== null) return $resolved;
+    $email = trim((string)($u['email'] ?? ''));
+    if ($email === '') return $resolved = 0;
+    try {
+        $s = db()->prepare('SELECT id FROM employees WHERE LOWER(email) = LOWER(?) LIMIT 1');
+        $s->execute([$email]);
+        $resolved = (int)($s->fetchColumn() ?: 0);
+    } catch (Throwable $e) {
+        $resolved = 0;
+    }
+    return $resolved;
 }
 
-/** Privileged roles that may view/manage ALL employees' data. */
+/** Privileged roles that may view/manage ALL employees' data. Used only as a
+ *  fallback when the roles.self_scope flag is unavailable (pre-migration). */
 function scope_privileged_roles(): array {
     return ['super admin', 'admin', 'hr manager', 'hr executive', 'manager', 'finance'];
+}
+
+/**
+ * Whether a given role is configured to be self-scoped. Driven by the
+ * roles.self_scope flag (set per role in Settings → Roles). Result is cached
+ * per request. Falls back to the legacy role-name heuristic only if the column
+ * is missing (e.g. migration not yet applied).
+ */
+function role_has_self_scope(int $roleId, string $roleNameLower = ''): bool {
+    static $cache = [];
+    $nameFallback = fn() => $roleNameLower !== ''
+        && !in_array($roleNameLower, scope_privileged_roles(), true);
+
+    if ($roleId <= 0) return $nameFallback();
+    if (array_key_exists($roleId, $cache)) return $cache[$roleId];
+
+    try {
+        $s = db()->prepare('SELECT self_scope FROM roles WHERE id = ?');
+        $s->execute([$roleId]);
+        $val = $s->fetchColumn();
+        $flag = ($val === false) ? $nameFallback() : ((int)$val === 1);
+    } catch (Throwable $e) {
+        $flag = $nameFallback();   // self_scope column absent — legacy behaviour
+    }
+    return $cache[$roleId] = $flag;
 }
 
 /** True when the current user must be restricted to their own employee data. */
@@ -33,8 +78,7 @@ function is_self_scoped(): bool {
     $u = function_exists('current_user') ? current_user() : null;
     if (!$u) return false;
     if (current_employee_id() <= 0) return false;          // not linked to an employee
-    $role = strtolower($u['role_name'] ?? '');
-    return !in_array($role, scope_privileged_roles(), true);
+    return role_has_self_scope((int)($u['role_id'] ?? 0), strtolower($u['role_name'] ?? ''));
 }
 
 /**

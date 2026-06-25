@@ -14,21 +14,23 @@ $employees = $db->query(
      ORDER BY e.employee_id'
 )->fetchAll();
 
-$hasOffer = array_flip($db->query(
-    "SELECT DISTINCT employee_id FROM letters WHERE type='Offer'"
-)->fetchAll(PDO::FETCH_COLUMN));
+// Map each employee to their latest letter id per type, so "View … Letter"
+// links open the actual letter (view.php needs a letter id, not employee_id).
+$hasOffer = $db->query(
+    "SELECT employee_id, MAX(id) FROM letters WHERE type='Offer' GROUP BY employee_id"
+)->fetchAll(PDO::FETCH_KEY_PAIR);
 
-$hasConfirm = array_flip($db->query(
-    "SELECT DISTINCT employee_id FROM letters WHERE type='Confirmation'"
-)->fetchAll(PDO::FETCH_COLUMN));
+$hasConfirm = $db->query(
+    "SELECT employee_id, MAX(id) FROM letters WHERE type='Confirmation' GROUP BY employee_id"
+)->fetchAll(PDO::FETCH_KEY_PAIR);
 
 $hasSlip = array_flip($db->query(
     "SELECT DISTINCT employee_id FROM salary_slips"
 )->fetchAll(PDO::FETCH_COLUMN));
 
-$hasIncrement = array_flip($db->query(
-    "SELECT DISTINCT employee_id FROM letters WHERE type='Increment'"
-)->fetchAll(PDO::FETCH_COLUMN));
+$hasIncrement = $db->query(
+    "SELECT employee_id, MAX(id) FROM letters WHERE type='Increment' GROUP BY employee_id"
+)->fetchAll(PDO::FETCH_KEY_PAIR);
 ?>
 
 <style>
@@ -211,7 +213,7 @@ $hasIncrement = array_flip($db->query(
                             <?php if (can('letters','create')): ?>
                             <li>
                                 <?php if (isset($hasOffer[$eid])): ?>
-                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/letters/view.php?employee_id=<?= $eid ?>&type=offer">
+                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/letters/view.php?id=<?= $hasOffer[$eid] ?>">
                                     <i class="fa fa-envelope-open-text me-2 text-info"></i>View Offer Letter
                                 </a>
                                 <?php else: ?>
@@ -222,7 +224,7 @@ $hasIncrement = array_flip($db->query(
                             </li>
                             <li>
                                 <?php if (isset($hasConfirm[$eid])): ?>
-                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/letters/view.php?employee_id=<?= $eid ?>&type=confirmation">
+                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/letters/view.php?id=<?= $hasConfirm[$eid] ?>">
                                     <i class="fa fa-circle-check me-2 text-info"></i>View Confirmation Letter
                                 </a>
                                 <?php else: ?>
@@ -239,7 +241,7 @@ $hasIncrement = array_flip($db->query(
                                     <i class="fa fa-money-bill-wave me-2 text-info"></i>View Salary Slip
                                 </a>
                                 <?php else: ?>
-                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/payroll/process.php?employee_id=<?= $eid ?>">
+                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/payroll/index.php">
                                     <i class="fa fa-plus me-2 text-success"></i>Create Salary Slip
                                 </a>
                                 <?php endif; ?>
@@ -248,7 +250,7 @@ $hasIncrement = array_flip($db->query(
                             <?php if (can('letters','create')): ?>
                             <li>
                                 <?php if (isset($hasIncrement[$eid])): ?>
-                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/letters/view.php?employee_id=<?= $eid ?>&type=increment">
+                                <a class="dropdown-item" href="<?= BASE_URL ?>/modules/letters/view.php?id=<?= $hasIncrement[$eid] ?>">
                                     <i class="fa fa-arrow-trend-up me-2 text-info"></i>View Increment Letter
                                 </a>
                                 <?php else: ?>

@@ -44,6 +44,9 @@ if ($reason === '')                            $errors[] = 'Reason is required.'
 if (mb_strlen($reason) > 255)                  $errors[] = 'Reason must be 255 characters or fewer.';
 if ($payroll_month < 1 || $payroll_month > 12) $errors[] = 'Invalid payroll month.';
 if ($payroll_year < 2000 || $payroll_year > 2099) $errors[] = 'Invalid payroll year.';
+// No salary → no bonus (bonuses are paid through the salary slip).
+if ($emp_id && !$id && !employee_has_salary($emp_id))
+    $errors[] = 'This employee has no salary configured. Set their salary before adding a bonus / incentive.';
 
 if ($errors) {
     $_SESSION['errors']   = $errors;

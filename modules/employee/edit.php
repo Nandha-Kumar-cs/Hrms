@@ -34,6 +34,11 @@ $designs = $db->query(
     'SELECT id, name, department_id FROM designations ORDER BY name'
 )->fetchAll(PDO::FETCH_ASSOC);
 
+$lunchBatches = [];
+try {
+    $lunchBatches = $db->query("SELECT id, name, start_time, end_time FROM lunch_batches ORDER BY start_time")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) { /* table absent */ }
+
 $managersStmt = $db->prepare(
     "SELECT id, name, employee_id FROM employees
      WHERE status = 'Active' AND id != ? ORDER BY name"
@@ -58,6 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── Employment ────────────────────────────────────────────────────────────
     $entity_id     = (int)($_POST['entity_id']           ?? 0) ?: null;
+    $lunch_batch_id = (int)($_POST['lunch_batch_id']     ?? 0) ?: null;
     $dept_id       = (int)($_POST['department_id']        ?? 0) ?: null;
     $des_id        = (int)($_POST['designation_id']       ?? 0) ?: null;
     $mgr_id        = (int)($_POST['reporting_manager_id'] ?? 0) ?: null;
@@ -145,7 +151,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // ── UPDATE employees ──────────────────────────────────────────────────
         $stmt = $db->prepare(
             "UPDATE employees SET
-                entity_id=:entity_id,
+                entity_id=:entity_id, lunch_batch_id=:lunch_batch_id,
                 name=:name, email=:email, phone=:phone, gender=:gender, dob=:dob,
                 department_id=:dept_id, designation_id=:des_id,
                 ot_enabled=:ot_enabled, manager_id=:mgr_id,
@@ -158,6 +164,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
         $stmt->execute([
             ':entity_id'    => $entity_id,
+            ':lunch_batch_id' => $lunch_batch_id,
             ':name'         => $full_name,
             ':email'        => $email,
             ':phone'        => $phone         ?: null,
@@ -372,6 +379,19 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                         </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Lunch Batch</label>
+                    <select name="lunch_batch_id" class="form-select">
+                        <option value="">Default lunch</option>
+                        <?php foreach ($lunchBatches as $lb): ?>
+                        <option value="<?= $lb['id'] ?>" <?= $sel('lunch_batch_id', $lb['id']) ?>>
+                            <?= h($lb['name']) ?> (<?= h(date('h:i A', strtotime($lb['start_time']))) ?>–<?= h(date('h:i A', strtotime($lb['end_time']))) ?>)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Used in salary calculation.</div>
                 </div>
 
                 <div class="col-md-4">

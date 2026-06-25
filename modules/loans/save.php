@@ -44,6 +44,9 @@ if ($total_months < 1)        $errors[] = 'Total Months must be at least 1.';
 if ($monthly_deduction <= 0)  $errors[] = 'Monthly Deduction (EMI) must be greater than zero.';
 if ($interest_rate < 0 || $interest_rate > 100) $errors[] = 'Interest Rate must be between 0 and 100.';
 if (!$emp_id)                 $errors[] = 'Invalid employee.';
+// No salary → no loan (deductions are computed from the employee's salary).
+if ($emp_id && !$id && !employee_has_salary($emp_id))
+    $errors[] = 'This employee has no salary configured. Set their salary before creating a loan / advance.';
 
 if ($errors) {
     $_SESSION['errors']   = $errors;

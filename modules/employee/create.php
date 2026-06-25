@@ -36,8 +36,45 @@ if ($action === 'delete') {
     }
 
     $empLabel = activity_emp_label($id);
-    $db->prepare("DELETE FROM users WHERE employee_id = ?")->execute([$id]);
-    $db->prepare("DELETE FROM employees WHERE id = ?")->execute([$id]);
+
+    try {
+        $db->beginTransaction();
+
+        // Remove the login account explicitly (its employee_id may not carry a FK).
+        $db->prepare("DELETE FROM users WHERE employee_id = ?")->execute([$id]);
+
+        // Remove every child row that references this employee. The set of child
+        // tables is discovered from the schema, so attendance, letters, documents,
+        // promotions, loans, benefits, bonuses, leave/OD/comp-off, salary
+        // structures, etc. are all cleared without a hard-coded list (and new
+        // tables are handled automatically). A self-reference (employees.manager_id)
+        // is detached, not cascade-deleted, so an employee's reports survive.
+        $dbName = $db->query('SELECT DATABASE()')->fetchColumn();
+        $fks = $db->prepare(
+            "SELECT TABLE_NAME, COLUMN_NAME
+               FROM information_schema.KEY_COLUMN_USAGE
+              WHERE TABLE_SCHEMA = ?
+                AND REFERENCED_TABLE_NAME = 'employees'
+                AND REFERENCED_COLUMN_NAME = 'id'"
+        );
+        $fks->execute([$dbName]);
+        foreach ($fks->fetchAll(PDO::FETCH_ASSOC) as $fk) {
+            $t = $fk['TABLE_NAME'];
+            $c = $fk['COLUMN_NAME'];
+            if ($t === 'employees') {
+                $db->prepare("UPDATE `employees` SET `$c` = NULL WHERE `$c` = ?")->execute([$id]);
+            } else {
+                $db->prepare("DELETE FROM `$t` WHERE `$c` = ?")->execute([$id]);
+            }
+        }
+
+        $db->prepare("DELETE FROM employees WHERE id = ?")->execute([$id]);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        flash('error', 'Could not delete employee. ' . $e->getMessage());
+        redirect(BASE_URL . '/modules/employee/index.php');
+    }
 
     activity_log('deleted', 'Employee', 'Deleted employee: ' . $empLabel);
     flash('success', 'Employee deleted.');
@@ -73,6 +110,7 @@ $status     = $status_map[$status_raw] ?? 'Active';
 $entity_id  = (int)($_POST['entity_id']           ?? 0) ?: null;
 $dept_id    = (int)($_POST['department_id']        ?? 0) ?: null;
 $des_id     = (int)($_POST['designation_id']       ?? 0) ?: null;
+$lunch_batch_id = (int)($_POST['lunch_batch_id']   ?? 0) ?: null;
 $mgr_id     = (int)($_POST['reporting_manager_id'] ?? 0) ?: null;
 
 $joining_date  = sanitize($_POST['joining_date']  ?? '');
@@ -205,7 +243,7 @@ if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR
 // ── INSERT ────────────────────────────────────────────────────────────────────
 $stmt = $db->prepare(
     "INSERT INTO employees
-        (entity_id, employee_id, name, email, phone, dob, gender,
+        (entity_id, lunch_batch_id, employee_id, name, email, phone, dob, gender,
          department_id, designation_id, ot_enabled, manager_id,
          join_date, probation_end, status,
          fixed_salary, variable_salary,
@@ -213,7 +251,7 @@ $stmt = $db->prepare(
          pan_number, aadhaar_number, uan_number, esic_number,
          photo, created_at)
      VALUES
-        (:entity_id, :employee_id, :name, :email, :phone, :dob, :gender,
+        (:entity_id, :lunch_batch_id, :employee_id, :name, :email, :phone, :dob, :gender,
          :department_id, :designation_id, :ot_enabled, :manager_id,
          :join_date, :probation_end, :status,
          :fixed_salary, :variable_salary,
@@ -224,6 +262,7 @@ $stmt = $db->prepare(
 
 $stmt->execute([
     ':entity_id'      => $entity_id,
+    ':lunch_batch_id' => $lunch_batch_id,
     ':employee_id'    => $employee_code,
     ':name'           => $full_name,
     ':email'          => $email,
@@ -271,18 +310,27 @@ if ($fixed_salary > 0) {
     ]);
 }
 
-// ── Auto-create login account (role 6 = Employee) ────────────────────────────
+// ── Auto-create login account (Employee role) ───────────────────────────────
+// Resolve the Employee role by name (id is not hardcoded — it can differ between
+// installs / after a data reset); create it if missing to avoid an FK failure.
+$empRoleId = (int)($db->query("SELECT id FROM roles WHERE name = 'Employee' LIMIT 1")->fetchColumn() ?: 0);
+if (!$empRoleId) {
+    $db->prepare("INSERT INTO roles (name, description, self_scope) VALUES ('Employee', 'Self-service employee login', 1)")
+       ->execute();
+    $empRoleId = (int)$db->lastInsertId();
+}
 $ucheck = $db->prepare('SELECT 1 FROM users WHERE email = ? LIMIT 1');
 $ucheck->execute([$email]);
 if (!$ucheck->fetchColumn()) {
     $tmp_pass = password_hash('Hrms@' . substr($employee_code, -4), PASSWORD_BCRYPT);
     $db->prepare(
         'INSERT INTO users (email, name, password_hash, role_id, employee_id, is_active)
-         VALUES (:email, :name, :pass, 6, :emp_id, 1)'
+         VALUES (:email, :name, :pass, :role, :emp_id, 1)'
     )->execute([
         ':email'  => $email,
         ':name'   => $full_name,
         ':pass'   => $tmp_pass,
+        ':role'   => $empRoleId,
         ':emp_id' => $new_id,
     ]);
 }

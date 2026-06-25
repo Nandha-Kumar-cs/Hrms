@@ -14,13 +14,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $name  = trim($_POST['name'] ?? '');
     $desc  = trim($_POST['description'] ?? '');
     $perms = $_POST['permissions'] ?? [];
+    $selfScope = !empty($_POST['self_scope']) ? 1 : 0;
 
     if (!$name) $errors[] = 'Role name is required.';
     if (db()->query("SELECT id FROM roles WHERE name='".addslashes($name)."'")->fetchColumn()) $errors[] = 'Role name already exists.';
 
     if (empty($errors)) {
-        db()->prepare("INSERT INTO roles (name, description, created_at) VALUES (:n,:d,NOW())")
-             ->execute([':n'=>$name,':d'=>$desc]);
+        db()->prepare("INSERT INTO roles (name, description, self_scope, created_at) VALUES (:n,:d,:s,NOW())")
+             ->execute([':n'=>$name,':d'=>$desc,':s'=>$selfScope]);
         $roleId = db()->lastInsertId();
 
         foreach ($perms as $pid) {
@@ -64,6 +65,16 @@ include '../../includes/header.php';
                     <div class="form-group">
                         <label class="form-label">Description</label>
                         <textarea name="description" class="form-control" rows="3"><?= h($_POST['description'] ?? '') ?></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-check">
+                            <input type="checkbox" name="self_scope" value="1" <?= !empty($_POST['self_scope']) ? 'checked' : '' ?>>
+                            <span>Restrict to own records only (self-service)</span>
+                        </label>
+                        <p class="text-muted mt-1" style="font-size:.8rem">
+                            Users with this role see only their own employee data everywhere and
+                            cannot view other employees' details.
+                        </p>
                     </div>
                 </div>
                 <div class="card-footer">

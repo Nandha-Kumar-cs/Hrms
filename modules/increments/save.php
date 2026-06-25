@@ -34,6 +34,9 @@ $sd = DateTime::createFromFormat('Y-m-d', $effective_date);
 if (!$effective_date || !$sd || $sd->format('Y-m-d') !== $effective_date) $errors[] = 'A valid Effective Date is required.';
 if ($new_salary <= 0)     $errors[] = 'New Salary must be greater than zero.';
 if (!$emp_id)             $errors[] = 'Invalid employee.';
+// No base salary → no increment (an increment revises an existing salary).
+if ($emp_id && !$id && !employee_has_salary($emp_id))
+    $errors[] = 'This employee has no salary configured. Set their base salary on the employee profile before recording an increment.';
 
 if ($errors) {
     $_SESSION['errors']   = $errors;
@@ -67,9 +70,41 @@ if ($id) {
     activity_log('created', 'Increment', 'Salary increment for ' . activity_emp_label($emp_id) . ': ₹' . number_format($previous_salary, 2) . ' → ₹' . number_format($new_salary, 2) . ' (' . $increment_percentage . '%) — Effective ' . date('d M Y', strtotime($effective_date)), [
         ['field' => 'Salary', 'from' => '₹' . number_format((float)$previous_salary, 2), 'to' => '₹' . number_format((float)$new_salary, 2)],
     ]);
-    flash('success', $isFuture
+
+    // Auto-generate the matching Increment letter (Draft). Content mirrors the
+    // manual letter template (modules/letters/create.php) so includes/increment_letter.php
+    // parses the figures identically. Non-fatal: a letter failure never blocks the increment.
+    try {
+        $en = $db->prepare('SELECT name FROM employees WHERE id = ?');
+        $en->execute([$emp_id]);
+        $empName = (string)($en->fetchColumn() ?: '');
+
+        $effFmt    = date('d F Y', strtotime($effective_date));
+        $pctStr    = rtrim(rtrim(number_format($increment_percentage, 2), '0'), '.');
+        $letterContent = "Dear {$empName},\n\n"
+            . "We are pleased to inform you that the management has decided to revise your salary, with effect from {$effFmt}. This reflects your outstanding contribution to the organization.\n\n"
+            . 'Previous Monthly Gross: ₹ ' . number_format($previous_salary, 2) . "\n"
+            . 'Revised Monthly Gross: ₹ ' . number_format($new_salary, 2) . "\n"
+            . "Increment: {$pctStr}%\n\n"
+            . 'We appreciate your dedication and expect continued excellence in your work. Congratulations on this well-deserved recognition.';
+
+        $cnt = $db->query('SELECT COUNT(*)+1 FROM letters')->fetchColumn();
+        $ref = 'HR/I/' . date('Y') . '/' . str_pad((string)$cnt, 4, '0', STR_PAD_LEFT);
+
+        $db->prepare('INSERT INTO letters (employee_id,type,issued_date,reference,content,issued_by,status) VALUES (?,?,?,?,?,?,?)')
+           ->execute([$emp_id, 'Increment', $effective_date, $ref, $letterContent, (int)(current_user()['id'] ?? 0) ?: null, 'Draft']);
+
+        if (function_exists('activity_log')) {
+            activity_log('created', 'Letter', 'Auto-generated Increment letter ' . $ref . ' for ' . activity_emp_label($emp_id));
+        }
+    } catch (Throwable $e) {
+        error_log('Auto increment-letter generation failed: ' . $e->getMessage());
+    }
+
+    flash('success', ($isFuture
         ? 'Increment scheduled for ' . date('d M Y', strtotime($effective_date)) . '. Employee salary will apply from that date during payroll generation.'
-        : 'Increment recorded and salary updated to ' . money($new_salary) . '.');
+        : 'Increment recorded and salary updated to ' . money($new_salary) . '.')
+        . ' An Increment letter draft was created automatically.');
 }
 
 // Reflect the increment in the employee's current CTC / salary structure

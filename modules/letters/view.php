@@ -6,11 +6,13 @@ $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/letters/index.php');
 
 $letter = db()->query("SELECT l.*, e.name AS emp_name, e.employee_id AS emp_code,
-    e.join_date, d.name AS dept_name, des.name AS designation,
+    e.join_date, e.gender, e.fixed_salary, e.variable_salary,
+    d.name AS dept_name, des.name AS designation,
     u.name AS issued_by_name,
     ent.name AS entity_name, ent.address AS entity_address, ent.city AS entity_city,
     ent.state AS entity_state, ent.pincode AS entity_pincode,
-    ent.email AS entity_email, ent.phone AS entity_phone, ent.logo AS entity_logo
+    ent.email AS entity_email, ent.phone AS entity_phone, ent.logo AS entity_logo,
+    ent.signature AS entity_signature, ent.signatory_title AS entity_signatory_title
     FROM letters l
     JOIN employees e ON l.employee_id = e.id
     LEFT JOIN departments d ON e.department_id = d.id
@@ -37,6 +39,9 @@ $co_email = $letter['entity_name'] ? ($letter['entity_email'] ?: '') : COMPANY_E
 $co_phone = $letter['entity_name'] ? ($letter['entity_phone'] ?: '') : COMPANY_PHONE;
 $co_logo  = (!empty($letter['entity_logo']) && file_exists(BASE_PATH . '/storage/entities/' . $letter['entity_logo']))
     ? BASE_URL . '/storage/entities/' . $letter['entity_logo']
+    : null;
+$co_signature = (!empty($letter['entity_signature']) && file_exists(BASE_PATH . '/storage/entities/' . $letter['entity_signature']))
+    ? BASE_URL . '/storage/entities/' . $letter['entity_signature']
     : null;
 
 $page_title = $letter['type'] . ' Letter';
@@ -68,6 +73,32 @@ include '../../includes/header.php';
 </div>
 
 <?php render_flash(); ?>
+
+<?php if ($letter['type'] === 'Offer'):
+    // Offer letter: render the exact same 2-page design as the PDF.
+    require_once '../../includes/offer_letter.php';
+    $offerData = offer_letter_data(db(), $letter);
+?>
+<div class="letter-wrapper" id="letterContent">
+    <?= offer_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo, 'signature' => $co_signature, 'signatory_title' => $letter['entity_signatory_title'] ?? ''], $offerData, ['screen' => true, 'inline_footer' => true]) ?>
+</div>
+<?php elseif ($letter['type'] === 'Increment'):
+    // Increment letter: render the same info-box design as the PDF.
+    require_once '../../includes/increment_letter.php';
+    $incData = increment_letter_data($letter);
+?>
+<div class="letter-wrapper" id="letterContent">
+    <?= increment_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'email' => $co_email, 'phone' => $co_phone, 'logo' => $co_logo], $incData, ['screen' => true]) ?>
+</div>
+<?php elseif ($letter['type'] === 'Confirmation'):
+    // Confirmation letter: render the same design as the PDF.
+    require_once '../../includes/confirmation_letter.php';
+    $confData = confirmation_letter_data($letter);
+?>
+<div class="letter-wrapper" id="letterContent">
+    <?= confirmation_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo], $confData, ['screen' => true, 'inline_footer' => true]) ?>
+</div>
+<?php else: ?>
 
 <div class="letter-wrapper" id="letterContent">
     <div class="letter-paper">
@@ -128,6 +159,7 @@ include '../../includes/header.php';
         </div>
     </div>
 </div>
+<?php endif; ?>
 
 <style>
 @media print {

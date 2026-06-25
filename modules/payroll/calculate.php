@@ -25,6 +25,13 @@ $monthLabel   = date('F Y', mktime(0, 0, 0, $month, 1, $year));
 $payrollMonth = sprintf('%04d-%02d', $year, $month);
 $calDays      = (int)date('t', strtotime($monthStart));
 
+// Future-month guard: payroll cannot be run before the month has started. The
+// error is shown on THIS page (the Generate buttons are disabled) rather than
+// letting the POST bounce to the Generate Salary Slip page.
+$isFutureMonth = mktime(0, 0, 0, $month, 1, $year) > mktime(0, 0, 0, (int)date('n'), 1, $currentYear);
+$futureMsg     = 'Cannot generate a salary slip for a future month (' . $monthLabel
+               . '). Payroll is only allowed for the current or a past month.';
+
 // ─── Load salary components ──────────────────────────────────────────────────
 $components = $db->query('SELECT * FROM salary_components ORDER BY type, name')->fetchAll();
 
@@ -178,6 +185,12 @@ require_once __DIR__ . '/../../includes/header.php';
     </div>
     <button type="submit" class="btn btn-primary btn-sm"><i class="fa fa-search"></i> Calculate</button>
 </form>
+
+<?php if ($isFutureMonth): ?>
+<div class="alert alert-danger" style="margin-bottom:18px">
+    <i class="fa fa-triangle-exclamation me-1"></i><?= h($futureMsg) ?>
+</div>
+<?php endif; ?>
 
 <!-- Summary cards -->
 <div class="stat-grid" style="margin-bottom:20px">
@@ -350,28 +363,19 @@ require_once __DIR__ . '/../../includes/header.php';
                         <a href="<?= BASE_URL ?>/modules/payroll/slip.php?id=<?= $slip['id'] ?>" class="btn btn-xs" title="View" style="padding:3px 7px;font-size:11px">View</a>
                         <a href="<?= BASE_URL ?>/modules/payroll/slip_pdf.php?id=<?= $slip['id'] ?>" class="btn btn-xs" style="padding:3px 7px;font-size:11px;color:var(--danger);border-color:var(--danger)" target="_blank" title="PDF">PDF</a>
                         <?php if (can('payroll','process')): ?>
-                        <form method="POST" action="<?= BASE_URL ?>/modules/payroll/generate_slip.php" style="display:inline" onsubmit="return confirm('Regenerate slip for <?= h($emp['name']) ?>?')">
-                            <?= csrf_field() ?>
-                            <input type="hidden" name="employee_id" value="<?= $emp['id'] ?>">
-                            <input type="hidden" name="month" value="<?= $month ?>">
-                            <input type="hidden" name="year" value="<?= $year ?>">
-                            <input type="hidden" name="force_regenerate" value="1">
-                            <button type="submit" class="btn btn-xs" style="padding:3px 7px;font-size:11px;color:#e6a817;border-color:#e6a817" title="Regenerate">
-                                <i class="fa fa-refresh"></i>
-                            </button>
-                        </form>
+                        <a href="<?= $isFutureMonth ? '#' : BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $emp['id'] . '&month=' . $month . '&year=' . $year ?>"
+                           class="btn btn-xs" style="padding:3px 7px;font-size:11px;color:#e6a817;border-color:#e6a817<?= $isFutureMonth ? ';opacity:.5;pointer-events:none' : '' ?>"
+                           title="<?= $isFutureMonth ? 'Future month — payroll not allowed' : 'Regenerate (set paid leaves on the form)' ?>">
+                            <i class="fa fa-refresh"></i>
+                        </a>
                         <?php endif; ?>
                     <?php else: ?>
                         <?php if (can('payroll','process')): ?>
-                        <form method="POST" action="<?= BASE_URL ?>/modules/payroll/generate_slip.php" style="display:inline">
-                            <?= csrf_field() ?>
-                            <input type="hidden" name="employee_id" value="<?= $emp['id'] ?>">
-                            <input type="hidden" name="month" value="<?= $month ?>">
-                            <input type="hidden" name="year" value="<?= $year ?>">
-                            <button type="submit" class="btn btn-xs" style="padding:3px 7px;font-size:11px;background:var(--success);color:#fff;border-color:var(--success)" title="Generate Slip">
-                                <i class="fa fa-bolt"></i> Generate
-                            </button>
-                        </form>
+                        <a href="<?= $isFutureMonth ? '#' : BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $emp['id'] . '&month=' . $month . '&year=' . $year ?>"
+                           class="btn btn-xs" style="padding:3px 7px;font-size:11px;background:var(--success);color:#fff;border-color:var(--success)<?= $isFutureMonth ? ';opacity:.5;pointer-events:none' : '' ?>"
+                           title="<?= $isFutureMonth ? 'Future month — payroll not allowed' : 'Generate Slip (set paid leaves on the form)' ?>">
+                            <i class="fa fa-bolt"></i> Generate
+                        </a>
                         <?php else: ?>
                         <span class="muted small">Not generated</span>
                         <?php endif; ?>

@@ -3,24 +3,30 @@
  * Employee CSV / XLSX bulk import
  *
  * Accepted columns (case-insensitive, spaces/hyphens normalized to underscores):
- *   name | full_name           — required
- *   email | email_address      — required
- *   employee_id | emp_id       — optional; if supplied and found, row is updated
- *   phone
+ *   name | full_name                          — required
+ *   email | email_address                     — optional; a placeholder is
+ *                                                generated when blank
+ *   employee_id | emp_id | empcode | emp_code — optional; if supplied and found,
+ *                                                row is updated
+ *   phone | mobile
  *   gender
+ *   address
  *   dob | date_of_birth
  *   department | department_name
  *   designation | designation_name
- *   join_date | joining_date | date_of_joining
+ *   join_date | joining_date | date_of_joining | doj
  *   employment_type | type
  *   pan_number | pan
  *   aadhaar_number | aadhaar
  *   uan_number | uan
  *
+ * Dates accept dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd and Excel serial numbers.
+ *
  * Upsert logic:
  *   - If employee_id matches an existing record → UPDATE
- *   - Else if email matches → UPDATE
- *   - Otherwise → INSERT (new employee + user account)
+ *   - Else if a (real) email matches → UPDATE
+ *   - Otherwise → INSERT (new employee; a login account is created only when a
+ *     real email was supplied)
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
@@ -69,6 +75,17 @@ $inserted  = 0;
 $updated   = 0;
 $skipped   = 0;
 $issues    = [];
+$usedEmails = []; // placeholder emails generated this batch (keep them unique)
+
+// Resolve the "Employee" role for auto-created logins. The id is not hardcoded
+// (it can differ between installs / after a data reset); create the role if it
+// is missing so importing never fails on a foreign-key constraint.
+$empRoleId = (int)($db->query("SELECT id FROM roles WHERE name = 'Employee' LIMIT 1")->fetchColumn() ?: 0);
+if (!$empRoleId) {
+    $db->prepare("INSERT INTO roles (name, description, self_scope) VALUES ('Employee', 'Self-service employee login', 1)")
+       ->execute();
+    $empRoleId = (int)$db->lastInsertId();
+}
 
 foreach ($rows as $i => $row) {
     $rowNum = $i + 2; // +1 for header, +1 for 1-based display
@@ -80,20 +97,24 @@ foreach ($rows as $i => $row) {
         $r[$key]  = trim((string)$v);
     }
 
-    $name  = $r['name']          ?? $r['full_name']      ?? '';
-    $email = $r['email']         ?? $r['email_address']  ?? '';
+    $name  = $r['name']  ?? $r['full_name']     ?? '';
+    $email = $r['email'] ?? $r['email_address'] ?? '';
 
-    if ($name === '' || $email === '') {
+    // Only name is mandatory. Email is optional (many rosters omit it); a unique
+    // placeholder is generated below so the NOT-NULL UNIQUE column stays valid.
+    if ($name === '') {
         $skipped++;
-        $issues[] = "Row $rowNum: 'name' and 'email' are required — skipped.";
+        $issues[] = "Row $rowNum: 'name' is required — skipped.";
         continue;
     }
+    $emailProvided = ($email !== '' && strpos($email, '@') !== false);
 
-    $empCode   = $r['employee_id']  ?? $r['emp_id']       ?? '';
-    $phone     = $r['phone']        ?? '';
+    $empCode   = $r['employee_id']  ?? $r['emp_id'] ?? $r['empcode'] ?? $r['emp_code'] ?? '';
+    $phone     = $r['phone']        ?? $r['mobile'] ?? '';
     $gender    = $r['gender']       ?? '';
+    $address   = $r['address']      ?? '';
     $dob       = _norm_date($r['dob'] ?? $r['date_of_birth'] ?? '');
-    $joinDate  = _norm_date($r['join_date'] ?? $r['joining_date'] ?? $r['date_of_joining'] ?? '');
+    $joinDate  = _norm_date($r['join_date'] ?? $r['joining_date'] ?? $r['date_of_joining'] ?? $r['doj'] ?? '');
 
     $deptKey   = strtolower(trim($r['department'] ?? $r['department_name'] ?? ''));
     $desigKey  = strtolower(trim($r['designation'] ?? $r['designation_name'] ?? ''));
@@ -115,7 +136,7 @@ foreach ($rows as $i => $row) {
         $chk->execute([$empCode]);
         $existingId = $chk->fetchColumn() ?: null;
     }
-    if (!$existingId) {
+    if (!$existingId && $emailProvided) {
         $chk = $db->prepare('SELECT id FROM employees WHERE email = ? LIMIT 1');
         $chk->execute([$email]);
         $existingId = $chk->fetchColumn() ?: null;
@@ -125,7 +146,7 @@ foreach ($rows as $i => $row) {
         // ── UPDATE ────────────────────────────────────────────────────────────
         $upd = $db->prepare(
             "UPDATE employees SET
-                name=:name, phone=:phone, gender=:gender, dob=:dob,
+                name=:name, phone=:phone, gender=:gender, dob=:dob, address=:address,
                 department_id=:dept_id, designation_id=:desig_id,
                 join_date=:jdate, employment_type=:etype,
                 pan_number=:pan, aadhaar_number=:aadh, uan_number=:uan,
@@ -137,6 +158,7 @@ foreach ($rows as $i => $row) {
             ':phone'   => $phone    ?: null,
             ':gender'  => $gender   ?: null,
             ':dob'     => $dob      ?: null,
+            ':address' => $address  ?: null,
             ':dept_id' => $dept_id,
             ':desig_id'=> $desig_id,
             ':jdate'   => $joinDate ?: null,
@@ -162,14 +184,22 @@ foreach ($rows as $i => $row) {
             }
         }
 
+        // When no email was supplied, synthesise a unique placeholder so the
+        // NOT-NULL UNIQUE column is satisfied. Derived from the employee code (or
+        // name) and de-duplicated against this batch and existing records.
+        if (!$emailProvided) {
+            $email = _placeholder_email($db, $newCode !== '' ? $newCode : $name, $usedEmails);
+        }
+        $usedEmails[strtolower($email)] = true;
+
         $ins = $db->prepare(
             "INSERT INTO employees
-                (employee_id, name, email, phone, gender, dob,
+                (employee_id, name, email, phone, gender, dob, address,
                  department_id, designation_id, join_date, employment_type,
                  pan_number, aadhaar_number, uan_number,
                  status, created_at)
              VALUES
-                (:emp_id, :name, :email, :phone, :gender, :dob,
+                (:emp_id, :name, :email, :phone, :gender, :dob, :address,
                  :dept_id, :desig_id, :jdate, :etype,
                  :pan, :aadh, :uan,
                  'Active', NOW())"
@@ -181,6 +211,7 @@ foreach ($rows as $i => $row) {
             ':phone'   => $phone    ?: null,
             ':gender'  => $gender   ?: null,
             ':dob'     => $dob      ?: null,
+            ':address' => $address  ?: null,
             ':dept_id' => $dept_id,
             ':desig_id'=> $desig_id,
             ':jdate'   => $joinDate ?: null,
@@ -191,18 +222,20 @@ foreach ($rows as $i => $row) {
         ]);
         $newId = (int)$db->lastInsertId();
 
-        // Auto-create user account (role 6 = Employee)
+        // Auto-create a login account only when a real email was supplied
+        // (Employee role, resolved above). Placeholder addresses can't log in.
         $uChk = $db->prepare('SELECT 1 FROM users WHERE email = ? LIMIT 1');
         $uChk->execute([$email]);
-        if (!$uChk->fetchColumn()) {
+        if ($emailProvided && !$uChk->fetchColumn()) {
             $tmpPass = password_hash('Hrms@' . substr($newCode, -4), PASSWORD_BCRYPT);
             $db->prepare(
                 'INSERT INTO users (email, name, password_hash, role_id, employee_id, is_active)
-                 VALUES (:email, :name, :pass, 6, :emp_id, 1)'
+                 VALUES (:email, :name, :pass, :role, :emp_id, 1)'
             )->execute([
                 ':email'  => $email,
                 ':name'   => $name,
                 ':pass'   => $tmpPass,
+                ':role'   => $empRoleId,
                 ':emp_id' => $newId,
             ]);
         }
@@ -312,7 +345,45 @@ function _xlsx_col_index(string $cellRef): int
 
 function _norm_date(string $val): string
 {
+    $val = trim($val);
     if ($val === '') return '';
+
+    // Excel stores dates as a serial number (days since 1899-12-30).
+    if (ctype_digit($val) && (int)$val >= 20000 && (int)$val <= 80000) {
+        return gmdate('Y-m-d', ((int)$val - 25569) * 86400);
+    }
+
+    // dd/mm/yyyy or dd-mm-yyyy (the common Indian/Excel export format), with a
+    // fallback to mm/dd when the first part can't be a day.
+    if (preg_match('#^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$#', $val, $m)) {
+        $d = (int)$m[1]; $mo = (int)$m[2]; $y = (int)$m[3];
+        if ($y < 100) $y += 2000;
+        if ($mo > 12 && $d <= 12) { $t = $d; $d = $mo; $mo = $t; }
+        if (checkdate($mo, $d, $y)) return sprintf('%04d-%02d-%02d', $y, $mo, $d);
+    }
+
     $ts = strtotime($val);
     return $ts !== false ? date('Y-m-d', $ts) : '';
+}
+
+/**
+ * Build a unique placeholder email for a row that has no address of its own,
+ * derived from the employee code (or name). De-duplicated against this import
+ * batch and the existing employees so the NOT-NULL UNIQUE column stays valid.
+ */
+function _placeholder_email(PDO $db, string $base, array $used): string
+{
+    $slug = strtolower(trim(preg_replace('/[^a-z0-9]+/i', '.', $base), '.'));
+    if ($slug === '') $slug = 'employee';
+
+    $chk = $db->prepare('SELECT 1 FROM employees WHERE email = ? LIMIT 1');
+    $n = 1;
+    do {
+        $candidate = $slug . ($n > 1 ? '.' . $n : '') . '@noemail.local';
+        $n++;
+        if (isset($used[strtolower($candidate)])) continue;
+        $chk->execute([$candidate]);
+    } while (isset($used[strtolower($candidate)]) || $chk->fetchColumn());
+
+    return $candidate;
 }

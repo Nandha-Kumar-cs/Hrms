@@ -7,6 +7,13 @@ $db     = db();
 $emp_id = (int)($_GET['emp_id'] ?? 0);
 if (!$emp_id) redirect(BASE_URL . '/modules/employee/index.php');
 
+// Return target after Upload/Cancel: stay on the global Documents list when the
+// form was opened from there (from=docs); otherwise go to the employee profile.
+$from      = ($_GET['from'] ?? '') === 'docs' ? 'docs' : '';
+$returnUrl = $from === 'docs'
+    ? BASE_URL . '/modules/documents/index.php?emp=' . $emp_id
+    : BASE_URL . '/modules/employee/view.php?id=' . $emp_id . '#documents';
+
 $emp = $db->prepare('SELECT e.*, d.name AS dept_name, des.name AS desig_name FROM employees e LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN designations des ON des.id=e.designation_id WHERE e.id=?');
 $emp->execute([$emp_id]);
 $e = $emp->fetch();
@@ -23,7 +30,7 @@ $docTypes = ['Aadhaar Card','PAN Card','Passport','Driving License','Offer Lette
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white py-3 d-flex align-items-center gap-2">
-        <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $emp_id ?>#documents" class="btn btn-sm btn-outline-secondary">
+        <a href="<?= h($returnUrl) ?>" class="btn btn-sm btn-outline-secondary">
             <i class="fa fa-arrow-left"></i>
         </a>
         <div>
@@ -40,6 +47,7 @@ $docTypes = ['Aadhaar Card','PAN Card','Passport','Driving License','Offer Lette
         <form method="POST" action="<?= BASE_URL ?>/modules/documents/save.php" enctype="multipart/form-data">
             <?= csrf_field() ?>
             <input type="hidden" name="emp_id" value="<?= $emp_id ?>">
+            <input type="hidden" name="from" value="<?= h($from) ?>">
 
             <div class="row g-3">
                 <div class="col-md-6">
@@ -68,7 +76,7 @@ $docTypes = ['Aadhaar Card','PAN Card','Passport','Driving License','Offer Lette
 
             <div class="mt-4 d-flex gap-2">
                 <button type="submit" class="btn btn-primary"><i class="fa fa-upload me-1"></i>Upload Document</button>
-                <a href="<?= BASE_URL ?>/modules/employee/view.php?id=<?= $emp_id ?>#documents" class="btn btn-light">Cancel</a>
+                <a href="<?= h($returnUrl) ?>" class="btn btn-light">Cancel</a>
             </div>
         </form>
 

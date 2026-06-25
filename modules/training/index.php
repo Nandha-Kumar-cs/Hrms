@@ -1,137 +1,144 @@
 <?php
+/**
+ * Training — Employee onboarding course: "How to use the HRMS".
+ * A self-paced, employee-facing training broken into lessons. Read-only.
+ */
 require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('training', 'view');
 
-$user = current_user();
-$isEmployee = (($user['role_name'] ?? '') === 'Employee');
-
-// For employees, show only their enrolled courses
-if ($isEmployee) {
-    $courses = db()->query("SELECT tc.*, ac.name AS category,
-        te.status AS enroll_status, te.completed_at AS completion_date, te.score,
-        COUNT(DISTINCT tcr.role_id) AS role_count
-        FROM training_courses tc
-        LEFT JOIN asset_categories ac ON 0=1
-        JOIN training_course_roles tcr ON tc.id = tcr.course_id
-        JOIN users u ON u.role_id = tcr.role_id AND u.id = {$user['id']}
-        LEFT JOIN training_enrollments te ON te.course_id = tc.id AND te.employee_id = {$user['employee_id']}
-        WHERE tc.status != 'Archived'
-        GROUP BY tc.id
-        ORDER BY tc.created_at DESC")->fetchAll(PDO::FETCH_ASSOC);
-} else {
-    $courses = db()->query("SELECT tc.*,
-        COUNT(DISTINCT te.id) AS enrollments,
-        SUM(te.status='Completed') AS completed,
-        GROUP_CONCAT(DISTINCT r.name SEPARATOR ', ') AS roles
-        FROM training_courses tc
-        LEFT JOIN training_enrollments te ON tc.id = te.course_id
-        LEFT JOIN training_course_roles tcr ON tc.id = tcr.course_id
-        LEFT JOIN roles r ON tcr.role_id = r.id
-        GROUP BY tc.id ORDER BY tc.created_at DESC")->fetchAll(PDO::FETCH_ASSOC);
-}
-
 $page_title = 'Training';
 include '../../includes/header.php';
+
+// ── Lesson content (employee-facing: how THEY use the system) ────────────────
+$lessons = [
+    [
+        'icon' => 'fa-right-to-bracket', 'title' => 'Lesson 1 — Logging in',
+        'sub'  => 'Get into the system and find your way around.',
+        'steps' => [
+            'Open the HRMS link in your browser and sign in with your <b>email</b> and <b>password</b>.',
+            'After login you land on your <b>Dashboard</b> — a summary of your details and quick links.',
+            'Use the <b>left sidebar</b> to move between sections. You only see the sections you are allowed to use.',
+            'Top-right shows your name; use the menu there to <b>log out</b>.',
+        ],
+    ],
+    [
+        'icon' => 'fa-id-badge', 'title' => 'Lesson 2 — Your profile',
+        'sub'  => 'Check that your personal and bank details are correct.',
+        'steps' => [
+            'Go to <b>Employees → Employees List</b> and open your record (you will only see your own).',
+            'Review your <b>department, designation, joining date, PAN/UAN and bank details</b>.',
+            'Your salary, benefits, loans, increments and letters are shown in the tabs on your profile.',
+            'If anything is wrong, inform HR — they will update it for you.',
+        ],
+    ],
+    [
+        'icon' => 'fa-clock', 'title' => 'Lesson 3 — Attendance & how your hours count',
+        'sub'  => 'Understand check-in / check-out and what counts as a full day.',
+        'steps' => [
+            'Your daily <b>check-in</b> and <b>check-out</b> are recorded (by device or by HR).',
+            'Your <b>worked hours</b> = time between check-in and check-out, <b>minus break time</b> (your lunch batch + the two tea breaks).',
+            '<b>Full day = 8 net hours</b> — roughly <b>9:00 AM to 6:00 PM</b> (8 hours of work + ~1 hour of breaks).',
+            '<b>4 to 8 net hours → Half Day</b> (half-day salary is deducted).',
+            '<b>Less than 4 net hours → Short day</b> — pay is reduced for the hours you did not work.',
+            'Arriving after the grace time is marked <b>Late</b>; repeated lateness beyond the monthly limit is penalised.',
+            'See your month in <b>Attendance → Report</b> (you will see only your own row).',
+        ],
+    ],
+    [
+        'icon' => 'fa-calendar-check', 'title' => 'Lesson 4 — Applying for leave',
+        'sub'  => 'Request leave and track its approval.',
+        'steps' => [
+            'Go to <b>Attendance → Leave Requests → New Request</b>.',
+            'Pick the <b>leave type</b>, <b>dates</b>, add a <b>reason</b>, and attach a document if needed, then submit.',
+            'Your request stays in the list as <b>Pending</b> until an admin <b>Approves</b> or <b>Rejects</b> it.',
+            'Once decided, it moves to <b>Leave History</b> where you can see the status and remarks.',
+            'Note: only <b>1 paid leave per month</b> is allowed; extra leave may be unpaid.',
+        ],
+    ],
+    [
+        'icon' => 'fa-file-invoice-dollar', 'title' => 'Lesson 5 — Reading your salary slip',
+        'sub'  => 'Understand earnings, deductions and net pay.',
+        'steps' => [
+            'Go to <b>Payroll → Salary Slips</b> and open your slip (or download the <b>PDF</b>).',
+            '<b>Earnings</b>: Basic, HRA, Conveyance, etc., plus any Benefits and a combined Bonus line.',
+            '<b>Deductions</b>: PF and ESI (statutory), plus <b>Absent</b>, <b>Half Day</b>, <b>Short Hours</b> and <b>Late</b> deductions based on your attendance, and any <b>Loan</b> EMI.',
+            '<b>Net Pay</b> = Total Earnings − Total Deductions (also written in words).',
+            'Most attendance deductions come from absences / short days — good attendance keeps your net pay high.',
+        ],
+    ],
+    [
+        'icon' => 'fa-gift', 'title' => 'Lesson 6 — Benefits, bonuses & loans',
+        'sub'  => 'How these appear in your pay.',
+        'steps' => [
+            '<b>Benefits</b> (e.g. insurance, funds): a <b>Cash</b> benefit adds to your take-home; a <b>Cashless</b> benefit is paid to the provider on your behalf, so it shows as both an earning and a deduction.',
+            '<b>Bonuses & incentives</b> approved for the month are added to your earnings.',
+            '<b>Loans / advances</b>: a fixed EMI is deducted each month until repaid; check the balance on your profile’s Loans tab.',
+        ],
+    ],
+    [
+        'icon' => 'fa-folder-open', 'title' => 'Lesson 7 — Letters, documents & assets',
+        'sub'  => 'Your records and company property.',
+        'steps' => [
+            '<b>Letters</b> (offer, confirmation, increment, promotion) issued to you appear under your profile’s Letters tab.',
+            '<b>Documents</b> you have submitted are stored under the Documents tab.',
+            '<b>Assets</b> assigned to you (laptop, etc.) are listed on the Assets tab — return them on exit to get a No-Due clearance.',
+        ],
+    ],
+];
 ?>
 <div class="page-header">
     <div>
-        <h1 class="page-title">Training</h1>
-        <p class="page-subtitle">Manage training courses and enrollments</p>
+        <h1 class="page-title">Employee Training</h1>
+        <p class="page-subtitle">How to use the HRMS — a short, self-paced guide for every employee.</p>
     </div>
     <div class="page-actions">
-        <?php if (can('training', 'manage')): ?>
-            <a href="create.php" class="btn btn-primary" data-key="N"><u>N</u>ew Course</a>
-        <?php endif; ?>
+        <button onclick="window.print()" class="btn btn-secondary no-print"><i class="fa fa-print me-1"></i>Print</button>
     </div>
 </div>
 
 <?php render_flash(); ?>
 
-<!-- Stats (admin only) -->
-<?php if (!$isEmployee):
-    $stats = db()->query("SELECT
-        COUNT(*) AS total,
-        SUM(tc.status='Active') AS active,
-        SUM(tc.status='Completed') AS completed,
-        SUM(tc.status='Draft') AS drafts
-        FROM training_courses tc")->fetch(PDO::FETCH_ASSOC);
-?>
-<div class="row mb-4">
-    <div class="col"><div class="stat-card"><div class="stat-value"><?= $stats['total'] ?></div><div class="stat-label">Total Courses</div></div></div>
-    <div class="col"><div class="stat-card"><div class="stat-value text-success"><?= $stats['active'] ?></div><div class="stat-label">Active</div></div></div>
-    <div class="col"><div class="stat-card"><div class="stat-value"><?= $stats['completed'] ?></div><div class="stat-label">Completed</div></div></div>
-    <div class="col"><div class="stat-card"><div class="stat-value text-muted"><?= $stats['drafts'] ?></div><div class="stat-label">Drafts</div></div></div>
+<div class="alert alert-info">
+    <i class="fa fa-circle-info me-1"></i>
+    Work through the lessons below in order. Click a lesson to expand it. This training explains everything you need to use the system day to day.
 </div>
-<?php endif; ?>
 
-<div class="card">
-    <div class="card-body">
-        <table class="table datatable">
-            <thead>
-                <tr>
-                    <th>Course</th>
-                    <th>Type</th>
-                    <th>Trainer</th>
-                    <th>Created</th>
-                    <th>Duration</th>
-                    <?php if (!$isEmployee): ?>
-                        <th>Roles</th>
-                        <th>Enrolled</th>
-                        <th>Completed</th>
-                    <?php else: ?>
-                        <th>My Status</th>
-                        <th>Score</th>
-                    <?php endif; ?>
-                    <th>Status</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($courses as $c): ?>
-                <tr>
-                    <td>
-                        <strong><?= h($c['title']) ?></strong>
-                        <?php if ($c['is_mandatory']): ?><br><span class="pill pill-danger" style="font-size:.65rem">Mandatory</span><?php endif; ?>
-                    </td>
-                    <td><?= h($c['training_type']) ?></td>
-                    <td><?= h($c['trainer_name'] ?? '—') ?></td>
-                    <td><?= date_fmt($c['created_at']) ?></td>
-                    <td><?= ($c['duration_hrs'] ?? null) ? $c['duration_hrs'] . 'h' : '—' ?></td>
-                    <?php if (!$isEmployee): ?>
-                        <td><small><?= h($c['roles'] ?? '—') ?></small></td>
-                        <td><?= $c['enrollments'] ?></td>
-                        <td><?= $c['completed'] ?> / <?= $c['enrollments'] ?></td>
-                    <?php else: ?>
-                        <td>
-                            <?php
-                            $s = $c['enroll_status'] ?? 'Not Enrolled';
-                            $sc= ['Completed'=>'pill-success','In Progress'=>'pill-warn','Not Started'=>'pill-secondary','Not Enrolled'=>'pill-danger'];
-                            echo '<span class="pill ' . ($sc[$s]??'') . '">' . $s . '</span>';
-                            ?>
-                        </td>
-                        <td><?= $c['score'] !== null ? $c['score'] . '%' : '—' ?></td>
-                    <?php endif; ?>
-                    <td>
-                        <?php
-                        $sc2 = ['Active'=>'pill-success','Draft'=>'pill-warn','Completed'=>'pill-secondary','Archived'=>'pill-danger'];
-                        echo '<span class="pill ' . ($sc2[$c['status']]??'') . '">' . $c['status'] . '</span>';
-                        ?>
-                    </td>
-                    <td>
-                        <a href="view.php?id=<?= $c['id'] ?>" class="btn btn-xs btn-secondary">View</a>
-                        <?php if (can('training', 'manage')): ?>
-                            <a href="enroll.php?course_id=<?= $c['id'] ?>" class="btn btn-xs btn-primary">Enroll</a>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+<div class="accordion" id="trainingAccordion" style="max-width:900px">
+    <?php foreach ($lessons as $i => $l): $open = $i === 0; ?>
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button <?= $open ? '' : 'collapsed' ?> fw-semibold" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#lesson<?= $i ?>"
+                    aria-expanded="<?= $open ? 'true' : 'false' ?>">
+                <i class="fa <?= $l['icon'] ?> me-2 text-primary"></i><?= h($l['title']) ?>
+            </button>
+        </h2>
+        <div id="lesson<?= $i ?>" class="accordion-collapse collapse <?= $open ? 'show' : '' ?>"
+             data-bs-parent="#trainingAccordion">
+            <div class="accordion-body">
+                <p class="text-muted mb-2"><?= h($l['sub']) ?></p>
+                <ol style="line-height:1.7;font-size:14px;padding-left:18px">
+                    <?php foreach ($l['steps'] as $step): ?>
+                    <li class="mb-1"><?= $step ?></li>
+                    <?php endforeach; ?>
+                </ol>
+            </div>
+        </div>
     </div>
+    <?php endforeach; ?>
 </div>
 
-<script>
-addLocalShortcut('n', () => location.href = 'create.php');
-</script>
+<div class="text-muted small mt-3" style="max-width:900px">
+    Need more help? Contact your HR / admin team. Buttons across the app show <u>underlined</u> shortcut keys, and most lists have a search box.
+</div>
+
+<style>
+@media print {
+    #sidebar, #topbar, .sidebar-overlay, .page-actions, .no-print, footer { display:none !important; }
+    .main-wrapper, #mainContent { margin:0 !important; padding:0 !important; }
+    .accordion-collapse { display:block !important; }   /* expand all lessons when printing */
+    .accordion-button { background:#fff !important; color:#000 !important; }
+}
+</style>
 <?php include '../../includes/footer.php'; ?>

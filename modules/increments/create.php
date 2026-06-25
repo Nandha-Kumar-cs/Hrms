@@ -94,12 +94,14 @@ $heading = $isEdit ? 'Edit Increment' : 'Add Increment';
                 <?php endif; ?>
 
                 <div class="col-md-3">
-                    <label class="form-label">Previous Salary <span class="text-danger">*</span></label>
+                    <label class="form-label">Previous Salary</label>
                     <div class="input-group">
                         <span class="input-group-text"><?= PAYROLL_CURRENCY_SYMBOL ?></span>
                         <input type="number" name="previous_salary" id="prevSalary" class="form-control" step="0.01" min="0"
-                               value="<?= h($old['previous_salary'] ?? ($e['fixed_salary'] ?? '')) ?>" required>
+                               value="<?= h($old['previous_salary'] ?? ($e['fixed_salary'] ?? '')) ?>"
+                               readonly style="background:#f1f5f9" tabindex="-1">
                     </div>
+                    <div class="form-text">Auto-filled from the employee's current salary.</div>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label">New Salary <span class="text-danger">*</span></label>

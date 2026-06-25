@@ -1,11 +1,21 @@
 <?php
-$page_title = 'Process Payroll';
-require_once __DIR__ . '/../../includes/header.php';
+// Resolve the target month and run all guards/redirects BEFORE any output
+// (header.php) so redirect() never triggers "headers already sent".
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 require_permission('payroll', 'process');
 
 $db    = db();
 $month = sanitize($_GET['month'] ?? date('Y-m'));
 $user  = current_user();
+
+// Block future months — payroll cannot be processed before the month begins.
+if (preg_match('/^\d{4}-\d{2}$/', $month) && $month > date('Y-m')) {
+    flash('error', 'Cannot process payroll for a future month ('
+        . date('F Y', strtotime($month . '-01'))
+        . '). Payroll is only allowed for the current or a past month.');
+    redirect(BASE_URL . '/modules/payroll/index.php');
+}
 
 // Prevent double processing
 $existing = $db->prepare('SELECT * FROM payroll_runs WHERE payroll_month=?');
@@ -15,6 +25,9 @@ if ($run && $run['status'] === 'Finalized') {
     flash('warn', 'Payroll for ' . $month . ' is finalized and cannot be reprocessed.');
     redirect(BASE_URL . '/modules/payroll/index.php?month=' . $month);
 }
+
+$page_title = 'Process Payroll';
+require_once __DIR__ . '/../../includes/header.php';
 
 $monthStart = $month . '-01';
 $monthEnd   = date('Y-m-t', strtotime($monthStart));

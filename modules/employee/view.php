@@ -26,6 +26,7 @@ if (!$e) { redirect(BASE_URL . '/modules/employee/index.php'); }
 
 $page_title = 'Employee Profile';
 require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/loan_history.php';   // loan_figures() — interest-aware totals
 
 // Current salary structure
 $sal = $db->prepare('SELECT * FROM salary_structures WHERE employee_id=? AND is_current=1 ORDER BY effective_from DESC LIMIT 1');
@@ -676,11 +677,16 @@ $doc_size = function (int $bytes): string {
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-light">
-                    <tr><th>Type</th><th class="text-end">Principal</th><th class="text-center">Interest %</th><th>Date Given</th><th class="text-end">Monthly EMI</th><th class="text-end">Returned</th><th class="text-end">Pending</th><th>Status</th></tr>
+                    <tr><th>Type</th><th class="text-end">Principal</th><th class="text-center">Interest %</th><th>Date Given</th><th class="text-end">Monthly EMI</th><th class="text-end">Interest</th><th class="text-end">Total Due</th><th class="text-end">Returned</th><th class="text-end">Pending</th><th>Status</th></tr>
                 </thead>
                 <tbody>
                     <?php foreach ($loan_rows as $l):
-                        $pending = max(0, (float)$l['amount'] - (float)$l['returned_amount']);
+                        // Interest-aware figures (matches the Loans module): pending is
+                        // computed against total due = principal + interest, not principal alone.
+                        $fig      = loan_figures($db, $l);
+                        $returned = $fig['returned'];
+                        $pending  = $fig['pending'];
+                        $lStatus  = $fig['status'];
                     ?>
                     <tr>
                         <td><span class="badge bg-<?= $l['type']==='loan'?'primary':'info' ?>"><?= h(ucfirst($l['type'])) ?></span></td>
@@ -688,9 +694,11 @@ $doc_size = function (int $bytes): string {
                         <td class="text-center"><?= (float)$l['interest_rate'] > 0 ? h($l['interest_rate']).'%' : '—' ?></td>
                         <td><?= date('d M Y', strtotime($l['date_given'])) ?></td>
                         <td class="text-end"><?= money((float)$l['monthly_deduction']) ?></td>
-                        <td class="text-end text-success"><?= money((float)$l['returned_amount']) ?></td>
+                        <td class="text-end"><?= $fig['interest'] > 0 ? '<span class="text-warning">'.money($fig['interest']).'</span>' : '<span class="text-muted">—</span>' ?></td>
+                        <td class="text-end fw-semibold"><?= money($fig['total_due']) ?></td>
+                        <td class="text-end text-success"><?= money($returned) ?></td>
                         <td class="text-end <?= $pending > 0 ? 'text-danger fw-semibold' : 'text-success' ?>"><?= money($pending) ?></td>
-                        <td><span class="badge bg-<?= $l['status']==='active'?'success':'secondary' ?>"><?= h(ucfirst($l['status'])) ?></span></td>
+                        <td><span class="badge bg-<?= $lStatus==='active'?'success':($lStatus==='completed'?'primary':'secondary') ?>"><?= h(ucfirst($lStatus)) ?></span></td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>

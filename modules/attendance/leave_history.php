@@ -184,9 +184,16 @@ require_once __DIR__ . '/../../includes/header.php';
     </table>
 </div></div>
 
+<script>window.HISTORY_HAS_ROWS = <?= $leaves ? 'true' : 'false' ?>;</script>
 <?php $page_scripts = <<<'JS'
 <script>
-$(function () { if ($.fn.DataTable) $('#tbl-history').DataTable({ pageLength: 25, order: [], language: { search: '', searchPlaceholder: 'Search...' } }); });
+$(function () {
+    // Skip DataTables when the only row is the empty-state colspan cell — that
+    // mismatched column count is what triggers the "Incorrect column count" warning.
+    if (window.HISTORY_HAS_ROWS && $.fn.DataTable) {
+        $('#tbl-history').DataTable({ pageLength: 25, order: [], language: { search: '', searchPlaceholder: 'Search...' } });
+    }
+});
 </script>
 JS; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

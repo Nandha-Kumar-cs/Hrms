@@ -1,10 +1,23 @@
 <?php
-$page_title = 'Salary Slip';
-require_once __DIR__ . '/../../includes/header.php';
+// IMPORTANT: resolve the slip and run all auth/redirects BEFORE including
+// header.php — otherwise a redirect() here triggers "headers already sent".
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 require_permission('payroll');
 
-$id  = (int)($_GET['id'] ?? 0);
-$db  = db();
+$db = db();
+
+// Accept ?id=<slip>, or ?employee_id=<emp> (the employee-list "View Salary Slip"
+// link passes employee_id) — resolve that to the employee's latest slip.
+$id = (int)($_GET['id'] ?? 0);
+if (!$id && !empty($_GET['employee_id'])) {
+    $latest = $db->prepare(
+        'SELECT id FROM salary_slips WHERE employee_id = ? ORDER BY payroll_month DESC, id DESC LIMIT 1'
+    );
+    $latest->execute([(int)$_GET['employee_id']]);
+    $id = (int)$latest->fetchColumn();
+}
+
 $slip = $db->prepare(
     'SELECT ss.*, e.name, e.employee_id AS emp_code, e.designation_id,
             e.department_id, e.created_at, e.entity_id,
@@ -22,7 +35,7 @@ $slip = $db->prepare(
 );
 $slip->execute([$id]);
 $s = $slip->fetch();
-if (!$s) { flash('error','Salary slip not found'); redirect(BASE_URL . '/modules/payroll/index.php'); }
+if (!$s) { flash('error', 'Salary slip not found.'); redirect(BASE_URL . '/modules/payroll/index.php'); }
 
 // Auth check: employees can view their own slips only
 $user = current_user();
@@ -34,6 +47,10 @@ if ($user['role_name'] === 'Employee') {
         http_response_code(403); include BASE_PATH . '/includes/403.php'; exit;
     }
 }
+
+// All redirects/auth done — now it is safe to emit output.
+$page_title = 'Salary Slip';
+require_once __DIR__ . '/../../includes/header.php';
 
 // ─── Determine slip type and build display data ──────────────────────────────
 $isIndividual = ($s['slip_type'] ?? 'batch') === 'individual';
@@ -73,25 +90,6 @@ if (!$deductions) {
     ]);
 }
 
-// ─── Salary revision lookup ───────────────────────────────────────────────────
-$increment = null;
-$slipMonth = (int)date('n', strtotime($s['payroll_month'] . '-01'));
-$slipYear  = (int)date('Y', strtotime($s['payroll_month'] . '-01'));
-$firstOfMonth = $s['payroll_month'] . '-01';
-$lastOfMonth  = date('Y-m-t', strtotime($firstOfMonth));
-
-$incSt = $db->prepare(
-    'SELECT ss.effective_from, ss.gross AS new_salary,
-            (SELECT gross FROM salary_structures
-              WHERE employee_id = ss.employee_id AND effective_from < ss.effective_from
-              ORDER BY effective_from DESC LIMIT 1) AS prev_salary
-     FROM salary_structures ss
-     WHERE ss.employee_id = ? AND ss.effective_from BETWEEN ? AND ?
-     ORDER BY ss.effective_from DESC LIMIT 1'
-);
-$incSt->execute([$s['employee_id'], $firstOfMonth, $lastOfMonth]);
-$increment = $incSt->fetch() ?: null;
-
 // ─── Company header from the employee's selected entity ──────────────────────
 // Falls back to the global COMPANY_* constants when no entity is assigned.
 $companyName = $s['entity_name'] ?: COMPANY_NAME;
@@ -127,6 +125,33 @@ $extra_head = '<style>
 .slip-col.head { font-weight:700; background:var(--bg-subtle); border-bottom:2px solid var(--border-strong); }
 .slip-total-row { background:var(--bg-subtle); font-weight:700; }
 </style>';
+
+/** Whole-rupee amount → words using the Indian numbering system (Lakh/Crore). */
+if (!function_exists('_inr_words')) {
+    function _inr_words(float $num): string {
+        $num = (int) round($num);
+        if ($num <= 0) return 'Zero';
+        $ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+                 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+        $tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+        $two  = function (int $n) use ($ones, $tens): string {
+            return $n < 20 ? $ones[$n] : trim($tens[intdiv($n, 10)] . ' ' . $ones[$n % 10]);
+        };
+        $three = function (int $n) use ($ones, $two): string {
+            $h = intdiv($n, 100); $r = $n % 100;
+            return trim(($h ? $ones[$h] . ' Hundred ' : '') . ($r ? $two($r) : ''));
+        };
+        $parts = [];
+        $crore = intdiv($num, 10000000); $num %= 10000000;
+        $lakh  = intdiv($num, 100000);   $num %= 100000;
+        $thou  = intdiv($num, 1000);     $num %= 1000;
+        if ($crore) $parts[] = $three($crore) . ' Crore';
+        if ($lakh)  $parts[] = $three($lakh)  . ' Lakh';
+        if ($thou)  $parts[] = $three($thou)  . ' Thousand';
+        if ($num)   $parts[] = $three($num);
+        return trim(implode(' ', $parts));
+    }
+}
 ?>
 
 <div class="page-head">
@@ -174,283 +199,117 @@ $extra_head = '<style>
 
 <div class="card form-card" id="salarySlip" style="max-width:820px;margin:0 auto">
 
-    <!-- ── Slip Header ─────────────────────────────────────────────────────── -->
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:20px 24px;border-bottom:2px solid var(--primary)">
-        <div>
-            <?php if ($logoUrl): ?>
-            <img src="<?= $logoUrl ?>" alt="Logo" style="max-height:52px;margin-bottom:6px;display:block">
-            <?php endif; ?>
-            <div style="font-size:18px;font-weight:800;color:var(--primary)"><?= h($companyName) ?></div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px"><?= h($companyAddress) ?></div>
-        </div>
-        <div style="text-align:right">
-            <div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">SALARY SLIP</div>
-            <div style="font-size:16px;font-weight:700;color:var(--primary)"><?= $monthLabel ?></div>
-        </div>
+    <!-- ── Slip Header (centred — only the logo is in colour) ───────────────── -->
+    <div style="text-align:center;padding:20px 24px 14px">
+        <?php if ($logoUrl): ?>
+        <img src="<?= $logoUrl ?>" alt="Logo" style="max-height:54px;margin-bottom:8px">
+        <?php endif; ?>
+        <div style="font-size:18px;font-weight:800;color:#000"><?= h($companyName) ?></div>
+        <div style="font-size:11px;color:#000;margin-top:3px;line-height:1.5"><?= h($companyAddress) ?></div>
+    </div>
+    <div style="text-align:center;padding:8px 24px;border-top:1px solid #000;border-bottom:1px solid #000">
+        <span style="font-size:14px;font-weight:700;color:#000">Payslip for the month of <?= $monthLabel ?></span>
     </div>
 
     <!-- ── Employee Info ───────────────────────────────────────────────────── -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin:18px 24px;border:1px solid var(--border);border-radius:var(--radius)">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin:18px 24px;border:1px solid #000;border-radius:var(--radius)">
         <?php
         $infoRows = [
-            ['Employee Name',  $s['name'],           'Employee ID',    $s['emp_code']],
-            ['Department',     $s['dept_name'] ?? '—','Designation',   $s['desig_name'] ?? '—'],
-            ['Pay Period',     $monthLabel,            'Working Days',  $s['working_days']],
-            ['Present Days',   $s['present_days'],    'LOP / Absent',  $s['lop_days'] > 0 ? `<span style="color:var(--danger)">`.$s['lop_days'].`</span>` : '0'],
+            ['Employee Name',  $s['name'],            'Employee ID',  $s['emp_code']],
+            ['Department',     $s['dept_name'] ?? '—','Designation',  $s['desig_name'] ?? '—'],
+            ['Pay Period',     $monthLabel,           'PAN Number',   $s['pan_number'] ?: '—'],
         ];
-        if ($s['pan_number']) {
-            $infoRows[] = ['PAN Number', $s['pan_number'], 'UAN Number', $s['uan_number'] ?? '—'];
+        if ($s['uan_number']) {
+            $infoRows[] = ['UAN Number', $s['uan_number'], 'Bank Account', $s['bank_account'] ?: '—'];
         }
         foreach ($infoRows as $i => [$lbl1, $val1, $lbl2, $val2]):
-            $border = $i < count($infoRows)-1 ? 'border-bottom:1px solid var(--border)' : '';
+            $border = $i < count($infoRows)-1 ? 'border-bottom:1px solid #000' : '';
         ?>
-        <div style="padding:8px 12px;font-size:13px;<?= $border ?>">
-            <span style="color:var(--muted)"><?= $lbl1 ?>: </span>
+        <div style="padding:8px 12px;font-size:13px;color:#000;<?= $border ?>">
+            <span><?= $lbl1 ?>: </span>
             <strong><?= is_string($val1) ? h($val1) : $val1 ?></strong>
         </div>
-        <div style="padding:8px 12px;font-size:13px;border-left:1px solid var(--border);<?= $border ?>">
-            <span style="color:var(--muted)"><?= $lbl2 ?>: </span>
+        <div style="padding:8px 12px;font-size:13px;color:#000;border-left:1px solid #000;<?= $border ?>">
+            <span><?= $lbl2 ?>: </span>
             <strong><?= is_string($val2) ? h($val2) : $val2 ?></strong>
         </div>
         <?php endforeach; ?>
     </div>
 
-    <!-- ── Salary Revision Alert ───────────────────────────────────────────── -->
-    <?php if ($increment && $increment['prev_salary'] && $increment['new_salary'] != $increment['prev_salary']): ?>
-    <div style="margin:0 24px 16px;background:#fffde7;border:1px solid #ffc107;border-radius:var(--radius);padding:12px 14px;display:flex;gap:10px;align-items:flex-start">
-        <i class="fa fa-arrow-trend-up" style="color:#e6a817;margin-top:2px"></i>
-        <div style="font-size:13px">
-            <strong>Salary Revision Applied</strong> w.e.f. <?= date_fmt($increment['effective_from']) ?><br>
-            <span style="text-decoration:line-through;color:var(--muted)">
-                <?= money((float)$increment['prev_salary']) ?>
-            </span>
-            &nbsp;&rarr;&nbsp;
-            <span style="color:var(--success);font-weight:700"><?= money((float)$increment['new_salary']) ?></span>
-            <?php
-                if ($increment['prev_salary'] > 0) {
-                    $pct = (($increment['new_salary'] - $increment['prev_salary']) / $increment['prev_salary']) * 100;
-                    echo ' &nbsp;<span style="background:var(--success);color:#fff;padding:2px 6px;border-radius:3px;font-size:11px">+' . number_format($pct, 1) . '%</span>';
-                }
-            ?>
+    <!-- ── Earnings & Deductions (single combined table) ───────────────────── -->
+    <?php
+        // Earnings: base + benefits + bonuses flattened into one column.
+        $earningRows = $benefitRows = $bonusRows = [];
+        foreach ($allowances as $label => $amount) {
+            if ($amount <= 0) continue;
+            if (str_starts_with($label, '[BENEFIT]'))  $benefitRows[ltrim(substr($label, 9))] = $amount;
+            elseif (str_starts_with($label, '[BONUS]')) $bonusRows[ltrim(substr($label, 7))]  = $amount;
+            else                                        $earningRows[$label] = $amount;
+        }
+        $earnList = $earningRows;
+        foreach ($benefitRows as $k => $v) $earnList[$k] = $v;
+        // All bonuses collapse into a single "Bonus" line with the summed amount.
+        $bonusTotal = array_sum($bonusRows);
+        if ($bonusTotal > 0) $earnList['Bonus'] = $bonusTotal;
+
+        // Deductions: each on its own line (Absent, Late, Short Hours shown separately).
+        // Strip "(N days …)" detail; merge multiple loans (#id) into one "Loan Deduction".
+        $dedList = [];
+        foreach ($deductions as $label => $amount) {
+            if ($amount <= 0) continue;
+            $clean = preg_replace('/\s*\(\s*\d+\s*day.*?\)/i', '', $label);   // drop "(N days …)"
+            $clean = preg_replace('/\s*#\d+/', '', $clean);                   // merge loans → one "Loan Deduction"
+            $dedList[$clean] = ($dedList[$clean] ?? 0) + (float)$amount;
+        }
+
+        $eLabels = array_keys($earnList); $eItems = array_values($earnList);
+        $dLabels = array_keys($dedList);  $dItems = array_values($dedList);
+        $rowCount = max(count($eLabels), count($dLabels), 1);
+        $tdC = 'border:1px solid #000;padding:6px 10px';
+    ?>
+    <table style="width:calc(100% - 48px);margin:18px 24px;border-collapse:collapse;font-size:13px;color:#000">
+        <thead>
+            <tr>
+                <th style="<?= $tdC ?>;text-align:left;width:35%">Earnings</th>
+                <th style="<?= $tdC ?>;text-align:right;width:15%">Amount</th>
+                <th style="<?= $tdC ?>;text-align:left;width:35%">Deductions</th>
+                <th style="<?= $tdC ?>;text-align:right;width:15%">Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php for ($i = 0; $i < $rowCount; $i++): ?>
+            <tr>
+                <td style="<?= $tdC ?>"><?= isset($eLabels[$i]) ? h($eLabels[$i]) : '' ?></td>
+                <td style="<?= $tdC ?>;text-align:right"><?= isset($eItems[$i]) ? money($eItems[$i]) : '' ?></td>
+                <td style="<?= $tdC ?>"><?= isset($dLabels[$i]) ? h($dLabels[$i]) : '' ?></td>
+                <td style="<?= $tdC ?>;text-align:right"><?= isset($dItems[$i]) ? money($dItems[$i]) : '' ?></td>
+            </tr>
+            <?php endfor; ?>
+            <tr style="font-weight:700">
+                <td style="<?= $tdC ?>">Total Earnings</td>
+                <td style="<?= $tdC ?>;text-align:right"><?= money($s['gross_earnings']) ?></td>
+                <td style="<?= $tdC ?>">Total Deductions</td>
+                <td style="<?= $tdC ?>;text-align:right"><?= money($s['total_deductions']) ?></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- ── Net Pay ─────────────────────────────────────────────────────────── -->
+    <div style="margin:0 24px 6px;border:2px solid #000;padding:12px 14px;color:#000">
+        <div style="font-weight:700;font-size:14px">
+            Net Pay for the month (Total Earnings &minus; Total Deductions): <?= money($s['net_pay']) ?>
         </div>
+        <div style="font-size:12px;margin-top:4px">(Rupees <?= h(_inr_words((float)$s['net_pay'])) ?> Only)</div>
     </div>
-    <?php endif; ?>
-
-    <!-- ── Earnings & Deductions ───────────────────────────────────────────── -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 24px;padding:0 24px;margin-bottom:16px">
-
-        <!-- Earnings -->
-        <div>
-            <?php
-            $earningRows   = [];
-            $benefitRows   = [];
-            $bonusRows     = [];
-            foreach ($allowances as $label => $amount) {
-                if ($amount <= 0) continue;
-                if (str_starts_with($label, '[BENEFIT]')) {
-                    $benefitRows[ltrim(substr($label, 9))] = $amount;
-                } elseif (str_starts_with($label, '[BONUS]')) {
-                    $bonusRows[ltrim(substr($label, 7))] = $amount;
-                } else {
-                    $earningRows[$label] = $amount;
-                }
-            }
-            $earnTotal   = array_sum($earningRows);
-            $benefitTotal = array_sum($benefitRows);
-            $bonusTotal  = array_sum($bonusRows);
-            ?>
-            <!-- Main earnings -->
-            <div class="slip-col head" style="color:var(--success)">Earnings</div>
-            <?php foreach ($earningRows as $label => $amount): ?>
-            <div class="slip-col" style="display:flex;justify-content:space-between">
-                <span><?= h($label) ?></span>
-                <span><?= money($amount) ?></span>
-            </div>
-            <?php endforeach; ?>
-            <div class="slip-col slip-total-row" style="display:flex;justify-content:space-between;color:var(--success)">
-                <strong>Salary Sub-total</strong>
-                <strong><?= money($earnTotal) ?></strong>
-            </div>
-
-            <?php if ($benefitRows): ?>
-            <div style="margin-top:10px"></div>
-            <div class="slip-col head" style="color:var(--info)">Benefit Funds</div>
-            <?php foreach ($benefitRows as $label => $amount): ?>
-            <div class="slip-col" style="display:flex;justify-content:space-between">
-                <span><?= h($label) ?> <span class="badge" style="background:var(--info);font-size:9px">BENEFIT</span></span>
-                <span><?= money($amount) ?></span>
-            </div>
-            <?php endforeach; ?>
-            <div class="slip-col slip-total-row" style="display:flex;justify-content:space-between;color:var(--info)">
-                <strong>Benefits Sub-total</strong>
-                <strong><?= money($benefitTotal) ?></strong>
-            </div>
-            <?php endif; ?>
-
-            <?php if ($bonusRows): ?>
-            <div style="margin-top:10px"></div>
-            <div class="slip-col head" style="color:#e6a817">Bonuses &amp; Incentives</div>
-            <?php foreach ($bonusRows as $label => $amount): ?>
-            <div class="slip-col" style="display:flex;justify-content:space-between">
-                <span><?= h($label) ?> <span class="badge" style="background:#e6a817;font-size:9px">BONUS</span></span>
-                <span><?= money($amount) ?></span>
-            </div>
-            <?php endforeach; ?>
-            <div class="slip-col slip-total-row" style="display:flex;justify-content:space-between;color:#e6a817">
-                <strong>Bonus Sub-total</strong>
-                <strong><?= money($bonusTotal) ?></strong>
-            </div>
-            <?php endif; ?>
-
-            <div style="margin-top:12px;background:#d4edda;border:1px solid #a8d5b3;border-radius:var(--radius);padding:10px 12px;display:flex;justify-content:space-between;font-weight:700;font-size:14px">
-                <span><i class="fa fa-coins" style="color:var(--success)"></i> Total Gross</span>
-                <span style="color:var(--success)"><?= money($s['gross_earnings']) ?></span>
-            </div>
-        </div>
-
-        <!-- Deductions -->
-        <div>
-            <div class="slip-col head" style="color:var(--danger)">Deductions</div>
-            <?php if ($deductions): ?>
-            <?php foreach ($deductions as $label => $amount): if ($amount <= 0) continue; ?>
-            <?php
-                $badge = '';
-                if (preg_match('/^(PF|Provident|ESI)/i', $label)) $badge = '<span class="badge" style="background:#555;font-size:9px;margin-left:4px">STAT</span>';
-                elseif (preg_match('/absent/i', $label))           $badge = '<span class="badge" style="background:var(--danger);font-size:9px;margin-left:4px">ABS</span>';
-                elseif (preg_match('/late/i', $label))             $badge = '<span class="badge" style="background:#e6a817;font-size:9px;margin-left:4px">LATE</span>';
-            ?>
-            <div class="slip-col" style="display:flex;justify-content:space-between">
-                <span><?= h($label) ?><?= $badge ?></span>
-                <span><?= money($amount) ?></span>
-            </div>
-            <?php endforeach; ?>
-            <?php else: ?>
-            <div class="slip-col" style="color:var(--muted);font-style:italic">No deductions this month</div>
-            <?php endif; ?>
-            <div class="slip-col slip-total-row" style="display:flex;justify-content:space-between;color:var(--danger)">
-                <strong>Total Deductions</strong>
-                <strong><?= money($s['total_deductions']) ?></strong>
-            </div>
-        </div>
+    <div style="margin:0 24px 16px;font-size:11px;color:#000;display:flex;justify-content:flex-end;gap:18px">
+        <span>PF Employer: <?= money($s['pf_employer']) ?></span>
+        <span>ESI Employer: <?= money($s['esi_employer']) ?></span>
     </div>
-
-    <!-- ── Net Pay Banner ─────────────────────────────────────────────────── -->
-    <div style="margin:0 24px 20px;background:var(--primary);color:#fff;border-radius:var(--radius);padding:16px 20px;display:flex;justify-content:space-between;align-items:center">
-        <div>
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.8">NET SALARY (Take Home)</div>
-            <div style="font-size:26px;font-weight:800"><?= money($s['net_pay']) ?></div>
-        </div>
-        <div style="text-align:right;font-size:12px;opacity:.85">
-            <div>PF Employer: <?= money($s['pf_employer']) ?></div>
-            <div>ESI Employer: <?= money($s['esi_employer']) ?></div>
-        </div>
-    </div>
-
-    <!-- ── Attendance Summary ─────────────────────────────────────────────── -->
-    <?php if ($attSummary): ?>
-    <div style="margin:0 24px 20px">
-        <div style="font-weight:700;font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:6px">
-            <i class="fa fa-calendar-alt" style="color:var(--primary)"></i>
-            Attendance Summary — <?= $monthLabel ?>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:12px">
-            <?php
-            $attCards = [
-                ['Working Days', $attSummary['total_working_days'] ?? '—', ''],
-                ['Present',      $attSummary['present_days']       ?? '—', 'var(--success)'],
-                ['Half Day',     $attSummary['half_days']          ?? 0,   '#e6a817'],
-                ['Paid Leave',   $attSummary['paid_leave_days']    ?? ($attSummary['leave_days'] ?? 0), 'var(--info)'],
-                ['Absent',       number_format((float)($attSummary['absent_days'] ?? 0), 1), (($attSummary['absent_days'] ?? 0) > 0 ? 'var(--danger)' : 'var(--muted)')],
-                ['Late Days',    $attSummary['late_days']          ?? 0, (($attSummary['late_days'] ?? 0) > 0 ? '#e6a817' : 'var(--muted)')],
-            ];
-            foreach ($attCards as [$lbl, $val, $color]):
-            ?>
-            <div style="text-align:center;background:var(--bg-subtle);border-radius:var(--radius);padding:8px 4px;border:1px solid var(--border)">
-                <div style="font-size:18px;font-weight:700;<?= $color ? "color:{$color}" : '' ?>"><?= $val ?></div>
-                <div style="font-size:10px;color:var(--muted)"><?= $lbl ?></div>
-            </div>
-            <?php endforeach; ?>
-        </div>
-
-        <?php if (($attSummary['ot_hours'] ?? 0) > 0 || ($attSummary['late_minutes'] ?? 0) > 0): ?>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <?php if (($attSummary['ot_hours'] ?? 0) > 0): ?>
-            <div style="background:var(--bg-subtle);border-radius:var(--radius);padding:10px 12px;font-size:12px;border:1px solid var(--border)">
-                <strong>Overtime Details</strong>
-                <div style="margin-top:6px;color:var(--muted)">OT Hours: <strong style="color:var(--success)"><?= number_format((float)$attSummary['ot_hours'], 2) ?> hrs</strong></div>
-                <div style="color:var(--muted)">Rate: 2× hourly (₹<?= number_format((float)($attSummary['ot_per_hour_rate'] ?? $attSummary['per_hour_rate'] ?? 0), 2) ?>/hr × 2)</div>
-                <div style="color:var(--muted)">OT Pay Added: <strong style="color:var(--success)"><?= money($attSummary['ot_amount'] ?? 0) ?></strong></div>
-            </div>
-            <?php endif; ?>
-            <?php if (($attSummary['late_minutes'] ?? 0) > 0):
-                $lateMins   = (int)$attSummary['late_minutes'];
-                $lateGrace  = (int)($attSummary['late_grace_minutes']    ?? 90);
-                $lateDed    = (int)($attSummary['deductable_late_mins']  ?? 0);
-                $lateRemain = max(0, $lateGrace - $lateMins);
-                $exceeded   = $lateMins > $lateGrace;
-                $fmtMin     = function (int $m): string {
-                    return ($m >= 60 ? intdiv($m, 60) . 'h ' : '') . ($m % 60) . 'm';
-                };
-            ?>
-            <div style="background:var(--bg-subtle);border-radius:var(--radius);padding:10px 12px;font-size:12px;border:1px solid var(--border)">
-                <strong><i class="fa fa-clock me-1"></i>Late Arrival Breakdown</strong>
-                <div style="margin-top:6px;color:var(--muted)">
-                    Total Late: <strong><?= $fmtMin($lateMins) ?></strong>
-                    <span style="color:var(--muted);font-size:11px">(<?= $attSummary['late_days'] ?? 0 ?> day<?= ($attSummary['late_days'] ?? 0) === 1 ? '' : 's' ?>)</span>
-                </div>
-                <div style="color:var(--muted)">Monthly Grace: <strong><?= $fmtMin($lateGrace) ?></strong></div>
-                <?php if ($exceeded): ?>
-                    <div style="color:var(--danger);font-weight:600">Exceeded! Deducting <?= $fmtMin($lateDed) ?> (2×)</div>
-                    <?php if (($attSummary['late_deduction'] ?? 0) > 0): ?>
-                    <div style="color:var(--danger)"><?= money($attSummary['late_deduction']) ?> deducted</div>
-                    <?php endif; ?>
-                <?php else: ?>
-                    <div style="color:var(--success)">Remaining grace: <strong><?= $fmtMin($lateRemain) ?></strong></div>
-                    <div style="color:var(--success)"><i class="fa fa-check-circle me-1"></i>No deduction</div>
-                <?php endif; ?>
-            </div>
-            <?php endif; ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- ── Bottom: per-day / per-hour rates and calculation breakdown (matches Laravel) -->
-        <?php
-            $perDay   = (float)($attSummary['per_day_salary'] ?? 0);
-            $perHour  = (float)($attSummary['per_hour_rate']  ?? 0);
-            $calDays  = (int)($attSummary['calendar_days']    ?? 30);
-            $workDays = $attSummary['total_working_days']     ?? '—';
-            $absDays  = (float)($attSummary['absent_days']    ?? 0);
-            $basicVal = (float)($attSummary['basic_salary']   ?? 0);
-            $ctcVal   = (float)($attSummary['ctc_per_month']  ?? 0);
-            $absDed   = (float)($attSummary['absent_deduction'] ?? ($absDays * $perDay));
-        ?>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--border);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:16px;line-height:1.7">
-            <span>Working Days: <strong style="color:var(--text)"><?= $workDays ?></strong>
-                <span style="font-size:10px">(actual working)</span>
-            </span>
-            <span>Calendar Days: <strong style="color:var(--text)"><?= $calDays ?></strong>
-                <span style="font-size:10px">(month total)</span>
-            </span>
-            <span>Per Day Rate: <strong style="color:var(--text)">₹<?= number_format($perDay, 2) ?></strong>
-                <span style="font-size:10px">(₹<?= number_format($ctcVal, 0) ?> &divide; <?= $calDays ?> days)</span>
-            </span>
-            <span>Per Hour Rate: <strong style="color:var(--text)">₹<?= number_format($perHour, 2) ?></strong>
-                <span style="font-size:10px">(per day &divide; 8 hrs)</span>
-            </span>
-            <?php if ($absDays > 0): ?>
-            <span style="color:var(--danger)">Absent Deduction: <strong>₹<?= number_format($absDed, 2) ?></strong>
-                <span style="font-size:10px">(<?= number_format($absDays, 1) ?> days &times; ₹<?= number_format($perDay, 2) ?>)</span>
-            </span>
-            <?php endif; ?>
-            <span>Basic Salary: <strong style="color:var(--text)">₹<?= number_format($basicVal, 2) ?></strong></span>
-            <span>CTC/Month: <strong style="color:var(--text)">₹<?= number_format($ctcVal, 2) ?></strong></span>
-        </div>
-    </div>
-    <?php endif; ?>
 
     <!-- ── Footer ──────────────────────────────────────────────────────────── -->
-    <div style="padding:12px 24px;border-top:1px solid var(--border);text-align:center;color:var(--muted);font-size:11px">
-        Computer-generated salary slip. No signature required. For queries contact <?= h(COMPANY_EMAIL) ?>.
+    <div style="padding:12px 24px;border-top:1px solid #000;text-align:center;color:#000;font-size:11px">
+        This is a system generated payslip and does not require signature.
+        <div style="margin-top:4px">Print Date: <?= date('d M Y, h:i A') ?></div>
     </div>
 </div>
 

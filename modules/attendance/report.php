@@ -60,6 +60,27 @@ foreach ($hStmt->fetchAll() as $h) {
     $holidayMap[$h['h_date']] = $h;
 }
 
+/* ── Approved PAID leaves in the month ───────────────────────────────────────
+ * A day that would otherwise show as Absent but is covered by an admin-approved
+ * PAID leave (leave_types.is_paid = 1) is shown in lavender instead of red.    */
+$paidLeaveDates = []; // [empId]['YYYY-MM-DD'] => true
+$plStmt = $db->prepare(
+    "SELECT lr.employee_id, lr.start_date, lr.end_date
+       FROM leave_requests lr
+       JOIN leave_types lt ON lt.id = lr.leave_type_id
+      WHERE lr.status = 'approved' AND lt.is_paid = 1
+        AND lr.start_date <= ? AND lr.end_date >= ?"
+);
+$plStmt->execute([$mEndStr, $mStartStr]);
+foreach ($plStmt->fetchAll() as $r) {
+    $cur = new DateTime(max($r['start_date'], $mStartStr));
+    $end = new DateTime(min($r['end_date'],   $mEndStr));
+    while ($cur <= $end) {
+        $paidLeaveDates[(int)$r['employee_id']][$cur->format('Y-m-d')] = true;
+        $cur->modify('+1 day');
+    }
+}
+
 /* ── Build non-working / working-holiday day maps ────────────────────────── */
 $nonWorkingDays  = [];   // int day => label string
 $workingHolDays  = [];   // int day => holiday name
@@ -111,12 +132,25 @@ $empCount = count($employees);
 
 /* ── Load all attendance records for the month ───────────────────────────── */
 $attStmt = $db->prepare(
-    "SELECT employee_id, att_date, status, in_time, out_time, ot_hours, remarks
+    "SELECT employee_id, att_date, status, leave_classification, in_time, out_time, ot_hours, remarks
      FROM   attendance
      WHERE  att_date BETWEEN ? AND ?"
 );
 $attStmt->execute([$mStartStr, $mEndStr]);
 $allRecs = $attStmt->fetchAll();
+
+// Paid leaves already used this month per employee (attendance 'paid' classifications
+// + admin-approved paid leave_requests). Drives the "1 paid leave/month" UI cap.
+$paidUsedByEmp = [];   // [empId] => count
+foreach ($allRecs as $rec) {
+    if (($rec['status'] ?? '') === 'Absent' && ($rec['leave_classification'] ?? '') === 'paid') {
+        $paidUsedByEmp[(int)$rec['employee_id']] = ($paidUsedByEmp[(int)$rec['employee_id']] ?? 0) + 1;
+    }
+}
+foreach ($paidLeaveDates as $eId => $dates) {           // approved paid leave_requests (loaded above)
+    $paidUsedByEmp[(int)$eId] = ($paidUsedByEmp[(int)$eId] ?? 0) + count($dates);
+}
+$canClassify = can('attendance', 'edit') && !is_self_scoped();
 
 // Group: $records[$emp_id][$day_number] = record
 $records    = [];
@@ -139,6 +173,7 @@ foreach ($employees as $emp) {
     $presentCnt = 0;
     $absentCnt  = 0;
     $halfCnt    = 0;
+    $paidLvCnt  = 0;
     $lateMins   = 0;
     $otHrs      = 0.0;
     $manMins    = 0;
@@ -169,7 +204,13 @@ foreach ($employees as $emp) {
 
         // No-checkout = treated as absent
         if ($noCheckout || $status === 'Absent') {
-            $absentCnt++;
+            // An Absent day classified as Paid Leave counts as leave, not absent
+            // (excluded from LOP). Unpaid / unclassified stay absent.
+            if ($status === 'Absent' && ($rec['leave_classification'] ?? '') === 'paid') {
+                $paidLvCnt++;
+            } else {
+                $absentCnt++;
+            }
             continue;
         }
         if ($status === 'Half Day') { $halfCnt++; continue; }
@@ -178,7 +219,12 @@ foreach ($employees as $emp) {
 
         // On Time or Late
         if (in_array($status, ['On Time', 'Late'], true)) {
-            if ($status === 'Late' && !empty($rec['in_time'])) {
+            // Half/short day (check-in after ~11:00, or net ≤ 4h)? Such days are
+            // EXEMPT from the late penalty (they're already deducted as Half/Short
+            // Hours), so their late minutes must NOT be added to the late pool —
+            // this keeps the report's Late total in step with the salary slip.
+            $isHalfShort = _rep_isEarlyOut($rec, employee_lunch_window($empId));
+            if ($status === 'Late' && !$isHalfShort && !empty($rec['in_time'])) {
                 $ciMins  = _rep_timeToMins($rec['in_time']);
                 $dayLate = max(0, $ciMins - $officeStartMins);
                 if ($dayLate > 0) {
@@ -186,7 +232,8 @@ foreach ($employees as $emp) {
                     $lateMins += $dayLate;
                 }
             }
-            $presentCnt++;
+            if ($isHalfShort) { $halfCnt++; }
+            else              { $presentCnt++; }
         }
     }
 
@@ -207,6 +254,7 @@ foreach ($employees as $emp) {
         'present_count'  => $presentCnt,
         'absent_days'    => $absentCnt,
         'half_days'      => $halfCnt,
+        'leave_days'     => $paidLvCnt,
         'late_mins'      => $lateMins,
         'remaining_perm' => $remainPerm,
         'exceeded_mins'  => $exceededMins,
@@ -297,6 +345,9 @@ foreach ($employees as $emp) {
 
             <span class="ms-2 badge" style="background:#e67e22;font-size:.7rem">A</span>
             <small class="text-muted">Absent &mdash; checked in but no checkout</small>
+
+            <span class="ms-2 badge" style="background:#e6e6fa;color:#5b21b6;border:1px solid #c4b5fd;font-size:.7rem">PL</span>
+            <small class="text-muted">Approved Paid Leave (lavender)</small>
         </div>
 
         <!-- ── Non-working day banner ─────────────────────────────────────── -->
@@ -384,12 +435,12 @@ foreach ($employees as $emp) {
                     <th class="text-center" style="min-width:32px" title="Absent days">A</th>
                     <th class="text-center" style="min-width:32px" title="Half days">H</th>
                     <th class="text-center" style="min-width:32px" title="Leave days">L</th>
-                    <th class="text-center bg-warning bg-opacity-10" style="min-width:72px">Late Used</th>
-                    <th class="text-center bg-info bg-opacity-10"   style="min-width:72px">Remaining</th>
-                    <th class="text-center bg-danger bg-opacity-10" style="min-width:72px">Exceeded</th>
-                    <th class="text-center bg-danger bg-opacity-25" style="min-width:80px">Deducted</th>
-                    <th class="text-center bg-success bg-opacity-10" style="min-width:56px">OT Hrs</th>
-                    <th class="text-center text-white" style="min-width:72px;background:rgba(13,110,253,0.45)"
+                    <th class="text-center text-dark bg-warning bg-opacity-10" style="min-width:72px">Late Used</th>
+                    <th class="text-center text-dark bg-info bg-opacity-10"   style="min-width:72px">Remaining</th>
+                    <th class="text-center text-dark bg-danger bg-opacity-10" style="min-width:72px">Exceeded</th>
+                    <th class="text-center text-dark bg-danger bg-opacity-25" style="min-width:80px">Deducted</th>
+                    <th class="text-center text-dark bg-success bg-opacity-10" style="min-width:56px">OT Hrs</th>
+                    <th class="text-center text-dark" style="min-width:72px;background:rgba(13,110,253,0.45)"
                         title="Total logged working hours for the month">Man Hrs</th>
                 </tr>
                 </thead>
@@ -431,6 +482,12 @@ foreach ($employees as $emp) {
 
                         // OD override (only on working, non-comp-off days)
                         $isOnDuty = (!$isNonWrk && !$isCompOffDay && $status === 'OD');
+
+                        // Under 8 net working hours (after breaks) on a working day → Half Day.
+                        $isEarlyOut = !$isNonWrk && !$isCompOffDay && !$noCheckout && _rep_isEarlyOut($rec, employee_lunch_window($empId));
+
+                        // Admin-approved PAID leave covering this date.
+                        $hasPaidLeave = isset($paidLeaveDates[$empId][$cellDateStr]);
                     ?>
 
                     <?php if ($isNonWrk): ?>
@@ -465,7 +522,8 @@ foreach ($employees as $emp) {
                             if ($noCheckout && !$isFuture) {
                                 $absentCount++;
                             } elseif (in_array($status, ['On Time', 'Late'], true) && !$noCheckout) {
-                                $presentCount++;
+                                if ($isEarlyOut) { $halfCount++; }   // early checkout → half day
+                                else             { $presentCount++; }
                             } elseif (($status === 'Absent' || $status === null) && !$isFuture) {
                                 $absentCount++;
                             } elseif ($status === 'Half Day') {
@@ -475,10 +533,19 @@ foreach ($employees as $emp) {
                         }
                         if ($isOnDuty) $presentCount++; // OD = present
 
+                        // A day covered by an admin-approved PAID leave that would
+                        // otherwise read as absent (no record, "Absent", or "On Leave").
+                        // Present/Late/Half-Day/Holiday/Comp-Off/OD keep their own colour;
+                        // unpaid leaves are NOT lavender (they stay red/absent).
+                        $paidLeaveAbsent = $hasPaidLeave && !$noCheckout && !$isFuture
+                            && !in_array($status, ['On Time', 'Late', 'Half Day', 'Holiday', 'Comp Off', 'OD'], true);
+
                         // Cell background
                         $cellBg = '';
-                        if ($isCompOffDay)   $cellBg = 'background:#ede9fe;';
-                        elseif ($isOnDuty)  $cellBg = 'background:#fdf3e3;';
+                        if ($isCompOffDay)        $cellBg = 'background:#ede9fe;';
+                        elseif ($isOnDuty)        $cellBg = 'background:#fdf3e3;';
+                        elseif ($paidLeaveAbsent) $cellBg = 'background:#e6e6fa;'; // lavender
+                        elseif ($status === 'Absent' && ($rec['leave_classification'] ?? '') === 'paid') $cellBg = 'background:#e6e6fa;';
                     ?>
 
                     <td class="text-center" style="<?= $cellBg ?>">
@@ -513,15 +580,25 @@ foreach ($employees as $emp) {
                                 $titleHtml = $titleAttr ? ' title="' . $titleAttr . '"' : '';
 
                                 // Render badge
-                                if ($noCheckout) {
+                                if ($paidLeaveAbsent) {
+                                    // Admin-approved PAID leave → lavender (not red absent)
+                                    echo '<span class="badge" style="background:#e6e6fa;color:#5b21b6;font-size:.7rem;border:1px solid #c4b5fd" title="Approved paid leave">PL</span>';
+                                } elseif ($status === 'Absent') {
+                                    // Absent day (real row) — classifiable as Paid / Unpaid leave.
+                                    echo _rep_absentBadge($empId, $cellDateStr, $rec['leave_classification'] ?? null, $canClassify, $paidUsedByEmp[$empId] ?? 0);
+                                } elseif ($noCheckout) {
                                     // Orange A — checked in but no checkout
                                     echo '<span class="badge" style="background:#e67e22;font-size:.7rem;"' . $titleHtml . '>A</span>';
+                                } elseif ($isEarlyOut) {
+                                    // Under a full 8 net hours (excl. breaks) → partial day (Half)
+                                    echo '<span class="badge bg-warning text-dark" style="font-size:.7rem" title="Half / Short day &mdash; under 8 net working hours, excl. breaks (in ' . h(date('h:i A', strtotime($rec['in_time']))) . ', out ' . h(date('h:i A', strtotime($rec['out_time']))) . ')">H</span>';
                                 } elseif ($status === null && $isFuture) {
                                     // Future date with no record — neutral dash
                                     echo '<span class="badge bg-light text-dark" style="font-size:.7rem;border:1px solid #dee2e6">&#8212;</span>';
                                 } elseif ($status === null && !$isFuture) {
-                                    // Past/today with no record → absent
-                                    echo '<span class="badge bg-danger"' . $titleHtml . ' style="font-size:.7rem">A</span>';
+                                    // Past/today with no record → absent (classifiable; the row is
+                                    // created on demand when a classification is chosen).
+                                    echo _rep_absentBadge($empId, $cellDateStr, null, $canClassify, $paidUsedByEmp[$empId] ?? 0);
                                 } else {
                                     // Map HRMS ENUM status to Bootstrap color + abbreviation
                                     switch ($status) {
@@ -571,9 +648,10 @@ foreach ($employees as $emp) {
                     <!-- H: Half Day count -->
                     <td class="text-center fw-bold text-warning"><?= $halfDays ?></td>
 
-                    <!-- L: Leave days (from payroll — always 0 in HRMS, no leave_requests table) -->
-                    <td class="text-center fw-bold text-secondary"
-                        title="Approved paid leaves + comp-offs (from payroll)"><?= $leaveCount ?></td>
+                    <!-- L: Paid leave days (absences classified as Paid Leave) -->
+                    <?php $leaveDays = (int)($stat['leave_days'] ?? 0); ?>
+                    <td class="text-center fw-bold <?= $leaveDays > 0 ? 'text-info' : 'text-secondary' ?>"
+                        title="Absences classified as Paid Leave this month"><?= $leaveDays ?></td>
 
                     <!-- Late Used -->
                     <td class="text-center <?= $lateMins > 0 ? 'text-warning fw-semibold' : 'text-muted' ?>"
@@ -662,10 +740,71 @@ foreach ($employees as $emp) {
             <strong>Deducted</strong> = Penalty charged (2&times; total late when grace exceeded)
             &nbsp;|&nbsp;
             <strong>Man Hrs</strong> = Total working hours logged (check-in &rarr; check-out) for the month
+            &nbsp;|&nbsp;
+            <span class="badge" style="background:#e6e6fa;color:#5b21b6;border:1px solid #c4b5fd;font-size:.7rem">PL</span> = Paid Leave
+            &nbsp;
+            <span class="badge bg-danger" style="font-size:.7rem">UL</span> = Unpaid Leave
+            <?php if ($canClassify): ?><span class="text-muted">&nbsp;— click any <span class="badge bg-danger" style="font-size:.65rem">A</span> to classify the absence</span><?php endif; ?>
         </div>
 
     </div><!-- /card-body -->
 </div><!-- /card page-card -->
+
+<?php if ($canClassify): ?>
+<!-- ── Leave-classification floating menu (single shared instance) ──────────── -->
+<div id="lcMenu" class="card shadow-sm p-1" style="display:none;position:fixed;z-index:1080;min-width:170px;font-size:.8rem">
+    <div class="px-2 py-1 fw-semibold text-muted" style="font-size:.7rem;text-transform:uppercase;letter-spacing:.04em">Classify Absence</div>
+    <button type="button" class="btn btn-sm btn-light w-100 text-start" data-act="paid"   id="lcPaid">Paid Leave</button>
+    <button type="button" class="btn btn-sm btn-light w-100 text-start" data-act="unpaid" id="lcUnpaid">Unpaid Leave</button>
+    <button type="button" class="btn btn-sm btn-light w-100 text-start text-muted" data-act="none" id="lcClear">Clear (Absent)</button>
+</div>
+<script>
+(function () {
+    var CSRF = <?= json_encode(csrf_token()) ?>;
+    var URL  = '<?= BASE_URL ?>/modules/attendance/leave_classify.php';
+    var menu = document.getElementById('lcMenu');
+    var cur  = null;   // the badge currently being classified
+
+    window.openLcMenu = function (badge, ev) {
+        ev = ev || window.event;
+        if (ev) ev.stopPropagation();
+        cur = badge;
+        var disabled = badge.getAttribute('data-paiddisabled') === '1';
+        var paidBtn  = document.getElementById('lcPaid');
+        paidBtn.disabled = disabled;
+        paidBtn.classList.toggle('text-muted', disabled);
+        paidBtn.textContent = disabled ? 'Paid Leave (limit reached)' : 'Paid Leave';
+        // Position near the badge, clamped to the viewport.
+        var r = badge.getBoundingClientRect();
+        menu.style.display = 'block';
+        var mw = menu.offsetWidth, mh = menu.offsetHeight;
+        var left = Math.min(r.left, window.innerWidth  - mw - 8);
+        var top  = (r.bottom + mh + 8 < window.innerHeight) ? r.bottom + 4 : r.top - mh - 4;
+        menu.style.left = Math.max(8, left) + 'px';
+        menu.style.top  = Math.max(8, top)  + 'px';
+    };
+
+    function close() { menu.style.display = 'none'; cur = null; }
+    document.addEventListener('click', function (e) { if (!menu.contains(e.target) && (!cur || e.target !== cur)) close(); });
+
+    menu.querySelectorAll('button[data-act]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            if (!cur || btn.disabled) return;
+            var emp = cur.getAttribute('data-emp'), date = cur.getAttribute('data-date');
+            var body = new URLSearchParams({ employee_id: emp, att_date: date, classification: btn.getAttribute('data-act'), csrf_token: CSRF });
+            btn.disabled = true;
+            fetch(URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body })
+                .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+                .then(function (res) {
+                    if (!res.ok || !res.j.ok) { alert(res.j.message || 'Could not save.'); btn.disabled = false; return; }
+                    location.reload();   // reflect new counts / paid-cap state
+                })
+                .catch(function () { alert('Network error — please retry.'); btn.disabled = false; });
+        });
+    });
+})();
+</script>
+<?php endif; ?>
 
 <?php
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -696,6 +835,51 @@ function _rep_satCountUpTo(DateTime $d): int {
         $t->modify('+1 day');
     }
     return $n;
+}
+
+/**
+ * True when a present working-day (On Time / Late, both punches) should count as
+ * a HALF DAY: the employee either checked in after 11:00 AM, or worked under 8
+ * hours (which also covers early checkout and the 9:00–1:30 case). A 9:00–6:15
+ * day (check-in by 11:00 and ≥ 8 hours) is a full day. Shown as Half Day in the
+ * report; payroll pro-rates the salary on the hours actually worked.
+ */
+function _rep_isEarlyOut(?array $rec, ?array $lunchWindow = null): bool {
+    if (!$rec || empty($rec['in_time']) || empty($rec['out_time'])) return false;
+    if (!in_array($rec['status'] ?? '', ['On Time', 'Late'], true)) return false;
+    $in  = _rep_timeToMins($rec['in_time']);
+    $out = _rep_timeToMins($rec['out_time']);
+    if ($out <= $in) return false;                 // ignore midnight-cross / bad data
+    // Net worked = presence − break windows (the employee's lunch batch + 2 tea breaks) within it.
+    // Shows "H" when: check-in after ~11:00, OR net worked ≤ 4h (half/short day). A day
+    // worked > 4h with an on-time-ish check-in stays PRESENT (salary is pro-rated by payroll).
+    // (The slip splits H into "Half Day" vs "Short Hours"; the report shows both as H.)
+    $worked = max(0, ($out - $in) - break_minutes_within($in, $out, $lunchWindow));
+    $osM = function_exists('setting_office_start_mins') ? (int) setting_office_start_mins() : 9 * 60;
+    $grM = function_exists('setting_daily_grace_mins')  ? (int) setting_daily_grace_mins()  : 15;
+    $oeM = function_exists('setting_office_end_mins')   ? (int) setting_office_end_mins()    : 18 * 60;
+    return in_array(attendance_classify($worked, $in, $osM, $grM, $out, $oeM)['status'], ['half', 'short'], true);
+}
+
+/**
+ * Render the badge for an absent day. When the user can classify, the badge is a
+ * clickable control (Paid / Unpaid / Clear). Works for both real Absent rows and
+ * "no record" past days (the attendance row is created on demand on first save).
+ */
+function _rep_absentBadge(int $empId, string $dateStr, ?string $cls, bool $canClassify, int $paidUsed): string {
+    if ($cls === 'paid')       { $bClass = 'badge';           $bStyle = 'background:#e6e6fa;color:#5b21b6;border:1px solid #c4b5fd'; $bTxt = 'PL'; $bTitle = 'Paid Leave'; }
+    elseif ($cls === 'unpaid') { $bClass = 'badge bg-danger'; $bStyle = '';                                                          $bTxt = 'UL'; $bTitle = 'Unpaid Leave (LOP)'; }
+    else                       { $bClass = 'badge bg-danger'; $bStyle = '';                                                          $bTxt = 'A';  $bTitle = 'Absent'; }
+
+    if (!$canClassify) {
+        return '<span class="' . $bClass . '" style="font-size:.7rem;' . $bStyle . '" title="' . h($bTitle) . '">' . $bTxt . '</span>';
+    }
+    $paidDisabled = ($paidUsed >= 1 && $cls !== 'paid') ? 1 : 0;
+    return '<span class="' . $bClass . ' lc-badge" style="font-size:.7rem;cursor:pointer;' . $bStyle . '"'
+         . ' title="' . h($bTitle) . ' — click to classify"'
+         . ' data-emp="' . $empId . '" data-date="' . h($dateStr) . '"'
+         . ' data-cls="' . h((string)$cls) . '" data-paiddisabled="' . $paidDisabled . '"'
+         . ' onclick="openLcMenu(this, event)">' . $bTxt . '</span>';
 }
 
 /** Format integer minutes as "Xh Ym" or "Ym". */

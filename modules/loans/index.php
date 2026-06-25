@@ -2,6 +2,7 @@
 $page_title = 'Loans & Advances';
 require_once __DIR__ . '/../../includes/header.php';
 require_permission('loans', 'view');
+require_once __DIR__ . '/../../includes/loan_history.php';
 
 $db = db();
 
@@ -112,14 +113,15 @@ $employees = scope_employees_for_dropdown($db);
                     <tr><td colspan="11" class="text-center text-muted py-4">No loan / advance records found.</td></tr>
                     <?php else: ?>
                     <?php foreach ($loans as $i => $loan):
-                        // Simple interest over the full tenure: P × R/100 × (months/12).
-                        $months    = max(1, (int)($loan['total_months'] ?? 1));
-                        $interest  = (float)$loan['interest_rate'] > 0
-                                   ? round((float)$loan['amount'] * ((float)$loan['interest_rate'] / 100) * ($months / 12), 2)
-                                   : 0.0;
-                        $totalDue  = round((float)$loan['amount'] + $interest, 2);
-                        $pending   = max(0, round($totalDue - (float)$loan['returned_amount'], 2));
-                        $statusBadge = ['active' => 'success', 'completed' => 'primary'][$loan['status']] ?? 'secondary';
+                        // Returned/Pending/Status derived from the actual salary-slip
+                        // deductions (and lazily synced back to the loan row).
+                        $fig         = loan_figures($db, $loan);
+                        $interest    = $fig['interest'];
+                        $totalDue    = $fig['total_due'];
+                        $returned    = $fig['returned'];
+                        $pending     = $fig['pending'];
+                        $loanStatus  = $fig['status'];
+                        $statusBadge = ['active' => 'success', 'completed' => 'primary'][$loanStatus] ?? 'secondary';
                     ?>
                     <tr>
                         <td><?= $i + 1 ?></td>
@@ -136,18 +138,18 @@ $employees = scope_employees_for_dropdown($db);
                         <td class="text-end"><?= $interest > 0 ? '<span class="text-warning">' . money($interest) . '</span>' : '<span class="text-muted">—</span>' ?></td>
                         <td class="text-end fw-semibold"><?= money($totalDue) ?></td>
                         <td class="text-end"><?= money($loan['monthly_deduction']) ?></td>
-                        <td class="text-end text-success fw-semibold"><?= money($loan['returned_amount']) ?></td>
+                        <td class="text-end text-success fw-semibold"><?= money($returned) ?></td>
                         <td class="text-end <?= $pending > 0 ? 'text-danger fw-semibold' : 'text-success' ?>">
                             <?= money($pending) ?>
                         </td>
                         <td>
                             <span class="badge bg-<?= $statusBadge ?>">
-                                <?= ucfirst($loan['status']) ?>
+                                <?= ucfirst($loanStatus) ?>
                             </span>
                         </td>
                         <td class="text-center text-nowrap">
                             <a href="<?= BASE_URL ?>/modules/loans/show.php?id=<?= $loan['id'] ?>"
-                               class="btn btn-xs btn-outline-info" title="Repayment History"><i class="fa fa-history"></i></a>
+                               class="btn btn-xs btn-outline-info" title="Loan History"><i class="fa fa-history"></i></a>
                             <?php if (can('loans','create')): ?>
                             <a href="<?= BASE_URL ?>/modules/loans/create.php?id=<?= $loan['id'] ?>"
                                class="btn btn-xs btn-outline-primary" title="Edit"><i class="fa fa-pen"></i></a>

@@ -59,7 +59,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <span style="font-size:36px; color:white; font-weight:800">H</span>
             </div>
             <h1><?= h(APP_NAME) ?></h1>
-            <p><?= h(COMPANY_NAME) ?></p>
         </div>
 
         <?php if ($timeout): ?>
@@ -93,11 +92,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             🔐 Sign in with SSO
         </a>
         <?php endif; ?>
-
-        <div class="login-hint">
-            Default admin: <strong>admin@hrms.local</strong> / <strong>Admin@1234</strong><br>
-            <span style="font-size:11px; color:var(--text-light)">Change immediately after first login</span>
-        </div>
     </div>
 </div>
 <script>

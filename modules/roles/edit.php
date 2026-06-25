@@ -41,10 +41,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
 
     if (!$name) $errors[] = 'Role name is required.';
 
+    $selfScope = !empty($_POST['self_scope']) ? 1 : 0;
+
     if (empty($errors)) {
         if (!$role['is_system']) {
-            db()->prepare("UPDATE roles SET name=:n, description=:d WHERE id=:id")
-                 ->execute([':n'=>$name,':d'=>$desc,':id'=>$id]);
+            db()->prepare("UPDATE roles SET name=:n, description=:d, self_scope=:s WHERE id=:id")
+                 ->execute([':n'=>$name,':d'=>$desc,':s'=>$selfScope,':id'=>$id]);
         }
 
         // Permissions
@@ -63,6 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
     $rolePerms = $_POST['permissions'] ?? [];
     $roleNotifs = $_POST['notifications'] ?? [];
     $pwaEnabled = $_POST['pwa_modules'] ?? [];
+    $role['self_scope'] = $selfScope;   // keep checkbox state on re-render
 }
 
 $page_title = 'Edit Role: ' . $role['name'];
@@ -212,6 +215,21 @@ include '../../includes/header.php';
                 <div class="form-group">
                     <label class="form-label">Description</label>
                     <textarea name="description" class="form-control" rows="3" <?= !can('roles', 'edit')?'readonly':'' ?>><?= h($role['description']) ?></textarea>
+                </div>
+                <hr>
+                <div class="form-group">
+                    <label class="form-label">Data Access Scope</label>
+                    <label class="form-check">
+                        <input type="checkbox" name="self_scope" value="1"
+                            <?= !empty($role['self_scope']) ? 'checked' : '' ?>
+                            <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
+                        <span>Restrict to own records only (self-service)</span>
+                    </label>
+                    <p class="text-muted mt-1" style="font-size:.8rem">
+                        When enabled, users with this role see only their <strong>own</strong> employee
+                        data across every list, report, profile and tab — they cannot view other
+                        employees' details. Leave unchecked for management roles that need full access.
+                    </p>
                 </div>
             </div>
         </div>

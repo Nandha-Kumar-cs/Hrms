@@ -10,7 +10,9 @@ require_permission('letters','create');
 
 $db       = db();
 $user     = current_user();
-$emp_id   = (int)($_GET['emp_id'] ?? 0);
+// Accept emp_id or employee_id (the employee-list "Create … Letter" links use
+// employee_id) so the chosen employee is pre-selected on the form.
+$emp_id   = (int)($_GET['emp_id'] ?? $_GET['employee_id'] ?? 0);
 $preType  = ucfirst(strtolower($_GET['type'] ?? ''));   // e.g. ?type=Promotion preselects the template
 $employees = $db->query(
     'SELECT e.id, e.name, e.employee_id, e.designation_id, e.department_id, e.join_date,
@@ -352,7 +354,7 @@ const TYPE_FIELDS = {
     // the employee record and the salary breakup is computed from components.
     Offer: [
         { id:'join_date', label:'Joining Date',      type:'date',     name:'joining_date' },
-        { id:'salary',    label:'Offered Salary (₹)', type:'number',  name:'offer_salary', placeholder:'₹', step:'0.01' },
+        { id:'salary',    label:'Offered Salary (₹)', type:'number',  name:'offer_salary', placeholder:'₹', step:'0.01', readonly:true },
         { id:'terms',     label:'Terms & Conditions', type:'textarea', name:'offer_terms',
           value:'This offer is contingent upon satisfactory completion of all pre-employment requirements.' },
     ],
@@ -364,7 +366,7 @@ const TYPE_FIELDS = {
     // Increment mirrors the reference create form: Old CTC (auto-filled from the
     // employee), New CTC, a read-only auto-computed percentage, and effective date.
     Increment: [
-        { id:'old_salary',     label:'Old CTC / Month (₹)', type:'number', name:'old_salary',           step:'0.01' },
+        { id:'old_salary',     label:'Old CTC / Month (₹)', type:'number', name:'old_salary',           step:'0.01', readonly:true },
         { id:'new_salary',     label:'New CTC / Month (₹)', type:'number', name:'new_salary',           step:'0.01' },
         { id:'increment_pct',  label:'Increment %',         type:'number', name:'increment_percentage', step:'0.01', readonly:true },
         { id:'effective_date', label:'Effective Date',      type:'date',   name:'effective_date',       value: TODAY },

@@ -216,6 +216,66 @@ $joiningCounts = array_map('intval', array_column($joiningRows, 'cnt'));
 
 </div>
 
+<?php if ((current_user()['role_name'] ?? '') === 'Super Admin'): ?>
+<!-- ── Danger Zone — full factory reset (Super Admin only) ─────────────────── -->
+<div class="card page-card border-danger mt-4">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+        <h6 class="mb-0 fw-semibold text-danger"><i class="fa fa-triangle-exclamation me-2"></i>Danger Zone</h6>
+    </div>
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <div class="fw-semibold">Delete all data</div>
+            <div class="text-muted small mb-0">
+                Permanently erases <strong>all</strong> records (employees, attendance, payroll, loans, benefits,
+                letters, assets, settings, master data &amp; other users). Only your admin login is kept.
+                <strong>This cannot be undone.</strong>
+            </div>
+        </div>
+        <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#resetDataModal">
+            <i class="fa fa-trash me-1"></i> Delete All Data
+        </button>
+    </div>
+</div>
+
+<div class="modal fade" id="resetDataModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" method="POST" action="<?= BASE_URL ?>/modules/settings/factory_reset.php"
+          onsubmit="return confirm('FINAL WARNING: This permanently deletes ALL data. Continue?');">
+      <?= csrf_field() ?>
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title"><i class="fa fa-triangle-exclamation me-2"></i>Delete All Data</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">This will <strong>permanently delete every record</strong> in the system and keep
+           <strong>only your admin login</strong>. The application will be reset to a blank slate.</p>
+        <p class="text-danger fw-semibold mb-2">This action cannot be undone.</p>
+        <label class="form-label">Type <code>DELETE</code> to confirm:</label>
+        <input type="text" name="confirm" id="resetConfirmInput" class="form-control" autocomplete="off" placeholder="DELETE">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" id="resetConfirmBtn" class="btn btn-danger" disabled>
+          <i class="fa fa-trash me-1"></i> Permanently Delete Everything
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+    var input = document.getElementById('resetConfirmInput');
+    var btn   = document.getElementById('resetConfirmBtn');
+    if (input && btn) {
+        input.addEventListener('input', function () {
+            btn.disabled = (input.value.trim() !== 'DELETE');
+        });
+    }
+})();
+</script>
+<?php endif; ?>
+
 <?php
 // Scripts injected before </body> via footer.php's $page_scripts slot
 $page_scripts = '

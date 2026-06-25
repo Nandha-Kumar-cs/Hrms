@@ -1,15 +1,53 @@
 <?php
-$page_title = 'No-Due Clearance';
-require_once __DIR__ . '/../../includes/header.php';
+// Bootstrap + auth + POST handling run BEFORE any output so redirect() can send
+// its Location header cleanly (header.php emits HTML and is included further down).
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
 require_permission('assets');
 
-$db = db();
+$db     = db();
 $emp_id = (int)($_GET['emp_id'] ?? 0);
+$selfUrl = BASE_URL . '/modules/assets/clearance.php' . ($emp_id ? '?emp_id=' . $emp_id : '');
+
+// Handle return action (PRG redirect) — must be before header.php output.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
+    if (!csrf_verify()) { flash('error', 'Invalid request'); redirect($selfUrl); }
+    $asgn_id = (int)$_POST['assignment_id'];
+    $cond    = sanitize($_POST['condition_return']);
+    $db->prepare('UPDATE asset_assignments SET is_returned=1, returned_date=CURDATE(), condition_at_return=? WHERE id=?')
+       ->execute([$cond, $asgn_id]);
+    $db->prepare('UPDATE assets SET status="Available", `condition`=? WHERE id=(SELECT asset_id FROM asset_assignments WHERE id=?)')
+       ->execute([$cond, $asgn_id]);
+    flash('success', 'Asset returned.');
+    redirect($selfUrl);
+}
+
+// ── All redirects done — now it is safe to emit output. ──────────────────────
+$page_title = 'No-Due Clearance';
+// Print CSS — strip the app chrome (sidebar, topbar, selector, buttons) so only
+// the certificate prints. Must be set BEFORE header.php (echoed inside <head>).
+$extra_head = '<style>
+@media print {
+    #topbar, #sidebar, .sidebar-overlay, .page-head, .no-print, footer { display:none !important; }
+    .main-wrapper { margin:0 !important; }
+    #mainContent  { padding:0 !important; }
+    #clearanceCert { box-shadow:none !important; border:none !important; max-width:100% !important; margin:0 !important; }
+}
+</style>';
+require_once __DIR__ . '/../../includes/header.php';
+
 $employees = $db->query('SELECT id, name, employee_id, status FROM employees ORDER BY name')->fetchAll();
 
 $clearanceData = null;
 if ($emp_id) {
-    $emp = $db->prepare('SELECT e.*, d.name AS dept, des.name AS desig FROM employees e LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN designations des ON des.id=e.designation_id WHERE e.id=?');
+    $emp = $db->prepare('SELECT e.*, d.name AS dept, des.name AS desig,
+            ent.name AS entity_name, ent.address AS entity_address,
+            ent.city AS entity_city, ent.state AS entity_state, ent.pincode AS entity_pincode
+         FROM employees e
+         LEFT JOIN departments d ON d.id=e.department_id
+         LEFT JOIN designations des ON des.id=e.designation_id
+         LEFT JOIN entities ent ON ent.id=e.entity_id
+         WHERE e.id=?');
     $emp->execute([$emp_id]);
     $empData = $emp->fetch();
 
@@ -25,22 +63,9 @@ if ($emp_id) {
     $assigned->execute([$emp_id]);
     $assignments = $assigned->fetchAll();
 
-    $pending = array_filter($assignments, fn($a) => !$a['is_returned']);
+    $pending  = array_filter($assignments, fn($a) => !$a['is_returned']);
     $returned = array_filter($assignments, fn($a) => $a['is_returned']);
     $clearanceData = compact('empData','assignments','pending','returned');
-}
-
-// Handle return action
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
-    if (!csrf_verify()) { flash('error','Invalid request'); redirect('.'); }
-    $asgn_id = (int)$_POST['assignment_id'];
-    $cond = sanitize($_POST['condition_return']);
-    $db->prepare('UPDATE asset_assignments SET is_returned=1, returned_date=CURDATE(), condition_at_return=? WHERE id=?')
-       ->execute([$cond, $asgn_id]);
-    $db->prepare('UPDATE assets SET status="Available", `condition`=? WHERE id=(SELECT asset_id FROM asset_assignments WHERE id=?)')
-       ->execute([$cond, $asgn_id]);
-    flash('success','Asset returned.');
-    redirect('clearance.php?emp_id=' . $emp_id);
 }
 ?>
 
@@ -54,13 +79,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
         <button onclick="window.print()" class="btn btn-success no-print" accesskey="p" data-shortcut data-key="P">
             ⎙ <u>P</u>rint Certificate
         </button>
+        <a href="clearance_pdf.php?emp_id=<?= $emp_id ?>" target="_blank"
+           class="btn no-print" style="border-color:var(--danger);color:var(--danger)"
+           accesskey="d" data-shortcut data-key="D">
+            <i class="fa fa-file-pdf"></i> <u>D</u>ownload PDF
+        </a>
         <?php endif; ?>
         <a href="index.php" class="btn btn-ghost" accesskey="b" data-shortcut data-key="B"><u>B</u>ack</a>
     </div>
 </div>
 
 <!-- Employee selector -->
-<div class="card form-card" style="margin-bottom:18px">
+<div class="card form-card no-print" style="margin-bottom:18px">
     <form method="GET" style="display:flex;gap:12px;align-items:flex-end">
         <div class="field" style="margin-bottom:0;flex:1;max-width:400px">
             <label>Select Employee</label>
@@ -76,16 +106,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
     </form>
 </div>
 
-<?php if ($clearanceData): $ed = $clearanceData['empData']; ?>
+<?php if ($clearanceData): $ed = $clearanceData['empData'];
+    // Company header from the employee's entity (fallback to a configured entity, then constants).
+    $entRow = $ed;
+    if (empty($entRow['entity_name'])) {
+        $entRow = $db->query("SELECT name AS entity_name, address AS entity_address, city AS entity_city, state AS entity_state, pincode AS entity_pincode FROM entities ORDER BY id LIMIT 1")->fetch() ?: [];
+    }
+    $companyName = $entRow['entity_name'] ?? COMPANY_NAME;
+    if (!empty($entRow['entity_name'])) {
+        $cityLine       = trim(implode(' ', array_filter([$entRow['entity_city'] ?? '', $entRow['entity_state'] ?? '', $entRow['entity_pincode'] ?? ''])));
+        $companyAddress = trim(implode(', ', array_filter([$entRow['entity_address'] ?? '', $cityLine])));
+    } else {
+        $companyAddress = COMPANY_ADDRESS;
+    }
+?>
 
 <!-- Clearance Status -->
 <?php if ($clearanceData['pending']): ?>
-<div class="alert alert-warn">
+<div class="alert alert-warn no-print">
     ⚠ <strong><?= count($clearanceData['pending']) ?> asset(s) pending return.</strong>
     Clearance cannot be issued until all assets are returned.
 </div>
 <?php else: ?>
-<div class="alert alert-success">
+<div class="alert alert-success no-print">
     ✓ <strong>All clear!</strong> No pending assets. Clearance certificate can be generated.
 </div>
 <?php endif; ?>
@@ -94,8 +137,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
 <div class="card form-card" id="clearanceCert">
     <!-- Header (shown when printing) -->
     <div class="slip-header">
-        <h2><?= h(COMPANY_NAME) ?></h2>
-        <p class="muted small"><?= h(COMPANY_ADDRESS) ?></p>
+        <h2><?= h($companyName) ?></h2>
+        <p class="muted small"><?= h($companyAddress) ?></p>
         <h3 style="margin-top:12px;text-transform:uppercase;letter-spacing:.06em">No-Due Clearance Certificate</h3>
     </div>
 
@@ -205,6 +248,7 @@ function openReturnModal(id, name) {
 }
 window.PAGE_SHORTCUTS = {
     'p': () => window.print(),
+    'd': () => { <?php if ($emp_id): ?>window.open('clearance_pdf.php?emp_id=<?= $emp_id ?>', '_blank');<?php endif; ?> },
     'b': () => window.location.href = BASE_URL + '/modules/assets/index.php'
 };
 </script>

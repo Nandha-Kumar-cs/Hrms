@@ -2,10 +2,24 @@
 /**
  * Settings tab: Designations — CRUD (optionally linked to a department).
  * Included by ../index.php for the JSON phase (?ajax=1) and the view phase.
+ *
+ * Ported to match the reference Employee_Management Designations module:
+ * modal add/edit (name + department + status), department/status badges,
+ * per-column search, SweetAlert confirm/toast UX, and activity logging
+ * (with the "(Dept: …)" suffix) on every create/update/delete.
  */
 if (!defined('IN_SETTINGS')) { http_response_code(403); exit('Forbidden'); }
 
 $db = db();
+
+/** Department name for a given id, or null. */
+$deptName = function (?int $id) use ($db): ?string {
+    if (!$id) return null;
+    $s = $db->prepare('SELECT name FROM departments WHERE id = ?');
+    $s->execute([$id]);
+    $n = $s->fetchColumn();
+    return $n === false ? null : $n;
+};
 
 // ─── AJAX / JSON ─────────────────────────────────────────────────────────────
 if (!empty($_GET['ajax'])) {
@@ -21,13 +35,21 @@ if (!empty($_GET['ajax'])) {
         }
 
         if ($action === 'delete' && $id) {
-            $st = $db->prepare('SELECT COUNT(*) FROM employees WHERE designation_id = ?');
+            $st = $db->prepare('SELECT name FROM designations WHERE id = ?');
             $st->execute([$id]);
-            if ((int)$st->fetchColumn() > 0) {
+            $name = $st->fetchColumn();
+            if ($name === false) {
+                echo json_encode(['success' => false, 'message' => 'Designation not found.']);
+                exit;
+            }
+            $ec = $db->prepare('SELECT COUNT(*) FROM employees WHERE designation_id = ?');
+            $ec->execute([$id]);
+            if ((int)$ec->fetchColumn() > 0) {
                 echo json_encode(['success' => false, 'message' => 'Cannot delete — employees hold this designation.']);
                 exit;
             }
             $db->prepare('DELETE FROM designations WHERE id = ?')->execute([$id]);
+            activity_log('deleted', 'Designation', 'Deleted designation: ' . $name);
             echo json_encode(['success' => true, 'message' => 'Designation deleted.']);
             exit;
         }
@@ -46,15 +68,19 @@ if (!empty($_GET['ajax'])) {
         }
         if ($errors) { echo json_encode(['success' => false, 'message' => implode(' ', $errors)]); exit; }
 
+        $dn = $deptName($deptId);
+
         if ($action === 'create') {
             $st = $db->prepare('INSERT INTO designations (name, department_id, status) VALUES (?, ?, ?)');
             $st->execute([$name, $deptId, $status]);
+            activity_log('created', 'Designation', 'Created designation: ' . $name . ($dn ? " (Dept: $dn)" : ''));
             echo json_encode(['success' => true, 'message' => 'Designation created.']);
             exit;
         }
         if ($action === 'update' && $id) {
             $db->prepare('UPDATE designations SET name = ?, department_id = ?, status = ? WHERE id = ?')
                ->execute([$name, $deptId, $status, $id]);
+            activity_log('updated', 'Designation', 'Updated designation: ' . $name . ($dn ? " (Dept: $dn)" : ''));
             echo json_encode(['success' => true, 'message' => 'Designation updated.']);
             exit;
         }
@@ -92,7 +118,7 @@ $depts = $db->query('SELECT id, name FROM departments ORDER BY name')->fetchAll(
                         <td class="fw-semibold"><?= h($r['name']) ?></td>
                         <td><?= h($r['dept_name'] ?? '—') ?></td>
                         <td class="text-center"><?= (int)$r['emp_count'] ?></td>
-                        <td class="text-center"><span class="badge bg-<?= $r['status'] === 'active' ? 'success' : 'secondary' ?>"><?= ucfirst($r['status']) ?></span></td>
+                        <td class="text-center"><span class="badge bg-<?= $r['status'] === 'active' ? 'success' : 'danger' ?>"><?= ucfirst($r['status']) ?></span></td>
                         <td class="text-center text-nowrap">
                             <button class="btn btn-sm btn-outline-primary btn-edit-desig"
                                     data-id="<?= $r['id'] ?>" data-name="<?= h($r['name']) ?>"
@@ -102,6 +128,16 @@ $depts = $db->query('SELECT id, name FROM departments ORDER BY name')->fetchAll(
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
+                <tfoot>
+                    <tr class="desig-filter-row">
+                        <th></th>
+                        <th><input type="text" class="form-control form-control-sm" placeholder="Search name"></th>
+                        <th><input type="text" class="form-control form-control-sm" placeholder="Search dept"></th>
+                        <th><input type="text" class="form-control form-control-sm" placeholder="#"></th>
+                        <th><input type="text" class="form-control form-control-sm" placeholder="active / inactive"></th>
+                        <th></th>
+                    </tr>
+                </tfoot>
             </table>
         </div>
     </div>
@@ -146,18 +182,43 @@ $depts = $db->query('SELECT id, name FROM departments ORDER BY name')->fetchAll(
     </div>
 </div>
 
+<style>
+#desigTable tfoot th { padding: 6px 8px; }
+#desigTable tfoot input { width: 100%; font-weight: 400; }
+</style>
+
 <script>
 window.SET_URL_DESIG = '<?= BASE_URL ?>/modules/settings/index.php?ajax=1&tab=designations';
 window.SET_CSRF      = '<?= h(csrf_token()) ?>';
 </script>
 <?php $page_scripts = <<<'JS'
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
 $(function () {
     document.body.appendChild(document.getElementById('desigModal'));
     var modal = new bootstrap.Modal(document.getElementById('desigModal'));
-    if ($.fn.DataTable) $('#desigTable').DataTable({ pageLength: 25, order: [[1,'asc']], columnDefs: [{ orderable:false, targets:[0,5] }], language: { emptyTable: 'No designations defined.' } });
 
-    function showErr(msg){ $('#desigErr').html(msg).removeClass('d-none'); }
+    if ($.fn.DataTable) {
+        $('#desigTable').DataTable({
+            pageLength: 25,
+            order: [[1, 'asc']],
+            columnDefs: [{ orderable: false, targets: [0, 5] }],
+            orderCellsTop: true,
+            language: { emptyTable: 'No designations defined.' },
+            initComplete: function () {
+                // Per-column search boxes (Name / Department / Employees / Status).
+                this.api().columns([1, 2, 3, 4]).every(function () {
+                    var col = this, input = $('input', col.footer());
+                    if (!input.length) return;
+                    input.on('keyup change clear', function () {
+                        if (col.search() !== this.value) col.search(this.value).draw();
+                    });
+                });
+            }
+        });
+    }
+
+    function showErr(msg) { $('#desigErr').html(msg).removeClass('d-none'); }
 
     $('#btnAddDesig').on('click', function () {
         $('#desigModalTitle').text('Add Designation');
@@ -177,20 +238,43 @@ $(function () {
         e.preventDefault();
         var id = $('#desigId').val();
         var action = id ? 'update' : 'create';
+        $('#desigErr').addClass('d-none');
         $.post(window.SET_URL_DESIG + '&action=' + action + (id ? '&id=' + id : ''), {
             csrf_token: window.SET_CSRF, name: $('#desigName').val().trim(),
             department_id: $('#desigDept').val(), status: $('#desigStatus').val()
         }).done(function (res) {
-            if (res.success) location.reload(); else showErr(res.message || 'Save failed.');
+            if (res.success) {
+                modal.hide();
+                Swal.fire({ icon: 'success', title: res.message, timer: 1400, showConfirmButton: false })
+                    .then(function () { location.reload(); });
+            } else showErr(res.message || 'Save failed.');
         }).fail(function (x) { showErr(x.responseJSON && x.responseJSON.message || 'Save failed.'); });
     });
 
     $(document).on('click', '.btn-del-desig', function () {
         var b = $(this);
-        if (!confirm('Delete designation "' + b.data('name') + '"?')) return;
-        $.post(window.SET_URL_DESIG + '&action=delete&id=' + b.data('id'), { csrf_token: window.SET_CSRF })
-            .done(function (res) { if (res.success) location.reload(); else alert(res.message || 'Delete failed.'); })
-            .fail(function (x) { alert(x.responseJSON && x.responseJSON.message || 'Delete failed.'); });
+        Swal.fire({
+            title: 'Delete Designation?',
+            text: 'Delete "' + b.data('name') + '"? This cannot be undone.',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#e74a3b',
+            confirmButtonText: 'Yes, delete!'
+        }).then(function (r) {
+            if (!r.isConfirmed) return;
+            $.post(window.SET_URL_DESIG + '&action=delete&id=' + b.data('id'), { csrf_token: window.SET_CSRF })
+                .done(function (res) {
+                    if (res.success) {
+                        Swal.fire({ icon: 'success', title: res.message, timer: 1200, showConfirmButton: false })
+                            .then(function () { location.reload(); });
+                    } else {
+                        Swal.fire({ icon: 'error', title: 'Cannot delete', text: res.message || 'Delete failed.' });
+                    }
+                })
+                .fail(function (x) {
+                    Swal.fire({ icon: 'error', title: 'Error', text: (x.responseJSON && x.responseJSON.message) || 'Delete failed.' });
+                });
+        });
     });
 });
 </script>

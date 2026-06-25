@@ -44,7 +44,8 @@ if ($scopeEmp) {
     </div>
     <div class="head-actions">
         <?php if (can('letters','create')): ?>
-        <a href="create.php" class="btn btn-primary" accesskey="n" data-shortcut data-key="N">
+        <?php /* Pre-select the current letter type on the create form. */ ?>
+        <a href="create.php<?= $type_filter ? '?type=' . urlencode($type_filter) : '' ?>" class="btn btn-primary" accesskey="n" data-shortcut data-key="N">
             + <u>N</u>ew Letter
         </a>
         <?php endif; ?>
@@ -64,10 +65,13 @@ if ($scopeEmp) {
     <?php endforeach; ?>
 </div>
 
+<style>
+#tbl-letters tfoot th { padding: 6px 8px; }
+#tbl-letters tfoot input { width: 100%; padding: 4px 6px; font-size: 12px; font-weight: 400; box-sizing: border-box; }
+</style>
 <div class="card">
     <div class="card-head">
         <h3>Letters</h3>
-        <div class="search"><input type="search" placeholder="Search..." data-search></div>
     </div>
     <div class="card-body">
     <table class="data-table" id="tbl-letters">
@@ -126,6 +130,16 @@ if ($scopeEmp) {
         <!-- <tr><td colspan="6" class="empty">No letters found.</td></tr> -->
         <?php endif; ?>
         </tbody>
+        <tfoot>
+        <tr class="col-filter-row">
+            <th><input type="text" placeholder="Filter Employee"></th>
+            <th><input type="text" placeholder="Filter Type"></th>
+            <th><input type="text" placeholder="Filter Reference"></th>
+            <th><input type="text" placeholder="Filter Date"></th>
+            <th><input type="text" placeholder="Filter Status"></th>
+            <th></th>
+        </tr>
+        </tfoot>
     </table>
     </div>
 </div>
@@ -133,7 +147,7 @@ if ($scopeEmp) {
 <script>
 window.BASE_URL = '<?= BASE_URL ?>';
 window.PAGE_SHORTCUTS = {
-    'n': () => window.location.href = '<?= BASE_URL ?>/modules/letters/create.php'
+    'n': () => window.location.href = '<?= BASE_URL ?>/modules/letters/create.php<?= $type_filter ? '?type=' . urlencode($type_filter) : '' ?>'
 };
 </script>
 <?php $page_scripts = <<<'JS'
@@ -147,14 +161,26 @@ $(document).ready(function () {
             lengthMenu: 'Show _MENU_ rows',
             paginate: { previous: '‹', next: '›' }
         },
-        dom: '<"dt-top"lBf>rt<"dt-bottom"ip>',
+        dom: '<"dt-top"lB>rt<"dt-bottom"ip>',
         buttons: [
             { extend: 'excelHtml5', text: '↓ Excel', className: 'btn btn-sm' },
             { extend: 'print',      text: '⎙ Print', className: 'btn btn-sm' }
         ],
+        orderCellsTop: true,
         columnDefs: [
             { orderable: false, targets: [5] }
-        ]
+        ],
+        initComplete: function () {
+            // Per-column filter inputs in the table footer.
+            this.api().columns().every(function () {
+                var column = this;
+                var input  = $('input', column.footer());
+                if (!input.length) return;
+                input.on('keyup change clear', function () {
+                    if (column.search() !== this.value) column.search(this.value).draw();
+                });
+            });
+        }
     });
 });
 </script>

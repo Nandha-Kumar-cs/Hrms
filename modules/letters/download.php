@@ -18,11 +18,13 @@ $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/letters/index.php');
 
 $letter = db()->query("SELECT l.*, e.name AS emp_name, e.employee_id AS emp_code,
-    e.join_date, d.name AS dept_name, des.name AS designation,
+    e.join_date, e.gender, e.fixed_salary, e.variable_salary,
+    d.name AS dept_name, des.name AS designation,
     u.name AS issued_by_name,
     ent.name AS entity_name, ent.address AS entity_address, ent.city AS entity_city,
     ent.state AS entity_state, ent.pincode AS entity_pincode,
-    ent.email AS entity_email, ent.phone AS entity_phone, ent.logo AS entity_logo
+    ent.email AS entity_email, ent.phone AS entity_phone, ent.logo AS entity_logo,
+    ent.signature AS entity_signature, ent.signatory_title AS entity_signatory_title
     FROM letters l
     JOIN employees e ON l.employee_id = e.id
     LEFT JOIN departments d ON e.department_id = d.id
@@ -60,6 +62,20 @@ if (!empty($letter['entity_logo'])) {
             $mime = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'svg' => 'image/svg+xml'][$ext] ?? 'image/png';
         }
         $co_logo = 'data:' . $mime . ';base64,' . base64_encode((string)file_get_contents($logoPath));
+    }
+}
+// Signature image — embedded as a base64 data URI (same reason as the logo).
+$co_signature = null;
+if (!empty($letter['entity_signature'])) {
+    $sigPath = BASE_PATH . '/storage/entities/' . $letter['entity_signature'];
+    if (is_file($sigPath)) {
+        $sinfo = @getimagesize($sigPath);
+        $smime = $sinfo['mime'] ?? null;
+        if (!$smime) {
+            $sext  = strtolower(pathinfo($sigPath, PATHINFO_EXTENSION));
+            $smime = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'svg' => 'image/svg+xml'][$sext] ?? 'image/png';
+        }
+        $co_signature = 'data:' . $smime . ';base64,' . base64_encode((string)file_get_contents($sigPath));
     }
 }
 
@@ -118,7 +134,39 @@ ob_start(); ?>
     </div>
 <?php $headerHtml = ob_get_clean();
 
-// ── Build the letter body, per type, then assemble the PDF document. ──────────
+// ── Build the PDF body. Offer letters are reconstructed as the reference 2-page
+//    design (numbered terms + a salary breakup computed at render time from the
+//    salary components) so the breakup is always correct — never ₹0. Other types
+//    use the shared chrome below.
+$pdfFooterHtml = null;   // when set, rendered as a repeating page footer (mPDF)
+if ($letter['type'] === 'Offer') {
+    // Reconstructed offer letter (2-page reference design + computed salary
+    // breakup) — shared with the on-screen view via includes/offer_letter.php.
+    require_once __DIR__ . '/../../includes/offer_letter.php';
+    $offerData = offer_letter_data(db(), $letter);
+    $offerBody = offer_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo, 'signature' => $co_signature, 'signatory_title' => $letter['entity_signatory_title'] ?? ''], $offerData);
+    $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $offerBody . '</body></html>';
+    // Entity address as a repeating page footer on every page (mPDF).
+    $pdfFooterHtml = '<div style="border-top:1px solid #aaa;padding-top:4px;text-align:center;font-size:8pt;color:#555">'
+                   . h(trim($co_name . ($co_addr ? ' ' . $co_addr : ''))) . '</div>';
+} elseif ($letter['type'] === 'Increment') {
+    // Reconstructed increment letter (reference info-box design) — shared with
+    // the on-screen view via includes/increment_letter.php.
+    require_once __DIR__ . '/../../includes/increment_letter.php';
+    $incData = increment_letter_data($letter);
+    $incBody = increment_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'email' => $co_email, 'phone' => $co_phone, 'logo' => $co_logo], $incData);
+    $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $incBody . '</body></html>';
+} elseif ($letter['type'] === 'Confirmation') {
+    // Reconstructed confirmation letter (reference design) — shared with the
+    // on-screen view via includes/confirmation_letter.php.
+    require_once __DIR__ . '/../../includes/confirmation_letter.php';
+    $confData = confirmation_letter_data($letter);
+    $confBody = confirmation_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo], $confData);
+    $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $confBody . '</body></html>';
+    // Entity address as a repeating page footer on every page (mPDF).
+    $pdfFooterHtml = '<div style="border-top:1px solid #aaa;padding-top:4px;text-align:center;font-size:8pt;color:#555">'
+                   . h(trim($co_name . ($co_addr ? ' ' . $co_addr : ''))) . '</div>';
+} else {
 ob_start();
 ?>
 <!DOCTYPE html>
@@ -164,48 +212,9 @@ ob_start();
 <body>
 <?= $headerHtml ?>
 
-<?php if ($letter['type'] === 'Increment'):
-    $prev = $pick('Previous Monthly Gross');
-    $new  = $pick('Revised Monthly Gross');
-    $pctV = $rawnum($prev) > 0 ? round(($rawnum($new) - $rawnum($prev)) / $rawnum($prev) * 100, 2) : 0;
-?>
-    <h1>Salary Increment Letter</h1>
-
-    <p>Dear <strong><?= h($letter['emp_name']) ?></strong>,</p>
-    <p>We are pleased to inform you that the management has decided to revise your salary, effective <strong><?= h($effDate) ?></strong>. This reflects your outstanding contribution to the organization.</p>
-
-    <div class="info-box">
-        <div class="info-row"><div class="info-label">Employee Code:</div><div class="info-value"><?= h($letter['emp_code']) ?></div></div>
-        <div class="info-row"><div class="info-label">Name:</div><div class="info-value"><?= h($letter['emp_name']) ?></div></div>
-        <div class="info-row"><div class="info-label">Designation:</div><div class="info-value"><?= h($letter['designation'] ?: 'N/A') ?></div></div>
-        <div class="info-row"><div class="info-label">Department:</div><div class="info-value"><?= h($letter['dept_name'] ?: 'N/A') ?></div></div>
-        <div class="info-row"><div class="info-label">Previous CTC:</div><div class="info-value"><span class="old-sal">&#8377; <?= h($money($prev)) ?></span></div></div>
-        <div class="info-row"><div class="info-label">Revised CTC:</div><div class="info-value"><span class="new-sal">&#8377; <?= h($money($new)) ?></span></div></div>
-        <div class="info-row"><div class="info-label">Increment:</div><div class="info-value"><span class="pct-badge"><?= h(rtrim(rtrim(number_format($pctV, 2), '0'), '.')) ?>%</span></div></div>
-        <div class="info-row"><div class="info-label">Effective From:</div><div class="info-value"><?= h($effDate) ?></div></div>
-    </div>
-
-    <p>We appreciate your dedication and expect continued excellence in your work. Congratulations on this well-deserved recognition.</p>
-
-    <div class="signature-row">
-        <div class="sig-left">
-            <div class="sig-box">
-                <div><?= h($letter['emp_name']) ?></div>
-                <div class="sig-sub">Employee Acknowledgment</div>
-            </div>
-        </div>
-        <div class="sig-right">
-            <div class="sig-box" style="text-align:left">
-                <div><?= h($signName) ?></div>
-                <div class="sig-sub">Authorized Signatory</div>
-            </div>
-        </div>
-    </div>
-
-<?php else:
-    // Offer / Confirmation / Promotion — render the existing letter wording
-    // (unchanged) beneath the shared letterhead. Strip any duplicate company /
-    // date / ref header lines the body may already contain.
+<?php
+    // Confirmation / Promotion — render the existing letter wording beneath the
+    // shared letterhead. Strip any duplicate company/date/ref header lines.
     $lines = preg_split('/\r\n|\r|\n/', $content);
     $started = false; $bodyLines = [];
     foreach ($lines as $ln) {
@@ -223,13 +232,13 @@ ob_start();
         if (trim($para) === '') continue; ?>
         <div class="bodytext"><?= nl2br(h($para)) ?></div>
     <?php endforeach; ?>
-<?php endif; ?>
 
     <div class="footer"><?= $co_line ?></div>
 </body>
 </html>
 <?php
 $html = ob_get_clean();
+}
 
 // ─── Render: mPDF (best CSS fidelity) → TCPDF → printable HTML ────────────────
 $xamppRoot = dirname(__DIR__, 4);   // e.g. C:/xampp8.2
@@ -250,10 +259,13 @@ foreach ($mpdfAutoloads as $al) {
         if (!is_dir($tmp)) @mkdir($tmp, 0777, true);
         $mpdf = new \Mpdf\Mpdf([
             'mode' => 'utf-8', 'format' => 'A4',
-            'margin_left' => 28, 'margin_right' => 28, 'margin_top' => 24, 'margin_bottom' => 24,
+            'margin_left' => 26, 'margin_right' => 26, 'margin_top' => 16,
+            'margin_bottom' => !empty($pdfFooterHtml) ? 14 : 18,
+            'margin_footer' => 6,
             'tempDir' => is_dir($tmp) ? $tmp : sys_get_temp_dir(),
         ]);
         $mpdf->SetTitle($docTitle);
+        if (!empty($pdfFooterHtml)) $mpdf->SetHTMLFooter($pdfFooterHtml);
         $mpdf->WriteHTML($html);
         $mpdf->Output($filename, \Mpdf\Output\Destination::DOWNLOAD);
         exit;

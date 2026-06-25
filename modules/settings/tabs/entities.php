@@ -43,7 +43,6 @@ if (!empty($_GET['ajax'])) {
         $phone     = trim($_POST['phone'] ?? '');
         $email     = trim($_POST['email'] ?? '');
         $website   = trim($_POST['website'] ?? '');
-        $sigName   = trim($_POST['signatory_name'] ?? '');
         $sigTitle  = trim($_POST['signatory_title'] ?? '');
 
         $errors = [];
@@ -75,30 +74,58 @@ if (!empty($_GET['ajax'])) {
             }
         }
 
+        // Signature image upload (optional) — stored alongside logos.
+        $newSig = null;
+        if (!$errors && !empty($_FILES['signature']['name']) && $_FILES['signature']['error'] !== UPLOAD_ERR_NO_FILE) {
+            $f = $_FILES['signature'];
+            if ($f['error'] !== UPLOAD_ERR_OK) {
+                $errors[] = 'Signature upload failed.';
+            } elseif ($f['size'] > $LOGO_MAX) {
+                $errors[] = 'Signature must be 2 MB or smaller.';
+            } else {
+                $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
+                if (!in_array($ext, $LOGO_EXT, true)) {
+                    $errors[] = 'Signature must be a JPG, PNG, GIF, WEBP or SVG file.';
+                } else {
+                    if (!is_dir($LOGO_DIR)) @mkdir($LOGO_DIR, 0775, true);
+                    $newSig = 'sign_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+                    if (!move_uploaded_file($f['tmp_name'], $LOGO_DIR . '/' . $newSig)) {
+                        $errors[] = 'Could not save the uploaded signature.';
+                        $newSig = null;
+                    }
+                }
+            }
+        }
+
         if ($errors) {
             if ($newLogo && is_file($LOGO_DIR . '/' . $newLogo)) @unlink($LOGO_DIR . '/' . $newLogo);
+            if ($newSig  && is_file($LOGO_DIR . '/' . $newSig))  @unlink($LOGO_DIR . '/' . $newSig);
             echo json_encode(['success' => false, 'message' => implode(' ', $errors)]);
             exit;
         }
 
         if ($action === 'create') {
             $st = $db->prepare(
-                'INSERT INTO entities (name, address, city, state, pincode, phone, email, website, signatory_name, signatory_title, logo)
+                'INSERT INTO entities (name, address, city, state, pincode, phone, email, website, signatory_title, logo, signature)
                  VALUES (?,?,?,?,?,?,?,?,?,?,?)'
             );
-            $st->execute([$name, $address, $city, $state, $pincode, $phone, $email, $website, $sigName, $sigTitle, $newLogo]);
+            $st->execute([$name, $address, $city, $state, $pincode, $phone, $email, $website, $sigTitle, $newLogo, $newSig]);
             echo json_encode(['success' => true, 'message' => 'Entity created.']);
             exit;
         }
         if ($action === 'update' && $id) {
-            $cur = $db->prepare('SELECT logo FROM entities WHERE id = ?');
+            $cur = $db->prepare('SELECT logo, signature FROM entities WHERE id = ?');
             $cur->execute([$id]);
-            $oldLogo = $cur->fetchColumn();
-            $logo    = $newLogo ?: $oldLogo;
+            $old      = $cur->fetch();
+            $oldLogo  = $old['logo'] ?? null;
+            $oldSig   = $old['signature'] ?? null;
+            $logo     = $newLogo ?: $oldLogo;
+            $sig      = $newSig  ?: $oldSig;
             $db->prepare(
-                'UPDATE entities SET name=?, address=?, city=?, state=?, pincode=?, phone=?, email=?, website=?, signatory_name=?, signatory_title=?, logo=? WHERE id=?'
-            )->execute([$name, $address, $city, $state, $pincode, $phone, $email, $website, $sigName, $sigTitle, $logo, $id]);
+                'UPDATE entities SET name=?, address=?, city=?, state=?, pincode=?, phone=?, email=?, website=?, signatory_title=?, logo=?, signature=? WHERE id=?'
+            )->execute([$name, $address, $city, $state, $pincode, $phone, $email, $website, $sigTitle, $logo, $sig, $id]);
             if ($newLogo && $oldLogo && $oldLogo !== $newLogo && is_file($LOGO_DIR . '/' . $oldLogo)) @unlink($LOGO_DIR . '/' . $oldLogo);
+            if ($newSig  && $oldSig  && $oldSig  !== $newSig  && is_file($LOGO_DIR . '/' . $oldSig))  @unlink($LOGO_DIR . '/' . $oldSig);
             echo json_encode(['success' => true, 'message' => 'Entity updated.']);
             exit;
         }
@@ -151,7 +178,7 @@ $rows = $db->query('SELECT * FROM entities ORDER BY name')->fetchAll();
                                     data-phone="<?= h($r['phone'] ?? '') ?>"
                                     data-email="<?= h($r['email'] ?? '') ?>"
                                     data-website="<?= h($r['website'] ?? '') ?>"
-                                    data-signame="<?= h($r['signatory_name'] ?? '') ?>"
+                                    data-signature="<?= h($r['signature'] ?? '') ?>"
                                     data-sigtitle="<?= h($r['signatory_title'] ?? '') ?>"><i class="fa fa-pen"></i></button>
                             <button class="btn btn-sm btn-outline-danger btn-del-ent" data-id="<?= $r['id'] ?>" data-name="<?= h($r['name']) ?>"><i class="fa fa-trash"></i></button>
                         </td>
@@ -218,8 +245,10 @@ $rows = $db->query('SELECT * FROM entities ORDER BY name')->fetchAll();
                 </div>
                 <div class="row">
                     <div class="col-md-6 mb-1">
-                        <label class="form-label fw-semibold">Signatory Name</label>
-                        <input type="text" id="entSigName" class="form-control" maxlength="255">
+                        <label class="form-label fw-semibold">Signature Image</label>
+                        <input type="file" id="entSignature" class="form-control" accept=".jpg,.jpeg,.png,.gif,.webp,.svg">
+                        <small class="text-muted d-block" id="entSigCurrent"></small>
+                        <div class="form-text">Used as the authorised signature on the Offer Letter. Max 2 MB. Leave blank to keep existing.</div>
                     </div>
                     <div class="col-md-6 mb-1">
                         <label class="form-label fw-semibold">Signatory Title</label>
@@ -248,8 +277,9 @@ $(function () {
 
     function showErr(msg){ $('#entErr').html(msg).removeClass('d-none'); }
     function clearForm(){
-        $('#entId,#entName,#entAddress,#entCity,#entState,#entPincode,#entPhone,#entEmail,#entWebsite,#entSigName,#entSigTitle').val('');
-        $('#entLogo').val('');
+        $('#entId,#entName,#entAddress,#entCity,#entState,#entPincode,#entPhone,#entEmail,#entWebsite,#entSigTitle').val('');
+        $('#entLogo,#entSignature').val('');
+        $('#entSigCurrent').text('');
     }
 
     $('#btnAddEnt').on('click', function () {
@@ -269,8 +299,8 @@ $(function () {
         $('#entPhone').val(b.data('phone'));
         $('#entEmail').val(b.data('email'));
         $('#entWebsite').val(b.data('website'));
-        $('#entSigName').val(b.data('signame'));
         $('#entSigTitle').val(b.data('sigtitle'));
+        $('#entSigCurrent').text(b.data('signature') ? 'Current: ' + b.data('signature') : 'No signature uploaded');
         $('#entErr').addClass('d-none'); modal.show();
     });
 
@@ -288,10 +318,11 @@ $(function () {
         fd.append('phone', $('#entPhone').val().trim());
         fd.append('email', $('#entEmail').val().trim());
         fd.append('website', $('#entWebsite').val().trim());
-        fd.append('signatory_name', $('#entSigName').val().trim());
         fd.append('signatory_title', $('#entSigTitle').val().trim());
         var logo = $('#entLogo')[0].files[0];
         if (logo) fd.append('logo', logo);
+        var sig = $('#entSignature')[0].files[0];
+        if (sig) fd.append('signature', sig);
 
         $.ajax({
             url: window.SET_URL_ENT + '&action=' + action + (id ? '&id=' + id : ''),

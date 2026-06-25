@@ -121,6 +121,14 @@ $heading = $isEdit ? 'Edit Benefit Fund' : 'Assign Benefit Fund';
                     </div>
                 </div>
                 <div class="col-md-6">
+                    <label class="form-label fw-semibold">Payment Mode <span class="text-danger">*</span></label>
+                    <select name="payment_mode" class="form-select" required>
+                        <option value="cash"     <?= ($old['payment_mode'] ?? 'cash') === 'cash'     ? 'selected' : '' ?>>Cash</option>
+                        <option value="cashless" <?= ($old['payment_mode'] ?? '')     === 'cashless' ? 'selected' : '' ?>>Cashless</option>
+                    </select>
+                    <div class="form-text">How is this benefit paid out?</div>
+                </div>
+                <div class="col-md-6">
                     <label class="form-label fw-semibold">Benefit Name (Optional)</label>
                     <input type="text" name="benefit_name" class="form-control" maxlength="255" value="<?= h($old['benefit_name'] ?? '') ?>" placeholder="e.g. 'Education Fund 2026'">
                     <div class="form-text">Custom name for this benefit. If empty, uses fund type name.</div>

@@ -506,10 +506,12 @@ elseif ($screen === 'edit'): ?>
 <?php
 /* ═══════════════ LIST SCREEN ═══════════════ */
 else:
+    // Only PENDING requests live here. Once approved/rejected, a request leaves
+    // this list and is visible on the Leave History page instead.
     $rowsSql = "SELECT lr.*, e.name AS emp_name, e.employee_id AS emp_code, lt.name AS type_name
                 FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN leave_types lt ON lt.id=lr.leave_type_id";
-    if ($isEmployee) { $rs = $db->prepare($rowsSql . " WHERE lr.employee_id=? ORDER BY lr.created_at DESC, lr.id DESC"); $rs->execute([$selfEmpId]); $rows = $rs->fetchAll(); }
-    else             { $rows = $db->query($rowsSql . " ORDER BY lr.created_at DESC, lr.id DESC")->fetchAll(); }
+    if ($isEmployee) { $rs = $db->prepare($rowsSql . " WHERE lr.employee_id=? AND lr.admin_approval_status='pending' ORDER BY lr.created_at DESC, lr.id DESC"); $rs->execute([$selfEmpId]); $rows = $rs->fetchAll(); }
+    else             { $rows = $db->query($rowsSql . " WHERE lr.admin_approval_status='pending' ORDER BY lr.created_at DESC, lr.id DESC")->fetchAll(); }
 ?>
 <div class="card page-card">
     <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -546,15 +548,24 @@ else:
                         </td>
                     </tr>
                 <?php endforeach; ?>
+                <?php if (!$rows): ?>
+                    <tr><td colspan="7" class="text-center text-muted py-5">
+                        <i class="fa fa-calendar-check fa-2x mb-2 d-block text-secondary"></i>
+                        No pending leave requests. Approved &amp; rejected requests appear in
+                        <a href="<?= BASE_URL ?>/modules/attendance/leave_history.php">Leave History</a>.
+                    </td></tr>
+                <?php endif; ?>
                 </tbody>
             </table>
         </div>
     </div>
 </div>
+<script>window.LEAVE_HAS_ROWS = <?= $rows ? 'true' : 'false' ?>;</script>
 <?php $page_scripts = <<<'JS'
 <script>
 $(function () {
-    if ($.fn.DataTable) $('#leaveTable').DataTable({ pageLength: 25, order: [[3,'desc']], columnDefs: [{ orderable:false, targets:[2,4,5,6] }], language: { search:'', searchPlaceholder:'Search…' } });
+    // Skip DataTables on the empty-state row (its colspan would trigger a column-count warning).
+    if (window.LEAVE_HAS_ROWS && $.fn.DataTable) $('#leaveTable').DataTable({ pageLength: 25, order: [[3,'desc']], columnDefs: [{ orderable:false, targets:[2,4,5,6] }], language: { search:'', searchPlaceholder:'Search…' } });
     $('#leaveTable').on('submit', '.leave-delete-form', function (e) {
         if (!confirm('Delete this leave request?\nApproved requests will have their balance and attendance automatically reversed.')) e.preventDefault();
     });

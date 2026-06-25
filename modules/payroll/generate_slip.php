@@ -26,16 +26,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $month    = (int)($_POST['month'] ?? 0);
     $year     = (int)($_POST['year'] ?? 0);
     $forceReg = !empty($_POST['force_regenerate']);
+    $paidLeaves = max(0, (int)($_POST['paid_leaves'] ?? 0));   // admin-entered paid leave days (reduce absent)
 
     // ── Validate inputs ──────────────────────────────────────────────────────
     $errors = [];
     if (!$empId)               $errors[] = 'Please select an employee.';
     if ($month < 1 || $month > 12) $errors[] = 'Please select a valid month.';
     if ($year < 2000 || $year > 2099) $errors[] = 'Please select a valid year.';
+    // Block future months — payroll cannot be run before the month has started
+    // (otherwise e.g. a loan EMI gets deducted for a month that hasn't happened).
+    if ($month >= 1 && $month <= 12 && $year >= 2000
+        && mktime(0, 0, 0, $month, 1, $year) > mktime(0, 0, 0, (int)date('n'), 1, (int)date('Y'))) {
+        $errors[] = 'Cannot generate a salary slip for a future month ('
+                  . date('F Y', mktime(0, 0, 0, $month, 1, $year))
+                  . '). Payroll is only allowed for the current or a past month.';
+    }
 
     if ($errors) {
         flash('error', implode(' ', $errors));
-        redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId);
+        redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId . '&month=' . $month . '&year=' . $year);
     }
 
     // ── Load employee ────────────────────────────────────────────────────────
@@ -61,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($fixedSalary <= 0) {
         flash('error', 'No salary structure found for ' . h($employee['name']) . '. Please set up a salary structure first.');
-        redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId);
+        redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId . '&month=' . $month . '&year=' . $year);
     }
 
     // ── Load salary components ───────────────────────────────────────────────
@@ -76,18 +85,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($existing && !$forceReg) {
         // Store slip exists info in session and redirect back to form
         $_SESSION['slip_exists'] = [
-            'slip_id'   => $existing['id'],
-            'net_pay'   => $existing['net_pay'],
-            'month'     => $month,
-            'year'      => $year,
-            'emp_id'    => $empId,
-            'emp_name'  => $employee['name'],
+            'slip_id'    => $existing['id'],
+            'net_pay'    => $existing['net_pay'],
+            'month'      => $month,
+            'year'       => $year,
+            'emp_id'     => $empId,
+            'emp_name'   => $employee['name'],
+            'paid_leaves'=> $paidLeaves,
         ];
         redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId . '&month=' . $month . '&year=' . $year);
     }
 
     // ── Run payroll calculation ──────────────────────────────────────────────
-    $result = $calc->computePayroll($employee, $components, $month, $year, $fixedSalary, $variableSalary);
+    // persist=true → store per-day worked hours + deduction on attendance rows (audit).
+    // $paidLeaves → admin-entered paid leave days that convert that many absent days to paid.
+    $result = $calc->computePayroll($employee, $components, $month, $year, $fixedSalary, $variableSalary, true, $paidLeaves);
 
     // Fold in the employee's active Benefits & approved Bonuses (earnings) and
     // active Loan/Advance EMIs (deduction). Core formulas are untouched — gross,
@@ -215,12 +227,17 @@ require_once __DIR__ . '/../../includes/header.php';
                 <a href="<?= BASE_URL ?>/modules/payroll/slip.php?id=<?= $slipExists['slip_id'] ?>" class="btn btn-sm btn-outline-info">
                     <i class="fa fa-eye"></i> View Existing Payslip
                 </a>
-                <form method="POST" style="display:inline" onsubmit="return confirm('Regenerate salary slip?\n\nThis will overwrite the existing slip with a fresh calculation.')">
+                <form method="POST" class="d-flex align-items-end gap-2" onsubmit="return confirm('Regenerate salary slip?\n\nThis will overwrite the existing slip with a fresh calculation.')">
                     <?= csrf_field() ?>
                     <input type="hidden" name="employee_id" value="<?= $slipExists['emp_id'] ?>">
                     <input type="hidden" name="month" value="<?= $slipExists['month'] ?>">
                     <input type="hidden" name="year" value="<?= $slipExists['year'] ?>">
                     <input type="hidden" name="force_regenerate" value="1">
+                    <div>
+                        <label class="form-label small mb-1">Paid Leaves (days)</label>
+                        <input type="number" name="paid_leaves" class="form-control form-control-sm" min="0" step="1"
+                               value="<?= (int)($slipExists['paid_leaves'] ?? 0) ?>" style="max-width:120px">
+                    </div>
                     <button type="submit" class="btn btn-sm btn-warning">
                         <i class="fa fa-refresh"></i> Regenerate Payslip
                     </button>
@@ -251,7 +268,7 @@ require_once __DIR__ . '/../../includes/header.php';
                             data-fixed="<?= (float)$e['fixed_salary'] ?>"
                             data-name="<?= h($e['name']) ?>"
                             data-edit="<?= BASE_URL . '/modules/employee/edit.php?id=' . $e['id'] ?>"
-                            <?= $preEmpId === $e['id'] ? 'selected' : '' ?>>
+                            <?= $preEmpId == $e['id'] ? 'selected' : '' ?>>
                             <?= h($e['name']) ?> (<?= h($e['emp_code']) ?>)
                             <?= $e['dept_name'] ? ' — ' . h($e['dept_name']) : '' ?>
                         </option>
@@ -286,6 +303,15 @@ require_once __DIR__ . '/../../includes/header.php';
                             </option>
                             <?php endforeach; ?>
                         </select>
+                    </div>
+                </div>
+
+                <div style="margin-top:12px">
+                    <label class="form-label">Paid Leaves (days)</label>
+                    <input type="number" name="paid_leaves" class="form-control" min="0" step="1" value="0" style="max-width:160px">
+                    <div class="form-text">
+                        Number of absent days to treat as <strong>paid leave</strong> this month — those days are
+                        <strong>not deducted</strong>. e.g. 4 absent &amp; 2 paid leaves entered → only 2 days deducted.
                     </div>
                 </div>
 

@@ -23,6 +23,11 @@ $managers = $db->query(
      WHERE status = 'Active' ORDER BY name"
 )->fetchAll(PDO::FETCH_ASSOC);
 
+$lunchBatches = [];
+try {
+    $lunchBatches = $db->query("SELECT id, name, start_time, end_time FROM lunch_batches ORDER BY start_time")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) { /* table absent */ }
+
 // ── Repopulate on validation failure ─────────────────────────────────────────
 $old = $_SESSION['form_old'] ?? [];
 unset($_SESSION['form_old']);
@@ -161,6 +166,19 @@ $sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match 
                         </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Lunch Batch</label>
+                    <select name="lunch_batch_id" class="form-select">
+                        <option value="">Default lunch</option>
+                        <?php foreach ($lunchBatches as $lb): ?>
+                        <option value="<?= $lb['id'] ?>" <?= $sel('lunch_batch_id', $lb['id']) ?>>
+                            <?= h($lb['name']) ?> (<?= h(date('h:i A', strtotime($lb['start_time']))) ?>–<?= h(date('h:i A', strtotime($lb['end_time']))) ?>)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Staggered lunch window used in salary calculation.</div>
                 </div>
 
                 <div class="col-md-4">
@@ -396,6 +414,27 @@ function removePhoto() {
     if (initDept) {
         filterDesignations(initDept, <?= (int)($_desig_repop) ?>);
     }
+})();
+
+// ── Joining Date → Probation End (auto +6 months probation period) ───────────
+(function () {
+    var $join = $('[name="joining_date"]');
+    var $prob = $('[name="probation_end"]');
+    function calcProbation() {
+        var v = $join.val();
+        if (!v) return;
+        var d = new Date(v + 'T00:00:00');
+        if (isNaN(d.getTime())) return;
+        d.setMonth(d.getMonth() + 6);   // company probation period = 6 months
+        $prob.val(
+            d.getFullYear() + '-' +
+            String(d.getMonth() + 1).padStart(2, '0') + '-' +
+            String(d.getDate()).padStart(2, '0')
+        );
+    }
+    $join.on('change', calcProbation);
+    // On reload, fill probation only when the user hasn't already set it.
+    if ($join.val() && !$prob.val()) calcProbation();
 })();
 </script>
 <?php $page_scripts = ob_get_clean(); ?>

@@ -69,13 +69,17 @@ $docIcons = [
                 <?php endforeach; ?>
             </select>
             <?php if ($emp_filter): ?>
-            <a href="<?= BASE_URL ?>/modules/documents/create.php?emp_id=<?= $emp_filter ?>" class="btn btn-primary btn-sm text-nowrap">
+            <a href="<?= BASE_URL ?>/modules/documents/create.php?emp_id=<?= $emp_filter ?>&from=docs" class="btn btn-primary btn-sm text-nowrap">
                 <i class="fa fa-upload me-1"></i>Upload
             </a>
             <?php endif; ?>
         </form>
     </div>
     <div class="card-body">
+        <style>
+        #docTable tfoot th { padding: 6px 8px; background: #f8f9fa; }
+        #docTable tfoot input { width: 100%; padding: 4px 6px; font-size: 12px; font-weight: 400; box-sizing: border-box; }
+        </style>
         <div class="table-responsive">
             <table class="table table-hover table-bordered align-middle mb-0" id="docTable">
                 <thead class="table-dark">
@@ -125,6 +129,17 @@ $docIcons = [
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
+                <tfoot>
+                    <tr class="col-filter-row">
+                        <th></th>
+                        <th><input type="text" placeholder="Filter Employee"></th>
+                        <th><input type="text" placeholder="Filter Type"></th>
+                        <th><input type="text" placeholder="Filter Document"></th>
+                        <th><input type="text" placeholder="Filter Size"></th>
+                        <th><input type="text" placeholder="Filter Uploaded"></th>
+                        <th></th>
+                    </tr>
+                </tfoot>
             </table>
         </div>
     </div>
@@ -138,7 +153,19 @@ $(function () {
             pageLength: 25,
             order: [[5, 'desc']],
             columnDefs: [{ orderable: false, targets: [0, 6] }],
-            language: { emptyTable: 'No documents uploaded yet.' }
+            language: { emptyTable: 'No documents uploaded yet.' },
+            orderCellsTop: true,
+            initComplete: function () {
+                // Per-column filter inputs in the table footer.
+                this.api().columns().every(function () {
+                    var column = this;
+                    var input  = $('input', column.footer());
+                    if (!input.length) return;
+                    input.on('keyup change clear', function () {
+                        if (column.search() !== this.value) column.search(this.value).draw();
+                    });
+                });
+            }
         });
     }
 });

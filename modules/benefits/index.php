@@ -110,7 +110,11 @@ $employees = scope_employees_for_dropdown($db);
                             <div class="fw-semibold"><?= h(!empty($b['benefit_name']) ? $b['benefit_name'] : $b['fund_type']) ?></div>
                             <?php if (!empty($b['benefit_name'])): ?><small class="text-muted"><?= h($b['fund_type']) ?></small><?php endif; ?>
                         </td>
-                        <td class="text-end fw-semibold text-success"><?= money($b['amount']) ?></td>
+                        <td class="text-end fw-semibold text-success">
+                            <?= money($b['amount']) ?>
+                            <?php $pm = $b['payment_mode'] ?? 'cash'; ?>
+                            <div><span class="badge <?= $pm === 'cash' ? 'bg-success' : 'bg-secondary' ?>" style="font-size:.62rem;font-weight:500"><?= $pm === 'cash' ? 'Cash' : 'Cashless' ?></span></div>
+                        </td>
                         <td>
                             <?php if ($recurring): ?>
                             <span class="badge bg-info"><?= h($freqLabels[$b['frequency']] ?? ucfirst((string)$b['frequency'])) ?></span>

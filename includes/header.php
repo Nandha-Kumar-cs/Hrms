@@ -41,7 +41,9 @@ try {
 } catch (Exception $_e) { /* non-fatal */ }
 
 // ── Pre-compute collapsed/open state for each submenu group ──────────────────
-$_empActive  = _sb_active('/modules/employee/', '/modules/letters/');
+// history_report.php lives under /modules/employee/ URL-wise but belongs to the Reports nav
+// section — exclude it so the Employees accordion doesn't also open/highlight on that page.
+$_empActive  = (_sb_active('/modules/employee/', '/modules/letters/') && !_sb_active('/employee/history_report')) ? 'active' : '';
 $_assetActive = _sb_active('/modules/assets/');
 // salary_components.php lives under /payroll/ URL-wise but belongs to the Settings nav section.
 // Keep $_payActive narrow so it does NOT match salary_components.
@@ -54,10 +56,11 @@ $_salCompActive = _sb_active('/payroll/salary_components');
 $_genSlipActive = _sb_active('/payroll/generate_slip');
 $_calcActive    = _sb_active('/payroll/calculate');
 $_attActive  = _sb_active('/modules/attendance/', '/modules/holidays/');
-$_repActive  = _sb_active('report=');
+$_repActive  = _sb_active('/payroll/benefits_report', '/payroll/bonus_report',
+                           '/employee/history_report', '/payroll/payroll_impact_report');
 // Include salary_components in settings group so the Settings accordion opens on that page.
 $_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/',
-                           '/payroll/salary_components', '/settings/ot.php', '/settings/grace.php');
+                           '/payroll/salary_components', '/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php');
 
 // ── Navbar: role badge colour map ─────────────────────────────────────────────
 $_roleColours = [
@@ -118,6 +121,9 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
     #sidebar.collapsed .nav-chevron,
     #sidebar.collapsed .sidebar-section,
     #sidebar.collapsed .sidebar-bottom-text { display: none !important; }
+    /* When collapsed, never show open submenus (their text would overflow the rail). */
+    #sidebar.collapsed .sidebar-nav .collapse,
+    #sidebar.collapsed .sidebar-submenu { display: none !important; }
     #sidebar.collapsed .sidebar-brand-icon { margin: 0 auto; }
     #sidebar.collapsed .sidebar-nav .nav-link { justify-content: center; padding: 10px 0; }
     #sidebar.collapsed #sidebarCollapseIcon { transform: rotate(180deg); }
@@ -349,7 +355,7 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                     <?php if (can('employee', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/employee/index.php"
-                           class="nav-link <?= _sb_active('/modules/employee/') ?>">
+                           class="nav-link <?= (_sb_active('/modules/employee/') && !_sb_active('/employee/history_report')) ? 'active' : '' ?>">
                             Employees List
                         </a>
                     </li>
@@ -550,6 +556,12 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                             Leave History
                         </a>
                     </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/attendance/leave_status.php"
+                           class="nav-link <?= _sb_active('/attendance/leave_status') ?>">
+                            Leave Status
+                        </a>
+                    </li>
                     <?php endif; ?>
                     <?php if (can('holidays', 'view')): ?>
                     <li>
@@ -742,15 +754,9 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/ot.php"
-                           class="nav-link <?= _sb_active('/settings/ot.php') ?>">
-                            OT Settings
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/grace.php"
-                           class="nav-link <?= _sb_active('/settings/grace.php') ?>">
-                            Grace Settings
+                        <a href="<?= BASE_URL ?>/modules/settings/office.php"
+                           class="nav-link <?= _sb_active('/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php') ?>">
+                            Office Settings
                         </a>
                     </li>
                     <?php endif; ?>
@@ -784,16 +790,10 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
     <nav id="topbar">
         <!-- Left: hamburger + breadcrumb -->
         <div class="d-flex align-items-center gap-3">
-            <!-- Mobile hamburger -->
+            <!-- Mobile hamburger (opens the off-canvas sidebar on small screens only) -->
             <button id="sidebarToggleMobile"
                     class="btn btn-sm btn-outline-secondary d-md-none"
                     title="Toggle menu">
-                <i class="fa fa-bars"></i>
-            </button>
-            <!-- Desktop collapse toggle (mirrors sidebar bottom btn) -->
-            <button id="sidebarToggleDesktop"
-                    class="btn btn-sm btn-outline-secondary d-none d-md-inline-flex align-items-center"
-                    title="Toggle sidebar">
                 <i class="fa fa-bars"></i>
             </button>
             <nav aria-label="breadcrumb">

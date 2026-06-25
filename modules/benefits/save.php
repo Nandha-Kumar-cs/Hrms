@@ -24,6 +24,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_benefits (
     amount DECIMAL(10,2) NOT NULL DEFAULT 0,
     effective_month DATE NOT NULL,
     status ENUM(\'active\',\'inactive\') DEFAULT \'active\',
+    payment_mode ENUM(\'cash\',\'cashless\') NOT NULL DEFAULT \'cash\',
     added_by INT NULL,
     description TEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -39,6 +40,7 @@ $start_date   = trim($_POST['start_date'] ?? '') ?: null;
 $end_date     = trim($_POST['end_date'] ?? '') ?: null;
 $effRaw       = trim($_POST['effective_month'] ?? '');
 $status       = in_array($_POST['status'] ?? '', ['active','inactive'], true) ? $_POST['status'] : 'active';
+$payment_mode = in_array($_POST['payment_mode'] ?? '', ['cash','cashless'], true) ? $_POST['payment_mode'] : 'cash';
 $description  = trim($_POST['description'] ?? '') ?: null;
 
 // Resolve the fund-type name (also cached in legacy fund_type for slips/reports).
@@ -53,6 +55,9 @@ $errors = [];
 if (!$emp_id)                  $errors[] = 'Invalid employee.';
 if (!$fundTypeId || !$ftName)  $errors[] = 'Benefit Fund Type is required.';
 if ($amount <= 0)              $errors[] = 'Amount must be greater than zero.';
+// No salary → no benefit (benefits are paid through the salary slip).
+if ($emp_id && !$id && !employee_has_salary($emp_id))
+    $errors[] = 'This employee has no salary configured. Set their salary before assigning a benefit.';
 // Frequency required when a start date is given (recurring mode).
 if ($start_date && ($frequencyRaw === '' || !in_array($frequencyRaw, $freqList, true)))
     $errors[] = 'Please select a frequency when a start date is provided.';
@@ -79,14 +84,14 @@ else                         $effective_month = date('Y-m-01');
 $fund_type = $benefit_name ?: $ftName;
 
 if ($id) {
-    $db->prepare('UPDATE employee_benefits SET benefit_fund_type_id=?, frequency=?, start_date=?, end_date=?, benefit_name=?, fund_type=?, amount=?, effective_month=?, status=?, description=? WHERE id=?')
-       ->execute([$fundTypeId, $frequency, $start_date, $end_date, $benefit_name, $fund_type, $amount, $effective_month, $status, $description, $id]);
+    $db->prepare('UPDATE employee_benefits SET benefit_fund_type_id=?, frequency=?, start_date=?, end_date=?, benefit_name=?, fund_type=?, amount=?, payment_mode=?, effective_month=?, status=?, description=? WHERE id=?')
+       ->execute([$fundTypeId, $frequency, $start_date, $end_date, $benefit_name, $fund_type, $amount, $payment_mode, $effective_month, $status, $description, $id]);
     activity_log('updated', 'Benefit', 'Updated benefit (' . $fund_type . ') for ' . activity_emp_label($emp_id)
         . ': ₹' . number_format($amount, 2) . ' (' . ucfirst($status) . ')');
     flash('success', 'Benefit updated successfully.');
 } else {
-    $db->prepare('INSERT INTO employee_benefits (employee_id,benefit_fund_type_id,frequency,start_date,end_date,benefit_name,fund_type,amount,effective_month,status,added_by,description) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-       ->execute([$emp_id, $fundTypeId, $frequency, $start_date, $end_date, $benefit_name, $fund_type, $amount, $effective_month, $status, (int)($user['id'] ?? 0) ?: null, $description]);
+    $db->prepare('INSERT INTO employee_benefits (employee_id,benefit_fund_type_id,frequency,start_date,end_date,benefit_name,fund_type,amount,payment_mode,effective_month,status,added_by,description) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+       ->execute([$emp_id, $fundTypeId, $frequency, $start_date, $end_date, $benefit_name, $fund_type, $amount, $payment_mode, $effective_month, $status, (int)($user['id'] ?? 0) ?: null, $description]);
     $msg = 'Added benefit (' . $fund_type . ') for ' . activity_emp_label($emp_id) . ': ₹' . number_format($amount, 2);
     if ($start_date) {
         $msg .= ', ' . ucfirst(str_replace('_', '-', $frequency)) . ' from ' . date('d M Y', strtotime($start_date))
