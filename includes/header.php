@@ -24,21 +24,33 @@ function _sb_active(string ...$fragments): string {
     return '';
 }
 
-// ── Entity logo lookup ────────────────────────────────────────────────────────
-$_sbLogoUrl = null;
+// ── Sidebar brand (name + logo) ───────────────────────────────────────────────
+// Priority for the logo: 1) Settings → Branding upload, 2) an entity logo,
+// 3) the bundled MagDyn SVG fallback. Brand name comes from Branding settings.
+$_sbBrandName = (string) setting_get('brand_name', 'HRMS');
+$_sbLogoUrl   = null;
 try {
-    $stmt = db()->prepare(
-        "SELECT logo FROM entities
-         WHERE (name LIKE '%magneto%' OR name LIKE '%dynamics%')
-           AND logo IS NOT NULL AND logo != ''
-         LIMIT 1"
-    );
-    $stmt->execute();
-    $logoFile = $stmt->fetchColumn();
-    if ($logoFile && file_exists(BASE_PATH . '/storage/entities/' . $logoFile)) {
-        $_sbLogoUrl = BASE_URL . '/storage/entities/' . $logoFile;
+    $brandLogo = (string) setting_get('brand_logo', '');
+    if ($brandLogo && file_exists(BASE_PATH . '/storage/branding/' . $brandLogo)) {
+        $_sbLogoUrl = BASE_URL . '/storage/branding/' . $brandLogo;
+    } else {
+        $stmt = db()->prepare(
+            "SELECT logo FROM entities
+             WHERE logo IS NOT NULL AND logo != ''
+             ORDER BY id LIMIT 1"
+        );
+        $stmt->execute();
+        $logoFile = $stmt->fetchColumn();
+        if ($logoFile && file_exists(BASE_PATH . '/storage/entities/' . $logoFile)) {
+            $_sbLogoUrl = BASE_URL . '/storage/entities/' . $logoFile;
+        }
     }
 } catch (Exception $_e) { /* non-fatal */ }
+
+// No branding/entity logo → use the stored default (storage/branding/default_brand.png).
+if (!$_sbLogoUrl && file_exists(BASE_PATH . '/storage/branding/default_brand.png')) {
+    $_sbLogoUrl = BASE_URL . '/storage/branding/default_brand.png';
+}
 
 // ── Pre-compute collapsed/open state for each submenu group ──────────────────
 // history_report.php lives under /modules/employee/ URL-wise but belongs to the Reports nav
@@ -138,13 +150,14 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
         flex-shrink: 0;
     }
     .sidebar-brand-icon {
-        width: 36px; height: 36px;
-        background: #1e3a8a;
+        width: 40px; height: 40px;
+        background: transparent;
         border-radius: 8px;
         display: flex; align-items: center; justify-content: center;
         color: white; font-size: 18px; font-weight: bold;
         flex-shrink: 0;
     }
+    .sidebar-brand-icon img { width: 40px; height: 40px; object-fit: contain; }
     .sidebar-brand-text span { color: #93c5fd; font-weight: 700; font-size: 15px; }
     .sidebar-brand-text { color: #f1f5f9; font-weight: 700; font-size: 15px; }
 
@@ -314,12 +327,12 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
         <div class="sidebar-brand-icon">
             <?php if ($_sbLogoUrl): ?>
                 <img src="<?= h($_sbLogoUrl) ?>" alt="Logo"
-                     style="width:36px;height:36px;object-fit:contain;border-radius:6px;">
+                     style="width:40px;height:40px;object-fit:contain;border-radius:6px;">
             <?php else: ?>
-                &#9878;
+                <img src="<?= BASE_URL ?>/storage/branding/default_brand.png" alt="Logo">
             <?php endif; ?>
         </div>
-        <div class="sidebar-brand-text"><span>HR</span>MS</div>
+        <div class="sidebar-brand-text"><?= h($_sbBrandName) ?></div>
     </a>
 
     <ul class="sidebar-nav">
@@ -757,6 +770,12 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         <a href="<?= BASE_URL ?>/modules/settings/office.php"
                            class="nav-link <?= _sb_active('/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php') ?>">
                             Office Settings
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/settings/branding.php"
+                           class="nav-link <?= _sb_active('/settings/branding.php') ?>">
+                            Branding
                         </a>
                     </li>
                     <?php endif; ?>

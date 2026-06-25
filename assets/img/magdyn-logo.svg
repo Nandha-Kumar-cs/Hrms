@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 80" width="108" height="80" role="img" aria-label="MagDyn">
+  <!-- red slanted tiles -->
+  <g fill="#E2231A">
+    <polygon points="26,4 56,4 48,38 18,38"/>
+    <polygon points="60,4 90,4 82,38 52,38"/>
+    <polygon points="26,42 56,42 48,76 18,76"/>
+    <polygon points="60,42 90,42 82,76 52,76"/>
+  </g>
+  <!-- white wordmark -->
+  <g fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-style="italic" text-anchor="middle">
+    <text x="54" y="31" font-size="25">Mag</text>
+    <text x="54" y="69" font-size="25">Dyn</text>
+  </g>
+</svg>

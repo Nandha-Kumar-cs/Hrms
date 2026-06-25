@@ -235,7 +235,10 @@
       "Bash(rm -f /tmp/ot.php)",
       "Bash(/c/xampp8.2/php/php.exe -l \"/c/xampp8.2/htdocs/hrms/modules/letters/create.php\")",
       "Bash(/c/xampp8.2/php/php.exe -l \"/c/xampp8.2/htdocs/hrms/login.php\")",
-      "Bash(grep -v '^\\\\.$\\\\|^\\\\.\\\\.$')"
+      "Bash(grep -v '^\\\\.$\\\\|^\\\\.\\\\.$')",
+      "Bash(grep -n 'otHours    = $att\\\\['\\\\''ot_hours'\\\\''\\\\]\\\\|manualPaidLeaveDays\\\\|computePayroll\\($employee' includes/PayrollCalculator.php modules/payroll/generate_slip.php)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -uroot magdyn_hrms -e \"SELECT 1 AS ok;\")",
+      "Bash(grep -n 'Regenerate\\\\|force_regenerate\\\\|generate_slip.php\\\\|payroll_month\\\\|$slip\\\\['\\\\''payroll_month'\\\\''\\\\]\\\\|emp.*month.*year' modules/payroll/slip.php)"
     ]
   }
 }

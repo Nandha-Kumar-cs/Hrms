@@ -168,20 +168,17 @@ if (!function_exists('_inr_words')) {
             <i class="fa fa-file-pdf"></i> PDF
         </a>
         <?php if (can('payroll','process')): ?>
-        <form method="POST" action="<?= BASE_URL ?>/modules/payroll/generate_slip.php" style="display:inline"
-              onsubmit="return confirm('Regenerate this salary slip?\n\nThe current slip will be overwritten with a fresh calculation.')">
-            <?= csrf_field() ?>
-            <input type="hidden" name="employee_id" value="<?= $s['employee_id'] ?>">
-            <?php
-                $pm = explode('-', $s['payroll_month']);
-                echo '<input type="hidden" name="month" value="' . (int)($pm[1] ?? 1) . '">';
-                echo '<input type="hidden" name="year"  value="' . (int)($pm[0] ?? date('Y')) . '">';
-            ?>
-            <input type="hidden" name="force_regenerate" value="1">
-            <button type="submit" class="btn" style="border-color:#e6a817;color:#e6a817" title="Regenerate">
-                <i class="fa fa-refresh"></i> Regenerate
-            </button>
-        </form>
+        <?php
+            // Regenerate opens the Generate Slip page (employee/month/year pre-filled)
+            // so the admin can review/enter Paid Leaves and OT Hours before regenerating,
+            // instead of silently recomputing straight from attendance.
+            $pm = explode('-', $s['payroll_month']);
+            $regUrl = BASE_URL . '/modules/payroll/generate_slip.php?emp=' . (int)$s['employee_id']
+                    . '&month=' . (int)($pm[1] ?? 1) . '&year=' . (int)($pm[0] ?? date('Y'));
+        ?>
+        <a href="<?= $regUrl ?>" class="btn" style="border-color:#e6a817;color:#e6a817" title="Regenerate (set paid leaves / OT)">
+            <i class="fa fa-refresh"></i> Regenerate
+        </a>
         <form method="POST" action="<?= BASE_URL ?>/modules/payroll/delete_slip.php" style="display:inline"
               onsubmit="return confirm('Delete this salary slip permanently?')">
             <?= csrf_field() ?>

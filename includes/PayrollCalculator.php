@@ -123,8 +123,9 @@ class PayrollCalculator
         int   $year,
         float $fixedSalary,
         float $variableSalary = 0.0,
-        bool  $persist = false,       // when true, store per-day worked_hours + deduction_amount on attendance rows
-        int   $manualPaidLeaveDays = 0 // admin-entered paid leave days that convert absent days to paid (no deduction)
+        bool  $persist = false,        // when true, store per-day worked_hours + deduction_amount on attendance rows
+        int   $manualPaidLeaveDays = 0, // admin-entered paid leave days that convert absent days to paid (no deduction)
+        ?float $manualOtHours = null    // admin-entered OT hours; null → auto-calculate from attendance
     ): array {
         $empId       = (int)$employee['id'];
         $monthStart  = sprintf('%04d-%02d-01', $year, $month);
@@ -245,7 +246,8 @@ class PayrollCalculator
         // ── Step 5: OT ────────────────────────────────────────────────────────
         // Per-day rate = CTC ÷ calendar days (drives absent & late deductions).
         // OT rate = Basic ÷ calendar days ÷ 8 × 2  (formula: Basic ÷ days ÷ 8 × 2 × hrs).
-        $otHours    = $att['ot_hours'];
+        // OT hours: admin-entered value overrides the auto-calculated value when given.
+        $otHours    = ($manualOtHours !== null) ? max(0.0, (float)$manualOtHours) : $att['ot_hours'];
         $perDay     = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
         $perHour    = round($perDay / 8, 4);
         $otPerDay   = $calDays > 0 ? round($basicSalary / $calDays, 4) : 0;

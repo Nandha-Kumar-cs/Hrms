@@ -27,6 +27,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $year     = (int)($_POST['year'] ?? 0);
     $forceReg = !empty($_POST['force_regenerate']);
     $paidLeaves = max(0, (int)($_POST['paid_leaves'] ?? 0));   // admin-entered paid leave days (reduce absent)
+    // OT hours: blank → auto-calculate from attendance; a value → override.
+    $otInput    = trim((string)($_POST['ot_hours'] ?? ''));
+    $manualOt   = ($otInput === '') ? null : max(0.0, (float)$otInput);
 
     // ── Validate inputs ──────────────────────────────────────────────────────
     $errors = [];
@@ -92,6 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'emp_id'     => $empId,
             'emp_name'   => $employee['name'],
             'paid_leaves'=> $paidLeaves,
+            'ot_hours'   => $otInput,
         ];
         redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId . '&month=' . $month . '&year=' . $year);
     }
@@ -99,7 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── Run payroll calculation ──────────────────────────────────────────────
     // persist=true → store per-day worked hours + deduction on attendance rows (audit).
     // $paidLeaves → admin-entered paid leave days that convert that many absent days to paid.
-    $result = $calc->computePayroll($employee, $components, $month, $year, $fixedSalary, $variableSalary, true, $paidLeaves);
+    $result = $calc->computePayroll($employee, $components, $month, $year, $fixedSalary, $variableSalary, true, $paidLeaves, $manualOt);
 
     // Fold in the employee's active Benefits & approved Bonuses (earnings) and
     // active Loan/Advance EMIs (deduction). Core formulas are untouched — gross,
@@ -179,6 +183,32 @@ $preYear     = (int)($_GET['year']  ?? date('Y'));
 $slipExists  = $_SESSION['slip_exists'] ?? null;
 unset($_SESSION['slip_exists']);
 
+// Opened from the slip view's "Regenerate" (?emp&month&year) for a month that
+// already has a slip → show the regenerate prompt directly, pre-filled with the
+// existing OT hours so the admin can review/adjust before regenerating.
+if (!$slipExists && $preEmpId) {
+    $pm   = sprintf('%04d-%02d', $preYear, $preMonth);
+    $exSt = $db->prepare(
+        'SELECT s.id, s.net_pay, s.attendance_summary, e.name AS emp_name
+           FROM salary_slips s JOIN employees e ON e.id = s.employee_id
+          WHERE s.employee_id = ? AND s.payroll_month = ? LIMIT 1'
+    );
+    $exSt->execute([$preEmpId, $pm]);
+    if ($ex = $exSt->fetch()) {
+        $sum = json_decode((string)($ex['attendance_summary'] ?? ''), true) ?: [];
+        $slipExists = [
+            'slip_id'    => $ex['id'],
+            'net_pay'    => $ex['net_pay'],
+            'month'      => $preMonth,
+            'year'       => $preYear,
+            'emp_id'     => $preEmpId,
+            'emp_name'   => $ex['emp_name'],
+            'paid_leaves'=> 0,
+            'ot_hours'   => isset($sum['ot_hours']) ? (string)$sum['ot_hours'] : '',
+        ];
+    }
+}
+
 // Active employees with salary structures
 $employees = $db->query(
     'SELECT e.id, e.name, e.employee_id AS emp_code, e.department_id,
@@ -237,6 +267,11 @@ require_once __DIR__ . '/../../includes/header.php';
                         <label class="form-label small mb-1">Paid Leaves (days)</label>
                         <input type="number" name="paid_leaves" class="form-control form-control-sm" min="0" step="1"
                                value="<?= (int)($slipExists['paid_leaves'] ?? 0) ?>" style="max-width:120px">
+                    </div>
+                    <div>
+                        <label class="form-label small mb-1">OT Hours</label>
+                        <input type="number" name="ot_hours" class="form-control form-control-sm" min="0" step="0.5"
+                               placeholder="auto" value="<?= h((string)($slipExists['ot_hours'] ?? '')) ?>" style="max-width:120px">
                     </div>
                     <button type="submit" class="btn btn-sm btn-warning">
                         <i class="fa fa-refresh"></i> Regenerate Payslip
@@ -312,6 +347,15 @@ require_once __DIR__ . '/../../includes/header.php';
                     <div class="form-text">
                         Number of absent days to treat as <strong>paid leave</strong> this month — those days are
                         <strong>not deducted</strong>. e.g. 4 absent &amp; 2 paid leaves entered → only 2 days deducted.
+                    </div>
+                </div>
+
+                <div style="margin-top:12px">
+                    <label class="form-label">OT Hours</label>
+                    <input type="number" name="ot_hours" class="form-control" min="0" step="0.5" placeholder="auto" style="max-width:160px">
+                    <div class="form-text">
+                        <strong>Leave blank</strong> to auto-calculate overtime from attendance (as now).
+                        Enter a value to <strong>override</strong> the OT hours used on this slip.
                     </div>
                 </div>
 
