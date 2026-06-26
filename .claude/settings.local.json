@@ -238,7 +238,15 @@
       "Bash(grep -v '^\\\\.$\\\\|^\\\\.\\\\.$')",
       "Bash(grep -n 'otHours    = $att\\\\['\\\\''ot_hours'\\\\''\\\\]\\\\|manualPaidLeaveDays\\\\|computePayroll\\($employee' includes/PayrollCalculator.php modules/payroll/generate_slip.php)",
       "Bash(/c/xampp8.2/mysql/bin/mysql.exe -uroot magdyn_hrms -e \"SELECT 1 AS ok;\")",
-      "Bash(grep -n 'Regenerate\\\\|force_regenerate\\\\|generate_slip.php\\\\|payroll_month\\\\|$slip\\\\['\\\\''payroll_month'\\\\''\\\\]\\\\|emp.*month.*year' modules/payroll/slip.php)"
+      "Bash(grep -n 'Regenerate\\\\|force_regenerate\\\\|generate_slip.php\\\\|payroll_month\\\\|$slip\\\\['\\\\''payroll_month'\\\\''\\\\]\\\\|emp.*month.*year' modules/payroll/slip.php)",
+      "Bash(python -c ' *)",
+      "Bash(pip install *)",
+      "Bash(rm -f preview_full.png crop_left.png crop_titleblock.png crop_footer.png crop_footer_full.png verify_overlay.png v_title.png v_blob.png grid_blob.png grid_conf.png grid_right.png grid_conf_bot.png out_full.png out_title.png out_left.png speck.png flat_full.png flat_title.png)",
+      "Bash(rm -f 100975323D_RevAE_HD_redacted.pdf)",
+      "Bash(mv 100975323D_RevAE_HD_redacted_flat.pdf 100975323D_RevAE_HD_redacted.pdf)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} -> %{redirect_url}\\\\n\" \"http://localhost/hrms/modules/settings/index.php?tab=asset-categories\")",
+      "Bash(xargs -I{} sh -c 'echo \"--- {} ---\"; head -25 \"{}\"')",
+      "Bash(php -l includes/helpers.php)"
     ]
   }
 }

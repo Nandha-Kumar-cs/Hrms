@@ -77,7 +77,7 @@ if ($brandLogo && is_file($LOGO_DIR . '/' . $brandLogo)) {
     $logoUrl = BASE_URL . '/storage/branding/default_brand.png';
 }
 $errors     = $_SESSION['errors'] ?? [];
-unset($_SESSION['errors']);
+unset($_SESSION['errors']); 
 
 $page_title = 'Branding';
 require_once __DIR__ . '/../../includes/header.php';

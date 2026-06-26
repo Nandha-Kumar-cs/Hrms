@@ -767,6 +767,12 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <li>
+                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=asset-categories"
+                           class="nav-link <?= _sb_active('tab=asset-categories') ?>">
+                            Asset Categories
+                        </a>
+                    </li>
+                    <li>
                         <a href="<?= BASE_URL ?>/modules/settings/office.php"
                            class="nav-link <?= _sb_active('/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php') ?>">
                             Office Settings

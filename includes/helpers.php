@@ -35,7 +35,7 @@ function render_flash(): string {
     return '<div class="alert ' . $cls . '">' . h($f['message']) . '</div>';
 }
 
-function date_fmt(string $date, string $format = 'd M Y'): string {
+function date_fmt(?string $date, string $format = 'd M Y'): string {
     if (!$date) return '—';
     try { return (new DateTime($date))->format($format); }
     catch (Exception $e) { return $date; }

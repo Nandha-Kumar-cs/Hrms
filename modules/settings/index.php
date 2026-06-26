@@ -25,6 +25,7 @@ $tabLabels = [
     'leave-types'        => 'Leave Types',
     'holiday-types'      => 'Holiday Types',
     'benefit-fund-types' => 'Benefit Fund Types',
+    'asset-categories'   => 'Asset Categories',
 ];
 
 $tab     = sanitize($_GET['tab'] ?? '');
