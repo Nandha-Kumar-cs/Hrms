@@ -4,18 +4,23 @@ require_login();
 require_permission('roles', 'edit');
 verify_csrf($_POST['csrf_token'] ?? '');
 
-$id = (int)$_POST['id'];
-$role = db()->query("SELECT * FROM roles WHERE id=$id")->fetch(PDO::FETCH_ASSOC);
+$id = (int)($_POST['id'] ?? 0);
+$st = db()->prepare("SELECT * FROM roles WHERE id=?"); $st->execute([$id]);
+$role = $st->fetch(PDO::FETCH_ASSOC);
 
-if (!$role || $role['is_system']) {
-    flash('danger','Cannot delete system roles.');
+// The `roles` table has no `is_system` column, so the old guard was always false.
+// Protect the Super Admin role explicitly (by id 1 OR name) so it can't be deleted.
+$isProtected = $role && ((int)$role['id'] === 1 || strcasecmp((string)$role['name'], 'Super Admin') === 0);
+
+if (!$role || $isProtected) {
+    flash('danger','This role cannot be deleted.');
 } else {
-    $users = db()->query("SELECT COUNT(*) FROM users WHERE role_id=$id")->fetchColumn();
-    if ($users > 0) {
+    $uc = db()->prepare("SELECT COUNT(*) FROM users WHERE role_id=?"); $uc->execute([$id]);
+    if ((int)$uc->fetchColumn() > 0) {
         flash('danger','Cannot delete role with assigned users. Reassign users first.');
     } else {
-        db()->query("DELETE FROM role_permissions WHERE role_id=$id");
-        db()->query("DELETE FROM roles WHERE id=$id");
+        db()->prepare("DELETE FROM role_permissions WHERE role_id=?")->execute([$id]);
+        db()->prepare("DELETE FROM roles WHERE id=?")->execute([$id]);
         flash('success','Role deleted.');
     }
 }

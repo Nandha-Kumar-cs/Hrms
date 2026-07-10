@@ -32,8 +32,9 @@ $currentMonth = (int)date('n');
 $isCurrentYr  = ($year === $currentYear);
 $yearFuture   = ($year > $currentYear);
 
-// Self-scoped users (e.g. an Employee) only ever see their own row.
-$scopeEmp = is_self_scoped() ? (int)current_employee_id() : 0;
+// Self-scoped users (e.g. an Employee) only ever see their own row
+// (−1 when self-scoped but not linked to any employee → matches nothing).
+$scopeEmp = scope_employee_id();
 
 // ── Employee query (filters + pagination) ────────────────────────────────────
 $where  = 'WHERE 1=1';

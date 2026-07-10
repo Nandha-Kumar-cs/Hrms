@@ -1,7 +1,9 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll', 'view');
+// CSV export contains bank account / IFSC / PAN — gate behind the privileged
+// payroll-process permission, not the generic Salary-Slips "view".
+require_permission('payroll', 'process');
 block_cross_employee();
 
 $runId = (int)($_GET['run_id'] ?? 0);

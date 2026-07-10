@@ -68,7 +68,7 @@ function attempt_login(string $email, string $password): ?array {
  * If GLOBAL_AUTH_ENABLED, look up the user in the global auth DB,
  * then sync to local users table.
  */
-function sync_global_auth_user(string $email): ?array {
+function sync_global_auth_user(string $email, string $password = ''): ?array {
     if (!GLOBAL_AUTH_ENABLED) return null;
     try {
         $dsn  = sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', GLOBAL_AUTH_DB_HOST, GLOBAL_AUTH_DB_NAME);
@@ -77,6 +77,14 @@ function sync_global_auth_user(string $email): ?array {
         $stmt->execute([$email]);
         $gUser = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$gUser) return null;
+
+        // SECURITY: verify the password against the global account's stored hash.
+        // Never log a user in on email-existence alone. Fail closed if there is no
+        // usable hash column.
+        $gHash = $gUser['password_hash'] ?? $gUser['password'] ?? '';
+        if ($password === '' || !is_string($gHash) || $gHash === '' || !password_verify($password, $gHash)) {
+            return null;
+        }
 
         // Upsert into local users
         $local = db()->prepare('SELECT id FROM users WHERE email = ? LIMIT 1');

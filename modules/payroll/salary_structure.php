@@ -1,7 +1,9 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll', 'view');
+// Salary structure exposes full pay breakup — require the payroll-edit permission
+// (not the generic Salary-Slips "view").
+require_permission('payroll', 'edit');
 block_cross_employee();
 
 $user = current_user();

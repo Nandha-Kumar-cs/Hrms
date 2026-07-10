@@ -14,7 +14,9 @@
 
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('settings', 'view');
+// Settings area is reachable by anyone holding ANY settings permission
+// (the overview 'settings.view' OR a specific section such as 'settings.entities').
+if (!can_any('settings')) { require_permission('settings', 'view'); }
 
 define('IN_SETTINGS', true);
 
@@ -27,11 +29,24 @@ $tabLabels = [
     'benefit-fund-types' => 'Benefit Fund Types',
     'asset-categories'   => 'Asset Categories',
 ];
+// Each tab is gated by its own settings sub-permission.
+$tabPerm = [
+    'entities'           => 'entities',
+    'departments'        => 'departments',
+    'designations'       => 'designations',
+    'leave-types'        => 'leave_types',
+    'holiday-types'      => 'holiday_types',
+    'benefit-fund-types' => 'benefit_fund_types',
+    'asset-categories'   => 'asset_categories',
+];
 
 $tab     = sanitize($_GET['tab'] ?? '');
 $tabFile = isset($tabLabels[$tab])
     ? __DIR__ . '/tabs/' . str_replace('-', '_', $tab) . '.php'
     : null;
+
+// Enforce the section-specific permission before rendering or JSON output.
+if ($tabFile) require_permission('settings', $tabPerm[$tab]);
 
 // ─── AJAX / JSON phase — MUST run before any output ──────────────────────────
 if ($tabFile && !empty($_GET['ajax'])) {
@@ -54,6 +69,7 @@ require_once __DIR__ . '/../../includes/header.php';
 <div class="tabs" style="margin-bottom:18px;flex-wrap:wrap">
     <a class="tab <?= !$tabFile ? 'active' : '' ?>" href="index.php">Overview</a>
     <?php foreach ($tabLabels as $key => $label): ?>
+        <?php if (!can('settings', $tabPerm[$key])) continue; /* only show sections the user may access */ ?>
     <a class="tab <?= $tab === $key ? 'active' : '' ?>" href="index.php?tab=<?= $key ?>"><?= h($label) ?></a>
     <?php endforeach; ?>
 </div>
@@ -143,7 +159,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     <?php endforeach; ?>
                 </table>
                 <span class="pill pill-success">Connected</span>
-                <?php } catch (Exception $e) { echo '<span class="pill pill-danger">Error</span> ' . h($e->getMessage()); } ?>
+                <?php } catch (Exception $e) { error_log('Settings DB stats error: ' . $e->getMessage()); echo '<span class="pill pill-danger">Error</span> Unable to load statistics.'; } ?>
             </div>
         </div>
 

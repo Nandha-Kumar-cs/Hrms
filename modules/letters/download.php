@@ -37,6 +37,8 @@ if (!$letter) redirect(BASE_URL . '/modules/letters/index.php');
 
 // Sub-menu permission: the user must have access to this letter's type.
 require_permission('letters', strtolower($letter['type']));
+// Ownership: a self-scoped user may only download their own letters (closes IDOR).
+require_own_employee((int)$letter['employee_id']);
 
 // Company identity for the letterhead: prefer the employee's linked entity.
 $co_name  = $letter['entity_name'] ?: COMPANY_NAME;

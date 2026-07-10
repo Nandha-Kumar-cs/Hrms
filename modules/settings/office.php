@@ -11,7 +11,7 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('settings', 'view');
+require_permission('settings', 'office');
 
 $db     = db();
 $errors = [];

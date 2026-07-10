@@ -96,6 +96,58 @@ function is_admin(): bool {
     return $role === 'super admin' || $role === 'admin';
 }
 
+/** True only for the Super Admin role (strict). */
+function is_super_admin(): bool {
+    $user = current_user();
+    return $user && ($user['role_name'] ?? '') === 'Super Admin';
+}
+
+/**
+ * Permission IDs the current user effectively holds (role grants ∪ direct grants).
+ * Returns null for Super Admin → means "all permissions" (no restriction).
+ */
+function current_user_permission_ids(): ?array {
+    $user = current_user();
+    if (!$user) return [];
+    if (is_super_admin()) return null;                       // null = ALL
+    $ids = [];
+    try {
+        $r = db()->prepare('SELECT permission_id FROM role_permissions WHERE role_id = ?');
+        $r->execute([(int)($user['role_id'] ?? 0)]);
+        foreach ($r->fetchAll(PDO::FETCH_COLUMN) as $pid) $ids[(int)$pid] = true;
+        $u = db()->prepare('SELECT permission_id FROM user_permissions WHERE user_id = ?');
+        $u->execute([(int)($user['id'] ?? 0)]);
+        foreach ($u->fetchAll(PDO::FETCH_COLUMN) as $pid) $ids[(int)$pid] = true;
+    } catch (Throwable $e) { /* table missing — fail closed below */ }
+    return $ids;
+}
+
+/**
+ * Filter a requested list of permission IDs down to those the actor is allowed
+ * to grant — you can never grant a permission you do not already hold. Super
+ * Admin may grant anything.
+ */
+function filter_assignable_permission_ids(array $requested): array {
+    $own = current_user_permission_ids();
+    $requested = array_values(array_unique(array_map('intval', $requested)));
+    if ($own === null) return $requested;                    // Super Admin: anything
+    return array_values(array_filter($requested, fn($pid) => $pid > 0 && isset($own[$pid])));
+}
+
+/**
+ * Whether the actor may assign the given role to a user. Only a Super Admin may
+ * assign the Super Admin role (prevents non-admins minting admin accounts).
+ */
+function can_assign_role(int $roleId): bool {
+    if (is_super_admin()) return true;
+    try {
+        $s = db()->prepare('SELECT name FROM roles WHERE id = ?');
+        $s->execute([$roleId]);
+        $name = strtolower((string)$s->fetchColumn());
+    } catch (Throwable $e) { $name = ''; }
+    return $name !== 'super admin';
+}
+
 /**
  * Friendly display name for a permission `module` key — used as the group header
  * in the Roles & Permissions UI. Falls back to a title-cased version of the key
@@ -132,6 +184,66 @@ function module_label(string $module): string {
         'activity'        => 'Activity Log',
     ];
     return $map[$module] ?? ucwords(str_replace('_', ' ', $module));
+}
+
+/**
+ * Short human hint describing what a permission unlocks — shown as a hover
+ * tooltip (eye icon) in the Roles & Permissions screen. Explicit text per
+ * module/action, with a sensible generated fallback so every permission has one.
+ */
+function permission_hint(string $module, string $action): string {
+    static $map = [
+        'dashboard' => ['view' => 'View the main dashboard and summary widgets.'],
+        'employee'  => ['view' => 'View the employee list and profiles.', 'create' => 'Add new employees.', 'edit' => 'Edit employee details.', 'delete' => 'Delete employee records.'],
+        'documents' => ['view' => 'View employee documents.', 'create' => 'Upload documents.', 'delete' => 'Delete documents.'],
+        'letters'   => ['view' => 'View issued letters.', 'create' => 'Create / issue letters.', 'delete' => 'Delete letters.', 'offer' => 'Access Offer letters.', 'increment' => 'Access Increment letters.', 'confirmation' => 'Access Confirmation letters.', 'promotion' => 'Access Promotion letters.'],
+        'assets'    => ['view' => 'View assets and assignments.', 'assign' => 'Assign assets to employees.', 'return' => 'Return assets / process No-Due clearance.'],
+        'attendance'=> ['view' => 'View attendance records.', 'mark' => 'Mark daily attendance.', 'edit' => 'Edit attendance records.', 'export' => 'Export attendance data.', 'report' => 'Open the Attendance Report.', 'calendar' => 'View the monthly attendance calendar.'],
+        'leaves'    => ['view' => 'View leave requests.', 'create' => 'Apply for leave.', 'edit' => 'Edit leave requests.', 'delete' => 'Delete leave requests.', 'approve' => 'Approve or reject leave requests.'],
+        'leave_history' => ['view' => 'View leave history.'],
+        'holidays'  => ['view' => 'View the holiday calendar.', 'create' => 'Add holidays.', 'edit' => 'Edit holidays.', 'delete' => 'Delete holidays.'],
+        'compoff'   => ['view' => 'View comp-off records.', 'edit' => 'Grant and manage comp-offs.'],
+        'compoff_credits' => ['view' => 'View comp-off credit balances.', 'edit' => 'Adjust comp-off credits.'],
+        'od'        => ['view' => 'View On-Duty (OD) requests.', 'create' => 'Create OD requests.', 'edit' => 'Edit OD requests.', 'delete' => 'Delete OD requests.'],
+        'payroll'   => ['view' => 'View salary slips.', 'calculate' => 'Open Salary Calculation.', 'process' => 'Process payroll, generate slips & manage salary components.', 'export' => 'Export payroll CSV (includes bank / PAN details).'],
+        'loans'     => ['view' => 'View loans & advances.', 'create' => 'Create and manage loans / advances.'],
+        'increments'=> ['view' => 'View increment history.', 'create' => 'Add salary increments.'],
+        'promotions'=> ['view' => 'View promotions.', 'create' => 'Add promotions.'],
+        'benefits'  => ['view' => 'View employee benefits.', 'create' => 'Assign and manage benefits.'],
+        'bonuses'   => ['view' => 'View bonuses & incentives.', 'create' => 'Add bonuses & incentives.'],
+        'report_benefits' => ['view' => 'View the Monthly Benefits report.', 'export' => 'Export the Monthly Benefits report.'],
+        'report_bonus'    => ['view' => 'View the Bonus report.', 'export' => 'Export the Bonus report.'],
+        'report_history'  => ['view' => 'View the Employee History report.', 'export' => 'Export the Employee History report.'],
+        'report_impact'   => ['view' => 'View the Payroll Impact report.', 'export' => 'Export the Payroll Impact report.'],
+        'training'  => ['view' => 'View training content.', 'manage' => 'Manage training content.', 'enroll' => 'Enroll in training.'],
+        'roles'     => ['view' => 'View roles & permissions.', 'manage' => 'Create and edit roles & permissions.'],
+        'users'     => ['view' => 'View user accounts.', 'create' => 'Create user accounts.', 'edit' => 'Edit user accounts.', 'delete' => 'Delete user accounts.'],
+        'pwa'       => ['view' => 'View Mobile Access (PWA) settings.', 'manage' => 'Manage Mobile Access (PWA) settings.'],
+        'sso'       => ['view' => 'View SSO settings.', 'manage' => 'Manage SSO settings.'],
+        'activity'  => ['view' => 'View the activity / audit log.'],
+        'settings'  => [
+            'view' => 'Open the Settings area and its overview page.',
+            'manage' => 'General settings management (legacy catch-all).',
+            'entities' => 'Manage company entities — name, address, logo and signatory used on letters & payslips.',
+            'departments' => 'Create, edit and delete departments.',
+            'designations' => 'Create, edit and delete job designations / titles.',
+            'leave_types' => 'Configure leave types and their rules (paid/unpaid, annual quota).',
+            'holiday_types' => 'Configure holiday categories used by the Holidays module.',
+            'benefit_fund_types' => 'Configure benefit fund types (PF, ESI, etc.) selectable on employee benefits.',
+            'asset_categories' => 'Manage asset categories used when registering assets.',
+            'office' => 'Set office timings, late grace, OT trigger/baseline, tea breaks and lunch batches.',
+            'branding' => 'Set the sidebar brand name and upload the brand logo.',
+        ],
+    ];
+    if (isset($map[$module][$action])) return $map[$module][$action];
+
+    // Fallback: "<Verb> <Module label>." so every permission still gets a hint.
+    $verbs = ['view'=>'View','create'=>'Create','edit'=>'Edit','delete'=>'Delete',
+              'export'=>'Export','manage'=>'Manage','approve'=>'Approve','mark'=>'Mark',
+              'assign'=>'Assign','return'=>'Return','enroll'=>'Enroll in','process'=>'Process',
+              'calculate'=>'Calculate','report'=>'Report','calendar'=>'Calendar'];
+    $verb = $verbs[$action] ?? ucfirst($action);
+    return $verb . ' ' . module_label($module) . '.';
 }
 
 // Check notification permission for user

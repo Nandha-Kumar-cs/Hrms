@@ -73,11 +73,16 @@ function role_has_self_scope(int $roleId, string $roleNameLower = ''): bool {
     return $cache[$roleId] = $flag;
 }
 
-/** True when the current user must be restricted to their own employee data. */
+/**
+ * True when the current user must be restricted to their own employee data.
+ * Driven purely by the role's self_scope flag. A self-scoped user who is NOT
+ * linked to an employee record is still scoped (current_employee_id() returns 0
+ * → filters match no rows) — i.e. it fails CLOSED (sees nothing) rather than
+ * OPEN (seeing everyone), which would be a data leak.
+ */
 function is_self_scoped(): bool {
     $u = function_exists('current_user') ? current_user() : null;
     if (!$u) return false;
-    if (current_employee_id() <= 0) return false;          // not linked to an employee
     return role_has_self_scope((int)($u['role_id'] ?? 0), strtolower($u['role_name'] ?? ''));
 }
 
@@ -100,7 +105,11 @@ function block_cross_employee(): void {
  * rows instead of being blocked.
  */
 function scope_employee_id(int $current = 0): int {
-    return is_self_scoped() ? current_employee_id() : $current;
+    if (!is_self_scoped()) return $current;
+    $eid = current_employee_id();
+    // Self-scoped but not linked to an employee → return a non-matching id so
+    // list/report filters yield NO rows (fail closed) instead of "all".
+    return $eid > 0 ? $eid : -1;
 }
 
 /**

@@ -26,10 +26,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $month    = (int)($_POST['month'] ?? 0);
     $year     = (int)($_POST['year'] ?? 0);
     $forceReg = !empty($_POST['force_regenerate']);
-    $paidLeaves = max(0, (int)($_POST['paid_leaves'] ?? 0));   // admin-entered paid leave days (reduce absent)
-    // OT hours: blank → auto-calculate from attendance; a value → override.
+    // Admin-entered paid leave days (reduce absent) — bounded to a month's worth.
+    $paidLeaves = min(31, max(0, (int)($_POST['paid_leaves'] ?? 0)));
+    // OT hours: blank → auto-calculate from attendance; a value → override (capped).
     $otInput    = trim((string)($_POST['ot_hours'] ?? ''));
-    $manualOt   = ($otInput === '') ? null : max(0.0, (float)$otInput);
+    $manualOt   = ($otInput === '') ? null : min(300.0, max(0.0, (float)$otInput));
 
     // ── Validate inputs ──────────────────────────────────────────────────────
     $errors = [];

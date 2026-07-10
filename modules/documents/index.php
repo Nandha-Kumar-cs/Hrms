@@ -23,8 +23,8 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_documents (
 
 // Optional employee filter
 $emp_filter = (int)($_GET['emp'] ?? 0);
-// Self-scoped users only ever see their own documents.
-if (is_self_scoped()) $emp_filter = current_employee_id();
+// Self-scoped users only ever see their own documents (−1 = none when unlinked).
+$emp_filter = scope_employee_id($emp_filter);
 
 $sql = 'SELECT dc.*, e.name AS emp_name, e.employee_id AS emp_code
         FROM employee_documents dc

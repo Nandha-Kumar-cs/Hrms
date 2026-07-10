@@ -1,7 +1,9 @@
 <?php
 $page_title = 'Add Increment';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
+require_permission('increments', 'create');   // gate BEFORE any HTML is emitted
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('increments', 'create');
 
 $db     = db();
 $emp_id = (int)($_GET['emp_id'] ?? 0);

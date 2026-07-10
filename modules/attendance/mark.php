@@ -20,6 +20,7 @@ require_once __DIR__ . '/../../includes/bootstrap.php';
 require_once __DIR__ . '/../../includes/comp_off.php';
 require_login();
 require_permission('attendance', 'mark');
+block_cross_employee();   // marking attendance is a management action — self-scoped users can't.
 
 $db   = db();
 $user = current_user();

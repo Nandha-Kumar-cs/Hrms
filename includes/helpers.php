@@ -74,12 +74,22 @@ function upload_file(array $file, string $dest, string $prefix = ''): ?string {
     if ($file['size'] > UPLOAD_MAX_MB * 1024 * 1024) return null;
     $finfo = new finfo(FILEINFO_MIME_TYPE);
     $mime  = $finfo->file($file['tmp_name']);
-    if (!in_array($mime, ALLOWED_DOC_TYPES)) return null;
-    $ext  = pathinfo($file['name'], PATHINFO_EXTENSION);
-    $name = $prefix . uniqid() . '.' . strtolower($ext);
+    if (!in_array($mime, ALLOWED_DOC_TYPES, true)) return null;
+    // SECURITY: derive the extension from the VERIFIED MIME type, never from the
+    // user-supplied filename — prevents an image-polyglot being saved as .php.
+    $extByMime = [
+        'application/pdf' => 'pdf',
+        'image/jpeg'      => 'jpg',
+        'image/png'       => 'png',
+        'image/gif'       => 'gif',
+        'image/webp'      => 'webp',
+    ];
+    $ext = $extByMime[$mime] ?? null;
+    if ($ext === null) return null;                       // MIME not in safe map
+    $name = $prefix . uniqid() . '.' . $ext;
     $path = rtrim($dest, '/') . '/' . $name;
     if (!is_dir($dest)) mkdir($dest, 0755, true);
-    move_uploaded_file($file['tmp_name'], $path);
+    if (!move_uploaded_file($file['tmp_name'], $path)) return null;
     return $name;
 }
 

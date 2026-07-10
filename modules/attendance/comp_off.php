@@ -14,7 +14,6 @@ require_permission('compoff', 'view');
 block_cross_employee();   // company-wide comp-off management; employees use Comp Off Credits
 
 $canEdit = can('compoff', 'edit') || can('attendance', 'edit') || can('holidays', 'edit');
-$canEdit = can('attendance', 'edit') || can('holidays', 'edit');
 
 // ── POST actions (grant / avail / remove / destroy) ───────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {

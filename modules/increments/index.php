@@ -1,7 +1,9 @@
 <?php
 $page_title = 'Increment History';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+require_login();
+require_permission('increments', 'view');   // gate BEFORE any HTML is emitted
 require_once __DIR__ . '/../../includes/header.php';
-require_permission('increments', 'view');
 
 $db = db();
 
@@ -17,7 +19,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_increments (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp = (int)($_GET['employee_id'] ?? 0);
- if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
+$filterEmp = scope_employee_id($filterEmp);   // self-scope → own records only (−1 = none when unlinked)
 
 $sql    = 'SELECT ei.*, e.name AS emp_name, e.employee_id AS emp_code,
                   e.department_id, d.name AS dept_name

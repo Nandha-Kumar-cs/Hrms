@@ -9,6 +9,7 @@
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
 require_permission('assets');
+block_cross_employee();   // self-scoped users cannot pull other employees' clearance PDFs.
 
 $db     = db();
 $emp_id = (int)($_GET['emp_id'] ?? 0);

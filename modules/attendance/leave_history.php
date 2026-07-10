@@ -16,13 +16,13 @@ $selfEmpId  = (int)($user['employee_id'] ?? 0);
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 $fEmp    = (int)($_GET['employee_id'] ?? 0);
-if ($isEmployee) $fEmp = $selfEmpId;   // force own records
+$fEmp    = scope_employee_id($fEmp);   // self-scope → own records only (−1 = none when unlinked)
 $fType   = (int)($_GET['leave_type_id'] ?? 0);
 $fStatus = in_array($_GET['status'] ?? 'all', ['all','approved','pending','rejected'], true) ? ($_GET['status'] ?? 'all') : 'all';
 $fYear   = (int)($_GET['year'] ?? date('Y'));
 $fMonth  = (int)($_GET['month'] ?? 0);
 
-$employees  = $db->query("SELECT id, name, employee_id FROM employees WHERE status='Active' ORDER BY name")->fetchAll();
+$employees  = scope_employees_for_dropdown($db);   // self-scoped users see only themselves in the picker
 $leaveTypes = $db->query("SELECT id, name FROM leave_types ORDER BY name")->fetchAll();
 
 // Base WHERE (everything except status) — shared by counts and list.

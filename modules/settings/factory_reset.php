@@ -63,7 +63,7 @@ try {
 } catch (Throwable $e) {
     @$db->exec('SET FOREIGN_KEY_CHECKS = 1');
     error_log('Factory reset failed: ' . $e->getMessage());
-    flash('error', 'Reset failed: ' . $e->getMessage());
+    flash('error', 'Reset failed due to a server error. Please check the logs.');
 }
 
 redirect($self);

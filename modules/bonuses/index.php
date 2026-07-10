@@ -19,7 +19,7 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_bonuses (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
 $filterEmp    = (int)($_GET['employee_id'] ?? 0);
- if (is_self_scoped()) $filterEmp = current_employee_id();   // self-scope: own records only
+$filterEmp    = scope_employee_id($filterEmp);   // self-scope → own records only (−1 = none when unlinked)
 $filterType   = trim($_GET['type']   ?? '');
 $filterStatus = trim($_GET['status'] ?? '');
 $filterMonth  = (int)($_GET['month'] ?? 0);

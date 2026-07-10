@@ -65,7 +65,9 @@ if (!$userInfo || empty($userInfo['email'])) {
 
 // Find or sync user
 $email = strtolower(trim($userInfo['email']));
-$user  = db()->query("SELECT u.*, r.name AS role FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.email='".addslashes($email)."' AND u.is_active=1")->fetch(PDO::FETCH_ASSOC);
+$uStmt = db()->prepare("SELECT u.*, r.name AS role FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.email = ? AND u.is_active = 1");
+$uStmt->execute([$email]);
+$user  = $uStmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$user) {
     // Auto-create from SSO if enabled

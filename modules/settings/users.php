@@ -65,8 +65,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($name === '') $errors[] = 'Name is required.';
         if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) $errors[] = 'A valid email is required.';
         else { $dc = $db->prepare('SELECT id FROM users WHERE email=? AND id<>?'); $dc->execute([$email, $id]); if ($dc->fetchColumn()) $errors[] = 'That email is already in use.'; }
+        $editingSelf = ($action === 'update' && $id === (int)$me['id']);
         if (!$roleId) $errors[] = 'Please select a role.';
-        else { $rc = $db->prepare('SELECT 1 FROM roles WHERE id=?'); $rc->execute([$roleId]); if (!$rc->fetchColumn()) $errors[] = 'Invalid role.'; }
+        else {
+            $rc = $db->prepare('SELECT 1 FROM roles WHERE id=?'); $rc->execute([$roleId]);
+            if (!$rc->fetchColumn()) $errors[] = 'Invalid role.';
+            // Only a Super Admin may grant the Super Admin role (no self-minted admins).
+            elseif (!can_assign_role($roleId)) $errors[] = 'You are not allowed to assign that role.';
+        }
+        // You cannot change your OWN role or permissions (prevents self-escalation).
+        if ($editingSelf) {
+            $selfRow = $db->prepare('SELECT role_id FROM users WHERE id=?'); $selfRow->execute([$id]);
+            $roleId  = (int)$selfRow->fetchColumn();   // force-keep current role
+        }
         if ($action === 'create' && strlen($pw) < 6) $errors[] = 'Password must be at least 6 characters.';
         if ($action === 'update' && $pw !== '' && strlen($pw) < 6) $errors[] = 'Password must be at least 6 characters.';
 
@@ -95,12 +106,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             activity_log('updated', 'User', "Updated user: $name ($email)");
         }
 
-        // Sync direct permissions — keep only those NOT already granted by the role.
-        $rp = $db->prepare('SELECT permission_id FROM role_permissions WHERE role_id=?'); $rp->execute([$roleId]);
-        $roleSet = array_flip(array_map('intval', $rp->fetchAll(PDO::FETCH_COLUMN)));
-        $db->prepare('DELETE FROM user_permissions WHERE user_id=?')->execute([$id]);
-        $ins = $db->prepare('INSERT IGNORE INTO user_permissions (user_id,permission_id) VALUES (?,?)');
-        foreach ($perms as $pid) { if ($pid && !isset($roleSet[$pid])) $ins->execute([$id, $pid]); }
+        // Sync direct permissions — but never let the actor grant a permission they
+        // do not themselves hold, and never let a user edit their OWN permissions.
+        if (!$editingSelf) {
+            $perms = filter_assignable_permission_ids($perms);
+            $rp = $db->prepare('SELECT permission_id FROM role_permissions WHERE role_id=?'); $rp->execute([$roleId]);
+            $roleSet = array_flip(array_map('intval', $rp->fetchAll(PDO::FETCH_COLUMN)));
+            $db->prepare('DELETE FROM user_permissions WHERE user_id=?')->execute([$id]);
+            $ins = $db->prepare('INSERT IGNORE INTO user_permissions (user_id,permission_id) VALUES (?,?)');
+            foreach ($perms as $pid) { if ($pid && !isset($roleSet[$pid])) $ins->execute([$id, $pid]); }
+        }
 
         flash('success', $action === 'create' ? 'User created.' : 'User updated.');
         redirect($self);
@@ -284,6 +299,13 @@ else:
                 </td>
                 <td class="small text-muted"><?= $u['last_login'] ? date_fmt($u['last_login'], 'd M Y H:i') : 'Never' ?></td>
                 <td class="text-end text-nowrap">
+                    <?php if (is_admin() && !$isSelf && $u['role_name'] !== 'Super Admin' && $u['is_active']): ?>
+                    <form method="POST" action="<?= BASE_URL ?>/modules/settings/impersonate.php" class="d-inline"
+                          onsubmit="return confirm('View the app as &quot;<?= h($u['name']) ?>&quot;? You can return to your account anytime.')">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="start"><input type="hidden" name="id" value="<?= $u['id'] ?>">
+                        <button class="btn btn-sm btn-outline-secondary" title="Impersonate this user"><i class="fa fa-user-secret"></i></button>
+                    </form>
+                    <?php endif; ?>
                     <?php if ($canEdit): ?><a href="?edit=<?= $u['id'] ?>" class="btn btn-sm btn-outline-primary"><i class="fa fa-pen"></i></a><?php endif; ?>
                     <?php if ($canDelete && !$isSelf && $u['role_name'] !== 'Super Admin'): ?>
                     <form method="POST" class="d-inline" onsubmit="return confirm('Delete user &quot;<?= h($u['name']) ?>&quot;? This cannot be undone.')">

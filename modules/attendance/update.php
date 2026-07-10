@@ -2,6 +2,7 @@
 require_once '../../includes/bootstrap.php';
 require_login();
 require_permission('attendance', 'edit');
+block_cross_employee();   // editing attendance is admin/HR-only; self-scoped users can't whitewash their own.
 verify_csrf($_POST['csrf_token'] ?? '');
 
 $id     = (int)($_POST['id'] ?? 0);

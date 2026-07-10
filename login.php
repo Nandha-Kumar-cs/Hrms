@@ -17,27 +17,47 @@ $timeout = !empty($_GET['timeout']);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email    = sanitize($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
+    $ip       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
-    $user = null;
+    // Per-IP/email failed-attempt throttle (created on demand, no migration needed).
+    $LOCK_MAX = 8; $LOCK_WINDOW_MIN = 15;
+    try {
+        db()->exec('CREATE TABLE IF NOT EXISTS login_attempts (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            ip VARCHAR(45) NOT NULL, email VARCHAR(190) NULL,
+            attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX (ip, attempted_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    } catch (Throwable $e) { /* non-fatal */ }
+    $recentFails = function () use ($ip, $email, $LOCK_WINDOW_MIN) {
+        try {
+            $s = db()->prepare('SELECT COUNT(*) FROM login_attempts
+                                 WHERE (ip = ? OR email = ?) AND attempted_at > (NOW() - INTERVAL ? MINUTE)');
+            $s->execute([$ip, $email, $LOCK_WINDOW_MIN]);
+            return (int) $s->fetchColumn();
+        } catch (Throwable $e) { return 0; }
+    };
 
-    // Try global auth first
-    if (GLOBAL_AUTH_ENABLED) {
-        $user = sync_global_auth_user($email);
-    }
-
-    // Fallback to local auth
-    if (!$user) {
-        $user = attempt_login($email, $password);
-    }
-
-    if ($user) {
-        login_user($user);
-        // Update last login
-        db()->prepare('UPDATE users SET last_login=NOW() WHERE id=?')->execute([$user['id']]);
-        activity_log('login', 'Auth', 'Logged in: ' . ($user['name'] ?? $email));
-        redirect(BASE_URL . '/index.php');
+    if (!csrf_verify()) {
+        $error = 'Your session expired. Please try again.';
+    } elseif ($recentFails() >= $LOCK_MAX) {
+        $error = 'Too many failed attempts. Please wait a few minutes and try again.';
     } else {
-        $error = 'Invalid email or password.';
+        $user = null;
+        if (GLOBAL_AUTH_ENABLED) $user = sync_global_auth_user($email, $password);
+        if (!$user)              $user = attempt_login($email, $password);
+
+        if ($user) {
+            try { db()->prepare('DELETE FROM login_attempts WHERE ip = ? OR email = ?')->execute([$ip, $email]); } catch (Throwable $e) {}
+            login_user($user);
+            db()->prepare('UPDATE users SET last_login=NOW() WHERE id=?')->execute([$user['id']]);
+            activity_log('login', 'Auth', 'Logged in: ' . ($user['name'] ?? $email));
+            redirect(BASE_URL . '/index.php');
+        } else {
+            try { db()->prepare('INSERT INTO login_attempts (ip, email) VALUES (?, ?)')->execute([$ip, $email]); } catch (Throwable $e) {}
+            usleep(300000);   // small constant delay to slow guessing
+            $error = 'Invalid email or password.';
+        }
     }
 }
 ?><!DOCTYPE html>

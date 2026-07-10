@@ -11,6 +11,10 @@
  * DELETE this file after first login!
  */
 
+// SECURITY: refuse to run over the web. This sets a known default admin password
+// and must only be executed from the command line during first-time setup.
+if (PHP_SAPI !== 'cli') { http_response_code(404); exit('Not found.'); }
+
 define('HRMS_INSTALL', true);
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/app.php';

@@ -75,15 +75,11 @@ if ($logoFile) {
     }
 }
 
-// Employees can only access their own slips
-if ($user['role_name'] === 'Employee') {
-    $myEmp = $db->prepare('SELECT id FROM employees WHERE email = ? LIMIT 1');
-    $myEmp->execute([$user['email']]);
-    $myId  = $myEmp->fetchColumn();
-    if ($s['employee_id'] != $myId) {
-        http_response_code(403);
-        die('Access denied.');
-    }
+// A self-scoped user can only download their OWN slip (role self_scope flag, not
+// a hard-coded role name — closes the IDOR for any non-"Employee" scoped role).
+if (is_self_scoped() && (int)$s['employee_id'] !== current_employee_id()) {
+    http_response_code(403);
+    die('Access denied.');
 }
 
 // ─── Parse slip data ──────────────────────────────────────────────────────────

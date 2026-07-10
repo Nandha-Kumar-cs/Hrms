@@ -37,16 +37,10 @@ $slip->execute([$id]);
 $s = $slip->fetch();
 if (!$s) { flash('error', 'Salary slip not found.'); redirect(BASE_URL . '/modules/payroll/index.php'); }
 
-// Auth check: employees can view their own slips only
-$user = current_user();
-if ($user['role_name'] === 'Employee') {
-    $myEmp = $db->prepare('SELECT id FROM employees WHERE email = ? LIMIT 1');
-    $myEmp->execute([$user['email']]);
-    $myId = $myEmp->fetchColumn();
-    if ($s['employee_id'] != $myId) {
-        http_response_code(403); include BASE_PATH . '/includes/403.php'; exit;
-    }
-}
+// Auth check: a self-scoped user may view ONLY their own slip. Uses the role's
+// self_scope flag (not a hard-coded role name) so it can't be bypassed by naming
+// a role anything other than "Employee".
+require_own_employee((int)$s['employee_id']);
 
 // All redirects/auth done — now it is safe to emit output.
 $page_title = 'Salary Slip';

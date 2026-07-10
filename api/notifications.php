@@ -53,8 +53,10 @@ if ($action === 'list') {
     $p256dh   = $input['keys']['p256dh'] ?? '';
     $auth     = $input['keys']['auth'] ?? '';
 
-    // Upsert subscription
-    $existing = db()->query("SELECT id FROM push_subscriptions WHERE user_id={$user['id']} AND endpoint='".addslashes($endpoint)."'")->fetchColumn();
+    // Upsert subscription (prepared statement — was string-concatenated/addslashes).
+    $ex = db()->prepare("SELECT id FROM push_subscriptions WHERE user_id=? AND endpoint=?");
+    $ex->execute([(int)$user['id'], $endpoint]);
+    $existing = $ex->fetchColumn();
     if ($existing) {
         db()->prepare("UPDATE push_subscriptions SET p256dh=:p, auth=:a, updated_at=NOW() WHERE id=:id")
              ->execute([':p'=>$p256dh,':a'=>$auth,':id'=>$existing]);

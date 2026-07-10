@@ -10,6 +10,9 @@
  * Going forward this happens automatically on every increment create/edit/delete
  * (see modules/increments/save.php & delete.php). Safe to re-run.
  */
+// SECURITY: setup/maintenance script — CLI only, never reachable over the web.
+if (PHP_SAPI !== 'cli') { http_response_code(404); exit('Not found.'); }
+
 require __DIR__ . '/../config/app.php';
 require __DIR__ . '/../config/database.php';
 require __DIR__ . '/../includes/salary_sync.php';

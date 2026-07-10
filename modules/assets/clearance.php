@@ -4,6 +4,7 @@
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
 require_permission('assets');
+block_cross_employee();   // No-Due clearance is an admin/HR function — self-scoped users blocked.
 
 $db     = db();
 $emp_id = (int)($_GET['emp_id'] ?? 0);
@@ -12,6 +13,10 @@ $selfUrl = BASE_URL . '/modules/assets/clearance.php' . ($emp_id ? '?emp_id=' . 
 // Handle return action (PRG redirect) — must be before header.php output.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
     if (!csrf_verify()) { flash('error', 'Invalid request'); redirect($selfUrl); }
+    // Re-check the action permission server-side (the UI only hides the button).
+    if (!can('assets', 'return') && !can('assets', 'edit')) {
+        flash('error', 'You are not allowed to return assets.'); redirect($selfUrl);
+    }
     $asgn_id = (int)$_POST['assignment_id'];
     $cond    = sanitize($_POST['condition_return']);
     $db->prepare('UPDATE asset_assignments SET is_returned=1, returned_date=CURDATE(), condition_at_return=? WHERE id=?')

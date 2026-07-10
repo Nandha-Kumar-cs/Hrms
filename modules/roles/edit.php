@@ -33,13 +33,24 @@ $errors = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
     verify_csrf($_POST['csrf_token'] ?? '');
+
+    // Only a Super Admin may edit the Super Admin role.
+    if ($role['is_system'] && !is_super_admin()) {
+        flash('error', 'Only a Super Admin can edit this role.');
+        redirect(BASE_URL . '/modules/roles/index.php');
+    }
+
     $name  = trim($_POST['name'] ?? '');
     $desc  = trim($_POST['description'] ?? '');
-    $perms = $_POST['permissions'] ?? [];
+    // You can only grant permissions you already hold (prevents self-escalation).
+    $perms = filter_assignable_permission_ids((array)($_POST['permissions'] ?? []));
     $notifs = $_POST['notifications'] ?? [];
     $pwa   = $_POST['pwa_modules'] ?? [];
 
     if (!$name) $errors[] = 'Role name is required.';
+    // Non-Super-Admins cannot rename a role into the privileged "Super Admin".
+    if (strcasecmp($name, 'Super Admin') === 0 && !is_super_admin())
+        $errors[] = 'You are not allowed to name a role "Super Admin".';
 
     $selfScope = !empty($_POST['self_scope']) ? 1 : 0;
 
@@ -88,18 +99,18 @@ include '../../includes/header.php';
     <?= csrf_field() ?>
 
     <!-- Tabs -->
-    <div class="tabs mb-4">
-        <button type="button" class="tab-btn active" onclick="switchTab(event,'permissions')">Permissions</button>
-        <button type="button" class="tab-btn" onclick="switchTab(event,'notifications')">Notifications</button>
-        <button type="button" class="tab-btn" onclick="switchTab(event,'pwa')">PWA Access</button>
+    <div class="role-tabs mb-4">
+        <button type="button" class="tab-btn active" onclick="switchTab(event,'permissions')"><i class="fa fa-shield-halved"></i> Permissions</button>
+        <button type="button" class="tab-btn" onclick="switchTab(event,'notifications')"><i class="fa fa-bell"></i> Notifications</button>
+        <button type="button" class="tab-btn" onclick="switchTab(event,'pwa')"><i class="fa fa-mobile-screen"></i> PWA Access</button>
         <?php if (!$role['is_system']): ?>
-        <button type="button" class="tab-btn" onclick="switchTab(event,'details')">Details</button>
+        <button type="button" class="tab-btn" onclick="switchTab(event,'details')"><i class="fa fa-circle-info"></i> Details</button>
         <?php endif; ?>
     </div>
 
     <!-- Permissions Tab -->
     <div id="tab-permissions" class="tab-content">
-        <div class="card">
+        <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="card-title">Module Permissions</h3>
                 <?php if (can('roles', 'edit')): ?>
@@ -109,35 +120,60 @@ include '../../includes/header.php';
                 </div>
                 <?php endif; ?>
             </div>
-            <div class="card-body">
-                <?php foreach ($grouped as $module => $mperms): ?>
-                <div class="perm-module mb-4">
-                    <div class="d-flex align-items-center gap-2 mb-2">
-                        <strong><?= h(module_label($module)) ?></strong>
-                        <?php if (can('roles', 'edit')): ?>
+        </div>
+        <div class="perm-grid">
+            <?php foreach ($grouped as $module => $mperms): ?>
+            <div class="card perm-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong><?= h(module_label($module)) ?></strong>
+                    <?php if (can('roles', 'edit')): ?>
+                    <span class="perm-card-actions">
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', true)">All</button>
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', false)">None</button>
-                        <?php endif; ?>
-                    </div>
-                    <div class="row">
-                        <?php foreach ($mperms as $p): ?>
-                        <div class="col-4 mb-1">
-                            <label class="form-check">
-                                <input type="checkbox" name="permissions[]" value="<?= $p['id'] ?>"
-                                    class="perm-check perm-<?= $p['module'] ?>"
-                                    <?= in_array($p['id'], $rolePerms) ? 'checked' : '' ?>
-                                    <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
-                                <span><?= h($p['label'] ?: ucfirst($p['action'])) ?></span>
-                            </label>
-                        </div>
-                        <?php endforeach; ?>
-                    </div>
+                    </span>
+                    <?php endif; ?>
                 </div>
-                <hr>
-                <?php endforeach; ?>
+                <div class="card-body">
+                    <?php foreach ($mperms as $p): $hint = permission_hint($p['module'], $p['action']); ?>
+                    <label class="form-check perm-row">
+                        <input type="checkbox" name="permissions[]" value="<?= $p['id'] ?>"
+                            class="perm-check perm-<?= $p['module'] ?>"
+                            <?= in_array($p['id'], $rolePerms) ? 'checked' : '' ?>
+                            <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
+                        <span><?= h($p['label'] ?: ucfirst($p['action'])) ?></span>
+                        <?php if ($hint !== ''): ?><i class="fa fa-eye perm-hint" title="<?= h($hint) ?>"></i><?php endif; ?>
+                    </label>
+                    <?php endforeach; ?>
+                </div>
             </div>
+            <?php endforeach; ?>
         </div>
     </div>
+    <style>
+    .perm-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
+    .perm-card { margin:0; }
+    .perm-card .card-header { padding:8px 12px; background:#f8fafc; }
+    .perm-card .card-body { padding:10px 12px; }
+    .perm-card-actions .btn { padding:1px 6px; font-size:10px; }
+    .perm-row { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:.86rem; }
+    .perm-row input { flex-shrink:0; }
+    .perm-row span { flex:1; }
+    .perm-hint { color:#64748b; cursor:help; font-size:.8rem; flex-shrink:0; }
+    .perm-hint:hover { color:#1e3a8a; }
+    /* Role edit tabs */
+    .role-tabs { display:flex; flex-wrap:wrap; gap:4px; border-bottom:2px solid #e2e8f0; }
+    .role-tabs .tab-btn {
+        appearance:none; background:transparent; border:none; border-bottom:2px solid transparent;
+        margin-bottom:-2px; padding:10px 18px; font-size:.9rem; font-weight:600; color:#64748b;
+        cursor:pointer; display:inline-flex; align-items:center; gap:8px;
+        border-radius:6px 6px 0 0; transition:all .15s ease;
+    }
+    .role-tabs .tab-btn i { font-size:.85rem; opacity:.8; }
+    .role-tabs .tab-btn:hover { color:#1e3a8a; background:#f1f5f9; }
+    .role-tabs .tab-btn.active { color:#1e3a8a; border-bottom-color:#1e3a8a; background:#fff; }
+    @media (max-width: 900px){ .perm-grid { grid-template-columns:1fr 1fr; } }
+    @media (max-width: 600px){ .perm-grid { grid-template-columns:1fr; } }
+    </style>
 
     <!-- Notifications Tab -->
     <div id="tab-notifications" class="tab-content" style="display:none">

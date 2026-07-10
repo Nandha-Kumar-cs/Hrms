@@ -8,7 +8,7 @@
  */
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
-require_permission('settings', 'view');
+require_permission('settings', 'branding');
 
 $db       = db();
 $self     = BASE_URL . '/modules/settings/branding.php';
@@ -40,8 +40,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = 'Logo upload failed (code ' . (int) $f['error'] . ').';
         } else {
             $ext     = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
-            $allowed = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
-            if (!in_array($ext, $allowed, true))      $errors[] = 'Logo must be PNG, JPG, GIF, WEBP or SVG.';
+            // SVG intentionally excluded — inline SVG can carry scripts (stored XSS).
+            $allowed = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+            $okMime  = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+            $realMime = (new finfo(FILEINFO_MIME_TYPE))->file($f['tmp_name']) ?: '';
+            if (!in_array($ext, $allowed, true))      $errors[] = 'Logo must be PNG, JPG, GIF or WEBP.';
+            elseif (!in_array($realMime, $okMime, true)) $errors[] = 'Logo file content is not a valid image.';
             elseif ($f['size'] > 2 * 1024 * 1024)     $errors[] = 'Logo must be under 2 MB.';
             else {
                 if (!is_dir($LOGO_DIR)) @mkdir($LOGO_DIR, 0775, true);
@@ -126,8 +130,8 @@ require_once __DIR__ . '/../../includes/header.php';
                         Current logo<?= $brandLogo ? '' : ' (default)' ?>.
                     </div>
                 </div>
-                <input type="file" name="brand_logo" class="form-control" accept=".png,.jpg,.jpeg,.gif,.webp,.svg" style="max-width:320px">
-                <div class="form-text">PNG, JPG, GIF, WEBP or SVG, under 2 MB. Leave empty to keep the current logo.</div>
+                <input type="file" name="brand_logo" class="form-control" accept=".png,.jpg,.jpeg,.gif,.webp" style="max-width:320px">
+                <div class="form-text">PNG, JPG, GIF or WEBP, under 2 MB. Leave empty to keep the current logo.</div>
             </div>
 
             <div style="display:flex;gap:8px;margin-top:16px">

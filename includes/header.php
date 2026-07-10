@@ -689,8 +689,9 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
         </li>
         <?php endif; ?>
 
-        <!-- ── SETTINGS (Admin / Manager) ────────────────────────────── -->
-        <?php if ($_sbPriv): ?>
+        <!-- ── SETTINGS (shown if the user can see ANY link inside it) ── -->
+        <?php if ($_sbPriv || can_any('settings') || can('users', 'view')
+                  || can('roles', 'view') || can('pwa', 'view') || can('payroll', 'process')): ?>
         <div class="sidebar-section">Settings</div>
         <li>
             <a class="nav-link <?= $_settActive ?>"
@@ -711,79 +712,66 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <?php endif; ?>
-                    <?php if ($_sbAdmin): ?>
+                    <?php if (can('roles', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/roles/index.php"
                            class="nav-link <?= _sb_active('/modules/roles/') ?>">
                             Roles &amp; Permissions
                         </a>
                     </li>
+                    <?php endif; ?>
+                    <?php if (can('pwa', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/pwa/index.php"
                            class="nav-link <?= _sb_active('/modules/pwa/') ?>">
                             Mobile Access
                         </a>
                     </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=entities"
-                           class="nav-link <?= _sb_active('tab=entities') ?>">
-                            Entities
-                        </a>
-                    </li>                    
+                    <?php endif; ?>
+                    <?php if (can('payroll', 'process')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/payroll/salary_components.php"
                            class="nav-link <?= $_salCompActive ?>">
                             Salary Components
                         </a>
                     </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=departments"
-                           class="nav-link <?= _sb_active('tab=departments') ?>">
-                            Departments
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=designations"
-                           class="nav-link <?= _sb_active('tab=designations') ?>">
-                            Designations
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=leave-types"
-                           class="nav-link <?= _sb_active('tab=leave-types') ?>">
-                            Leave Types
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=holiday-types"
-                           class="nav-link <?= _sb_active('tab=holiday-types') ?>">
-                            Holiday Types
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=benefit-fund-types"
-                           class="nav-link <?= _sb_active('tab=benefit-fund-types') ?>">
-                            Benefit Fund Types
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/index.php?tab=asset-categories"
-                           class="nav-link <?= _sb_active('tab=asset-categories') ?>">
-                            Asset Categories
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/office.php"
-                           class="nav-link <?= _sb_active('/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php') ?>">
-                            Office Settings
-                        </a>
-                    </li>
-                    <li>
-                        <a href="<?= BASE_URL ?>/modules/settings/branding.php"
-                           class="nav-link <?= _sb_active('/settings/branding.php') ?>">
-                            Branding
-                        </a>
-                    </li>
+                    <?php endif; ?>
+                    <?php /* Settings sections — each shown per its own permission */ ?>
+                    <?php if (can('settings','entities')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=entities"
+                           class="nav-link <?= _sb_active('tab=entities') ?>">Entities</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','departments')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=departments"
+                           class="nav-link <?= _sb_active('tab=departments') ?>">Departments</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','designations')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=designations"
+                           class="nav-link <?= _sb_active('tab=designations') ?>">Designations</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','leave_types')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=leave-types"
+                           class="nav-link <?= _sb_active('tab=leave-types') ?>">Leave Types</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','holiday_types')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=holiday-types"
+                           class="nav-link <?= _sb_active('tab=holiday-types') ?>">Holiday Types</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','benefit_fund_types')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=benefit-fund-types"
+                           class="nav-link <?= _sb_active('tab=benefit-fund-types') ?>">Benefit Fund Types</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','asset_categories')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/index.php?tab=asset-categories"
+                           class="nav-link <?= _sb_active('tab=asset-categories') ?>">Asset Categories</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','office')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/office.php"
+                           class="nav-link <?= _sb_active('/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php') ?>">Office Settings</a></li>
+                    <?php endif; ?>
+                    <?php if (can('settings','branding')): ?>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/branding.php"
+                           class="nav-link <?= _sb_active('/settings/branding.php') ?>">Branding</a></li>
                     <?php endif; ?>
                 </ul>
             </div>
@@ -873,6 +861,15 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
 
     <!-- ── Page content ─────────────────────────────────────────────── -->
     <main id="mainContent">
+        <?php if (!empty($_SESSION['impersonator'])): ?>
+        <div style="background:#7c2d12;color:#fff;padding:8px 16px;border-radius:8px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <span><i class="fa fa-user-secret me-2"></i>You are viewing the app as
+                <strong><?= h($user['name'] ?? $user['email'] ?? 'this user') ?></strong>
+                (impersonated by <?= h($_SESSION['impersonator']['name'] ?? 'admin') ?>).</span>
+            <a href="<?= BASE_URL ?>/modules/settings/impersonate.php?action=stop"
+               class="btn btn-sm btn-light fw-semibold"><i class="fa fa-right-from-bracket me-1"></i>Return to my account</a>
+        </div>
+        <?php endif; ?>
         <?php if ($flash): ?>
         <div class="alert-container"><?= $flash ?></div>
         <?php endif; ?>
