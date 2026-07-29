@@ -278,6 +278,25 @@ $sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match 
                     </div>
                 </div>
 
+                <div class="col-md-4 d-flex align-items-end pb-1">
+                    <div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox"
+                                   name="pf_enabled" value="1" id="pfEnabled"
+                                   <?php /* On a fresh form ($old empty) PF defaults ON; when repopulating after a
+                                            validation error, an unchecked box is simply absent from $_POST. */ ?>
+                                   <?= empty($old) || !empty($old['pf_enabled']) ? 'checked' : '' ?>>
+                            <label class="form-check-label fw-semibold" for="pfEnabled">
+                                <i class="fa fa-piggy-bank me-1 text-success"></i>PF Deduction
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            Deduct Provident Fund from this employee's salary.<br>
+                            PF = 12% of Basic, capped at ₹1,800/month.
+                        </div>
+                    </div>
+                </div>
+
             </div>
 
             <!-- ── Bank & Statutory Details ──────────────────────────────── -->

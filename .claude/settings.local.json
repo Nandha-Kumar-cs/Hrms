@@ -296,7 +296,32 @@
       "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -P 3307 -h 127.0.0.1 magdyn_hrms -e 'SELECT module, action, label FROM permissions ORDER BY module, action;')",
       "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -P 3307 -h 127.0.0.1 magdyn_hrms -e 'SELECT id, name, description, self_scope FROM roles ORDER BY id;')",
       "Bash(cp \"/c/xampp8.2/htdocs/hrms/install/roles_permissions_seed.sql\" \"/c/Users/Magdyn2/Downloads/roles_permissions_seed.sql\")",
-      "Bash(xargs echo \"settings permission rows:\")"
+      "Bash(xargs echo \"settings permission rows:\")",
+      "PowerShell(Set-Location C:\\\\xampp8.2\\\\htdocs; laravel new helpdesk --livewire --pest --no-interaction 2>&1 | Tee-Object -FilePath \"$env:TEMP\\\\helpdesk_scaffold.log\")",
+      "Bash(python -c \"import pypdf; print\\('pypdf ok'\\)\")",
+      "Bash(python -c \"import pdfplumber; print\\('pdfplumber ok'\\)\")",
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root magdyn_hrms)",
+      "Bash(tasklist)",
+      "Bash(netstat -ano)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e \"SHOW COLUMNS FROM employees LIKE 'pf_enabled'; SELECT COUNT\\(*\\) AS total_emp, SUM\\(pf_enabled\\) AS pf_on FROM employees; SHOW COLUMNS FROM salary_components LIKE 'sort_order'; SELECT id, name, type, sort_order FROM salary_components ORDER BY sort_order, id;\")",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e \"SELECT COUNT\\(*\\) AS component_count FROM salary_components;\")",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e \"SELECT id, name, pf_enabled, fixed_salary FROM employees WHERE status='Active' AND fixed_salary > 0 ORDER BY id LIMIT 3;\")",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e \"SELECT id, name, pf_enabled, fixed_salary FROM employees WHERE status='Active' ORDER BY id LIMIT 5;\")",
+      "Bash(/c/xampp8.2/php/php.exe \"C:/Users/Magdyn2/AppData/Local/Temp/claude/C--xampp8-2-htdocs-hrms/831b30e7-cc4f-4a7c-8732-3fefe95b365a/scratchpad/verify.php\")",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e ' *)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms --vertical -e ' *)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e \"SHOW COLUMNS FROM employees WHERE Field IN \\('address','city','state','pincode'\\);\")",
+      "Bash(/c/xampp8.2/php/php.exe -l modules/employee/edit.php)",
+      "Bash(/c/xampp8.2/mysql/bin/mysql.exe -u root -h 127.0.0.1 -P 3307 magdyn_hrms -e \"SELECT id, name, address, city, state, pincode FROM employees WHERE id = 1;\")",
+      "Bash(git -c core.safecrlf=false diff HEAD -- install/add_pf_enabled_and_component_order.sql install/schema.sql includes/PayrollCalculator.php includes/offer_letter.php modules/employee/add_form.php modules/employee/create.php modules/employee/edit.php modules/payroll/process.php modules/payroll/calculate.php modules/payroll/generate_slip.php modules/payroll/salary_components.php modules/letters/create.php)",
+      "Bash(git reset *)",
+      "Bash(cp modules/employee/edit.php /c/Users/Magdyn2/AppData/Local/Temp/claude/C--xampp8-2-htdocs-hrms/71df5ca0-ebc3-46f3-98c3-8f11ce5ddf90/scratchpad/hrms_pf_delta/modules/employee/edit.php)",
+      "Bash(cp pf_and_component_order.patch /c/Users/Magdyn2/AppData/Local/Temp/claude/C--xampp8-2-htdocs-hrms/71df5ca0-ebc3-46f3-98c3-8f11ce5ddf90/scratchpad/hrms_pf_delta/pf_and_component_order.patch)",
+      "Bash(python -c \"import pypdf; print\\(pypdf.__version__\\)\")",
+      "Bash(python -c \"import PyPDF2; print\\('PyPDF2', PyPDF2.__version__\\)\")"
     ]
   }
 }

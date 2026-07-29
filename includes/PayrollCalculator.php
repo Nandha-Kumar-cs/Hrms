@@ -277,8 +277,13 @@ class PayrollCalculator
             $deductions[$comp['name']] = $amount;
         }
 
-        // Step 8: PF (12% of basic, capped at ₹1800)
-        $pfEmployee = min(round($basicSalary * PAYROLL_PF_EMPLOYEE, 2), round(self::PF_CAP_BASIC * PAYROLL_PF_EMPLOYEE, 2));
+        // Step 8: PF (12% of basic, capped at ₹1800) — only for employees with
+        // the PF toggle on (employees.pf_enabled). Employees opted out contribute
+        // nothing and get no employer match, so no PF line appears on the slip.
+        $pfEmployee = 0.0;
+        if (!empty($employee['pf_enabled'])) {
+            $pfEmployee = min(round($basicSalary * PAYROLL_PF_EMPLOYEE, 2), round(self::PF_CAP_BASIC * PAYROLL_PF_EMPLOYEE, 2));
+        }
         $pfEmployer = $pfEmployee;
         if ($pfEmployee > 0) {
             $deductions['Provident Fund (PF)'] = $pfEmployee;

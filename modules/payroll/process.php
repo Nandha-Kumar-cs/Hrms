@@ -86,7 +86,10 @@ foreach ($employees as $emp) {
     $gross_e = $basic + $hra + $conv + $med + $spec + $other;
 
     // Deductions
-    $pf_emp = min(round($basic * PAYROLL_PF_EMPLOYEE, 2), round(15000 * PAYROLL_PF_EMPLOYEE, 2)); // PF on capped basic
+    // PF on capped basic — only when the employee has PF enabled (employees.pf_enabled).
+    $pf_emp = !empty($emp['pf_enabled'])
+        ? min(round($basic * PAYROLL_PF_EMPLOYEE, 2), round(15000 * PAYROLL_PF_EMPLOYEE, 2))
+        : 0.0;
     $pf_er  = $pf_emp; // Employer PF match
     $esi_emp = 0; $esi_er = 0;
     if ($gross_e <= PAYROLL_ESI_WAGE_LIMIT) {

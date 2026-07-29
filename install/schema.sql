@@ -272,6 +272,7 @@ CREATE TABLE IF NOT EXISTS salary_components (
     type             ENUM('allowance','deduction') NOT NULL,
     calculation_type ENUM('percentage','fixed') NOT NULL,
     value            DECIMAL(10,4) NOT NULL DEFAULT 0,
+    sort_order       INT NOT NULL DEFAULT 0,   -- display order on slip & offer letter
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

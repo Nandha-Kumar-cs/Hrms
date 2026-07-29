@@ -36,7 +36,7 @@ function offer_letter_data(PDO $db, array $letter): array
     // Salary breakup from configured components (percentage of salary, or fixed).
     $allowances = []; $deductions = [];
     try {
-        foreach ($db->query('SELECT name, type, calculation_type, value FROM salary_components ORDER BY id') as $c) {
+        foreach ($db->query('SELECT name, type, calculation_type, value FROM salary_components ORDER BY sort_order, id') as $c) {
             $amt = $c['calculation_type'] === 'percentage' ? ($c['value'] / 100) * $salary : (float)$c['value'];
             if ($c['type'] === 'allowance') $allowances[$c['name']] = round($amt, 2);
             else                            $deductions[$c['name']] = round($amt, 2);

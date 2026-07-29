@@ -39,7 +39,7 @@ $departments  = $db->query('SELECT id, name FROM departments ORDER BY name')->fe
 $salary_components = [];
 try {
     $salary_components = $db->query(
-        'SELECT name, type, calculation_type, value FROM salary_components ORDER BY id'
+        'SELECT name, type, calculation_type, value FROM salary_components ORDER BY sort_order, id'
     )->fetchAll();
 } catch (Throwable $e) { /* table absent — breakup section stays empty */ }
 

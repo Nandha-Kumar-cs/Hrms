@@ -78,7 +78,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // ── Load salary components ───────────────────────────────────────────────
-    $components = $db->query('SELECT * FROM salary_components ORDER BY type, name')->fetchAll();
+    // sort_order fixes the earnings/deductions row order on the slip. The order is
+    // frozen into the slip's JSON at generation time, so changing a component's
+    // order later only affects slips generated from then on.
+    $components = $db->query('SELECT * FROM salary_components ORDER BY sort_order, id')->fetchAll();
 
     // ── Check for existing slip ──────────────────────────────────────────────
     $payrollMonth = sprintf('%04d-%02d', $year, $month);
@@ -399,7 +402,7 @@ require_once __DIR__ . '/../../includes/header.php';
         <div class="card">
             <div class="card-head"><h3>Active Salary Components</h3></div>
             <?php
-            $components = $db->query('SELECT * FROM salary_components ORDER BY type, name')->fetchAll();
+            $components = $db->query('SELECT * FROM salary_components ORDER BY sort_order, id')->fetchAll();
             ?>
             <?php if ($components): ?>
             <div style="padding:0 0 8px">

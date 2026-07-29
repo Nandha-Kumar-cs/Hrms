@@ -61,6 +61,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $dob       = sanitize($_POST['dob']       ?? '');
     $gender    = sanitize($_POST['gender']    ?? '');
 
+    // ── Address ───────────────────────────────────────────────────────────────
+    $address = sanitize($_POST['address'] ?? '');
+    $city    = sanitize($_POST['city']    ?? '');
+    $state   = sanitize($_POST['state']   ?? '');
+    $pincode = sanitize($_POST['pincode']  ?? '');
+
     // ── Employment ────────────────────────────────────────────────────────────
     $entity_id     = (int)($_POST['entity_id']           ?? 0) ?: null;
     $lunch_batch_id = (int)($_POST['lunch_batch_id']     ?? 0) ?: null;
@@ -74,6 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── Salary ────────────────────────────────────────────────────────────────
     $fixed_salary = (float)($_POST['fixed_salary'] ?? 0);
     $ot_enabled   = isset($_POST['ot_enabled']) ? 1 : 0;
+    $pf_enabled   = isset($_POST['pf_enabled']) ? 1 : 0;
 
     // ── Bank & Statutory ──────────────────────────────────────────────────────
     $bank  = sanitize($_POST['bank_name']      ?? '');
@@ -153,8 +160,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "UPDATE employees SET
                 entity_id=:entity_id, lunch_batch_id=:lunch_batch_id,
                 name=:name, email=:email, phone=:phone, gender=:gender, dob=:dob,
+                address=:address, city=:city, state=:state, pincode=:pincode,
                 department_id=:dept_id, designation_id=:des_id,
-                ot_enabled=:ot_enabled, manager_id=:mgr_id,
+                ot_enabled=:ot_enabled, pf_enabled=:pf_enabled, manager_id=:mgr_id,
                 join_date=:join_date, probation_end=:probation_end, status=:status,
                 fixed_salary=:fixed_salary,
                 bank_name=:bank, bank_account=:bacc, bank_ifsc=:bifsc,
@@ -170,9 +178,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':phone'        => $phone         ?: null,
             ':gender'       => $gender        ?: null,
             ':dob'          => $dob           ?: null,
+            ':address'      => $address       ?: null,
+            ':city'         => $city          ?: null,
+            ':state'        => $state         ?: null,
+            ':pincode'      => $pincode       ?: null,
             ':dept_id'      => $dept_id,
             ':des_id'       => $des_id,
             ':ot_enabled'   => $ot_enabled,
+            ':pf_enabled'   => $pf_enabled,
             ':mgr_id'       => $mgr_id,
             ':join_date'    => $joining_date  ?: null,
             ':probation_end'=> $probation_end ?: null,
@@ -222,6 +235,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             activity_change('CTC/Month',
                 '₹' . number_format((float)($emp['fixed_salary'] ?? 0), 2),
                 '₹' . number_format((float)$fixed_salary, 2)),
+            activity_change('PF Deduction',
+                !empty($emp['pf_enabled']) ? 'Enabled' : 'Disabled',
+                $pf_enabled ? 'Enabled' : 'Disabled'),
         ]));
         activity_log('updated', 'Employee', 'Updated employee: ' . $full_name . ' (' . ($emp['employee_id'] ?? '') . ')', $changes);
         flash('success', 'Employee updated successfully.');
@@ -236,6 +252,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'phone'          => $phone,
         'gender'         => $gender,
         'dob'            => $dob,
+        'address'        => $address,
+        'city'           => $city,
+        'state'          => $state,
+        'pincode'        => $pincode,
         'department_id'  => $dept_id,
         'designation_id' => $des_id,
         'manager_id'     => $mgr_id,
@@ -244,6 +264,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'status'         => $status,
         'fixed_salary'   => $fixed_salary,
         'ot_enabled'     => $ot_enabled,
+        'pf_enabled'     => $pf_enabled,
         'bank_name'      => $bank,
         'bank_account'   => $bacc,
         'bank_ifsc'      => $bifsc,
@@ -335,6 +356,30 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                         <option value="Other"             <?= $sel('gender', 'Other') ?>>Other</option>
                         <option value="Prefer not to say" <?= $sel('gender', 'Prefer not to say') ?>>Prefer not to say</option>
                     </select>
+                </div>
+
+                <div class="col-md-12">
+                    <label class="form-label">Address</label>
+                    <textarea name="address" class="form-control" rows="2"
+                              placeholder="House / street / area"><?= $v('address') ?></textarea>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">City</label>
+                    <input type="text" name="city" class="form-control"
+                           value="<?= $v('city') ?>" placeholder="Chennai">
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">State</label>
+                    <input type="text" name="state" class="form-control"
+                           value="<?= $v('state') ?>" placeholder="Tamil Nadu">
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Pincode</label>
+                    <input type="text" name="pincode" class="form-control"
+                           value="<?= $v('pincode') ?>" placeholder="600001" maxlength="10">
                 </div>
 
             </div>
@@ -488,6 +533,23 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                         <div class="form-text">
                             Auto-calculate overtime when check-out exceeds 8:30 PM.<br>
                             OT rate = (Basic ÷ 30 ÷ 8) × 2 per OT hour.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 d-flex align-items-end pb-1">
+                    <div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox"
+                                   name="pf_enabled" value="1" id="pfEnabled"
+                                   <?= !empty($emp['pf_enabled']) ? 'checked' : '' ?>>
+                            <label class="form-check-label fw-semibold" for="pfEnabled">
+                                <i class="fa fa-piggy-bank me-1 text-success"></i>PF Deduction
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            Deduct Provident Fund from this employee's salary.<br>
+                            PF = 12% of Basic, capped at ₹1,800/month.
                         </div>
                     </div>
                 </div>

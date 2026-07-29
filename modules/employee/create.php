@@ -119,6 +119,7 @@ $probation_end = sanitize($_POST['probation_end'] ?? '');
 $fixed_salary    = (float)($_POST['fixed_salary']    ?? 0);
 $variable_salary = (float)($_POST['variable_salary'] ?? 0);
 $ot_enabled      = isset($_POST['ot_enabled']) ? 1 : 0;
+$pf_enabled      = isset($_POST['pf_enabled']) ? 1 : 0;
 
 $bank  = sanitize($_POST['bank_name']      ?? '');
 $bacc  = sanitize($_POST['bank_account']   ?? '');
@@ -244,7 +245,7 @@ if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR
 $stmt = $db->prepare(
     "INSERT INTO employees
         (entity_id, lunch_batch_id, employee_id, name, email, phone, dob, gender,
-         department_id, designation_id, ot_enabled, manager_id,
+         department_id, designation_id, ot_enabled, pf_enabled, manager_id,
          join_date, probation_end, status,
          fixed_salary, variable_salary,
          bank_name, bank_account, bank_ifsc,
@@ -252,7 +253,7 @@ $stmt = $db->prepare(
          photo, created_at)
      VALUES
         (:entity_id, :lunch_batch_id, :employee_id, :name, :email, :phone, :dob, :gender,
-         :department_id, :designation_id, :ot_enabled, :manager_id,
+         :department_id, :designation_id, :ot_enabled, :pf_enabled, :manager_id,
          :join_date, :probation_end, :status,
          :fixed_salary, :variable_salary,
          :bank, :bacc, :bifsc,
@@ -272,6 +273,7 @@ $stmt->execute([
     ':department_id'  => $dept_id,
     ':designation_id' => $des_id,
     ':ot_enabled'     => $ot_enabled,
+    ':pf_enabled'     => $pf_enabled,
     ':manager_id'     => $mgr_id,
     ':join_date'      => $joining_date  ?: null,
     ':probation_end'  => $probation_end ?: null,

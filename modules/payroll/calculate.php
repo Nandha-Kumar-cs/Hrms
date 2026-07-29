@@ -33,7 +33,8 @@ $futureMsg     = 'Cannot generate a salary slip for a future month (' . $monthLa
                . '). Payroll is only allowed for the current or a past month.';
 
 // ─── Load salary components ──────────────────────────────────────────────────
-$components = $db->query('SELECT * FROM salary_components ORDER BY type, name')->fetchAll();
+// sort_order drives the row order on the generated slip — see salary_components.php.
+$components = $db->query('SELECT * FROM salary_components ORDER BY sort_order, id')->fetchAll();
 
 // ─── Load active employees with salary structures (own row only if self-scoped) ─
 $empSql = 'SELECT e.*, d.name AS dept_name, des.name AS desig_name,

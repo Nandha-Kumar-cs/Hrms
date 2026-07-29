@@ -29,8 +29,9 @@ if (!empty($_GET['ajax'])) {
         $length  = (int)($_GET['length'] ?? 25);
         $orderCol = (int)($_GET['order'][0]['column'] ?? 0);
         $orderDir = strtoupper($_GET['order'][0]['dir'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
-        $cols     = ['id', 'name', 'type', 'calculation_type', 'value', 'value', 'id'];
-        $orderBy  = $cols[$orderCol] ?? 'name';
+        // Positional — must stay in sync with the <th> list and the JS columns array.
+        $cols     = ['sort_order', 'sort_order', 'name', 'type', 'calculation_type', 'value', 'value', 'id'];
+        $orderBy  = $cols[$orderCol] ?? 'sort_order';
 
         $total = (int)$db->query('SELECT COUNT(*) FROM salary_components')->fetchColumn();
 
@@ -41,7 +42,7 @@ if (!empty($_GET['ajax'])) {
         $stmt = $db->prepare(
             "SELECT * FROM salary_components
               WHERE name LIKE ? OR type LIKE ? OR calculation_type LIKE ?
-              ORDER BY {$orderBy} {$orderDir}
+              ORDER BY {$orderBy} {$orderDir}, id ASC
               LIMIT ? OFFSET ?"
         );
         $stmt->execute([$search, $search, $search, $length, $start]);
@@ -69,6 +70,7 @@ if (!empty($_GET['ajax'])) {
 
             $data[] = [
                 $i++,
+                '<span class="badge bg-light text-dark border">' . (int)$r['sort_order'] . '</span>',
                 h($r['name']),
                 $typeBadge,
                 ucfirst($r['calculation_type']),
@@ -119,6 +121,7 @@ if (!empty($_GET['ajax'])) {
         $type     = $_POST['type'] ?? '';
         $calcType = $_POST['calculation_type'] ?? '';
         $value    = (float)($_POST['value'] ?? 0);
+        $rawOrder = trim($_POST['sort_order'] ?? '');
 
         // Validate
         $errors = [];
@@ -127,11 +130,20 @@ if (!empty($_GET['ajax'])) {
         if (!in_array($type, ['allowance','deduction'])) $errors[] = 'Type must be allowance or deduction.';
         if (!in_array($calcType, ['percentage','fixed'])) $errors[] = 'Calculation type must be percentage or fixed.';
         if ($value < 0)                                $errors[] = 'Value must be 0 or greater.';
+        if ($rawOrder !== '' && (!ctype_digit($rawOrder) || (int)$rawOrder < 1)) {
+            $errors[] = 'Display order must be a whole number of 1 or more.';
+        }
 
         if ($errors) {
             echo json_encode(['success' => false, 'message' => implode(' ', $errors)]);
             exit;
         }
+
+        // Blank order → append to the end, so a component is never silently
+        // assigned 0 and jumped to the top of every slip.
+        $sortOrder = $rawOrder !== ''
+            ? (int)$rawOrder
+            : (int)$db->query('SELECT COALESCE(MAX(sort_order), 0) + 1 FROM salary_components')->fetchColumn();
 
         $nameSlug = strtolower(str_replace(' ', '_', $name));
         $formula = $calcType === 'percentage'
@@ -139,8 +151,8 @@ if (!empty($_GET['ajax'])) {
             : "{$nameSlug} = {$value} (fixed)";
 
         if ($action === 'create') {
-            $st = $db->prepare('INSERT INTO salary_components (name,type,calculation_type,value) VALUES (?,?,?,?)');
-            $st->execute([$name, $type, $calcType, $value]);
+            $st = $db->prepare('INSERT INTO salary_components (name,type,calculation_type,value,sort_order) VALUES (?,?,?,?,?)');
+            $st->execute([$name, $type, $calcType, $value, $sortOrder]);
             $newId = $db->lastInsertId();
             $row   = $db->prepare('SELECT * FROM salary_components WHERE id=?');
             $row->execute([$newId]);
@@ -149,8 +161,8 @@ if (!empty($_GET['ajax'])) {
         }
 
         if ($action === 'update' && $id) {
-            $st = $db->prepare('UPDATE salary_components SET name=?,type=?,calculation_type=?,value=?,updated_at=NOW() WHERE id=?');
-            $st->execute([$name, $type, $calcType, $value, $id]);
+            $st = $db->prepare('UPDATE salary_components SET name=?,type=?,calculation_type=?,value=?,sort_order=?,updated_at=NOW() WHERE id=?');
+            $st->execute([$name, $type, $calcType, $value, $sortOrder, $id]);
             $row = $db->prepare('SELECT * FROM salary_components WHERE id=?');
             $row->execute([$id]);
             echo json_encode(['success' => true, 'message' => "Component '{$name}' updated.", 'data' => $row->fetch(), 'formula' => $formula]);
@@ -225,6 +237,7 @@ require_once __DIR__ . '/../../includes/header.php';
                 <thead class="table-dark">
                     <tr>
                         <th>#</th>
+                        <th title="Display order on the salary slip and offer letter">Order</th>
                         <th>Name</th>
                         <th>Type</th>
                         <th>Calc. Type</th>
@@ -235,7 +248,7 @@ require_once __DIR__ . '/../../includes/header.php';
                 </thead>
                 <tbody></tbody>
                 <tfoot>
-                    <tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
+                    <tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
                 </tfoot>
             </table>
         </div>
@@ -273,6 +286,16 @@ require_once __DIR__ . '/../../includes/header.php';
             <div class="mb-3">
                 <label class="form-label">Value <span class="text-danger">*</span></label>
                 <input type="number" id="compValue" class="form-control" step="0.01" min="0" oninput="updateFormulaPreview()">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Display Order</label>
+                <input type="number" id="compSortOrder" class="form-control" step="1" min="1"
+                       placeholder="Leave blank to add at the end">
+                <div class="form-text">
+                    Position of this component on the salary slip and offer letter —
+                    lower numbers appear first. Earnings and deductions are ordered
+                    within their own section.
+                </div>
             </div>
             <div class="mb-3">
                 <label class="form-label">Formula Preview</label>
@@ -319,12 +342,13 @@ $(function () {
         dom: 'lfrtip',
         columns: [
             { data: 0 },
-            { data: 1 },
-            { data: 2, orderable: false },
-            { data: 3 },
-            { data: 4, className: 'text-end' },
-            { data: 5, orderable: false, searchable: false },
-            { data: 6, orderable: false, searchable: false, className: 'text-center',
+            { data: 1, className: 'text-center' },
+            { data: 2 },
+            { data: 3, orderable: false },
+            { data: 4 },
+            { data: 5, className: 'text-end' },
+            { data: 6, orderable: false, searchable: false },
+            { data: 7, orderable: false, searchable: false, className: 'text-center',
               render: function (data) { return data; } }
         ],
         order: [[1, 'asc']],
@@ -334,7 +358,7 @@ $(function () {
             paginate: { previous: '&laquo;', next: '&raquo;' }
         },
         initComplete: function () {
-            this.api().columns([1, 2, 3]).every(function () {
+            this.api().columns([2, 3, 4]).every(function () {
                 var col = this;
                 $('<input type="text" class="form-control form-control-sm" placeholder="Search...">')
                     .appendTo($('#compsTable tfoot th').eq(col.index()))
@@ -353,6 +377,7 @@ $(function () {
             $('#compType').val(d.type);
             $('#compCalcType').val(d.calculation_type);
             $('#compValue').val(d.value);
+            $('#compSortOrder').val(d.sort_order);
             updateFormulaPreview();
             $('#formErrors').addClass('d-none');
             openCompModal();
@@ -391,6 +416,7 @@ function openAddModal() {
     $('#compType').val('allowance');
     $('#compCalcType').val('percentage');
     $('#compValue').val('');
+    $('#compSortOrder').val('');
     $('#formulaPreview').text('');
     $('#formErrors').addClass('d-none');
     openCompModal();
@@ -417,7 +443,8 @@ function saveComponent() {
         name:             $('#compName').val().trim(),
         type:             $('#compType').val(),
         calculation_type: $('#compCalcType').val(),
-        value:            $('#compValue').val()
+        value:            $('#compValue').val(),
+        sort_order:       $('#compSortOrder').val()
     }, function (res) {
         if (res.success) {
             closeCompModal();
