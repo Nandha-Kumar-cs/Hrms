@@ -247,7 +247,13 @@ class PayrollCalculator
         // Per-day rate = CTC ÷ calendar days (drives absent & late deductions).
         // OT rate = Basic ÷ calendar days ÷ 8 × 2  (formula: Basic ÷ days ÷ 8 × 2 × hrs).
         // OT hours: admin-entered value overrides the auto-calculated value when given.
+        // A shift with OT switched off (a straight shift) never earns overtime —
+        // the manual override cannot re-enable it, matching what the attendance
+        // sheet stores for those employees.
         $otHours    = ($manualOtHours !== null) ? max(0.0, (float)$manualOtHours) : $att['ot_hours'];
+        if (!attendance_shift_timing($empId)['shift_ot_on']) {
+            $otHours = 0.0;
+        }
         $perDay     = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
         $perHour    = round($perDay / 8, 4);
         $otPerDay   = $calDays > 0 ? round($basicSalary / $calDays, 4) : 0;
@@ -289,10 +295,11 @@ class PayrollCalculator
             $deductions['Provident Fund (PF)'] = $pfEmployee;
         }
 
-        // Step 9: ESI
+        // Step 9: ESI — gated by the same pf_enabled toggle, so switching PF off
+        // for an employee also stops ESI (both statutory deductions are skipped).
         $esiEmployee = 0.0;
         $esiEmployer = 0.0;
-        if ($fixedSalary < PAYROLL_ESI_WAGE_LIMIT) {
+        if (!empty($employee['pf_enabled']) && $fixedSalary < PAYROLL_ESI_WAGE_LIMIT) {
             $esiEmployee = round($fixedSalary * PAYROLL_ESI_EMPLOYEE, 2);
             $esiEmployer = round($fixedSalary * PAYROLL_ESI_EMPLOYER, 2);
             if ($esiEmployee > 0) {
@@ -341,7 +348,7 @@ class PayrollCalculator
         //   deduction          = deductable minutes × per-hour rate ÷ 60
         // (matches Laravel SalarySlipController behaviour.)
         $lateDeduction     = 0.0;
-        $monthlyGrace      = setting_monthly_grace_mins(); // from Grace Settings (default 90)
+        $monthlyGrace      = attendance_shift_timing($empId)['monthly_grace']; // employee's shift (legacy setting when shift-less)
         $totalLateMinutes  = $att['late_minutes'];
         $deductableLateMin = 0;
         if ($totalLateMinutes > $monthlyGrace) {
@@ -356,7 +363,30 @@ class PayrollCalculator
         $netPay          = max(0, $grossEarnings - $totalDeductions);
 
         // ── Attendance summary (stored as JSON) ───────────────────────────────
+        // Shift(s) actually worked this month, frozen onto the slip. Reads the
+        // stamped shift on each attendance row, so a slip regenerated after the
+        // employee moves shifts still names the shift they worked back then.
+        $shiftNames = [];
+        try {
+            $shSt = $this->db->prepare(
+                'SELECT DISTINCT s.name FROM attendance a
+                   JOIN shifts s ON s.id = a.shift_id
+                  WHERE a.employee_id = ? AND a.att_date BETWEEN ? AND ?
+                  ORDER BY s.name'
+            );
+            $shSt->execute([$empId, $monthStart, $monthEnd]);
+            $shiftNames = $shSt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        } catch (Throwable $e) { /* shifts tables absent */ }
+        if (!$shiftNames) {   // no stamped rows (legacy month) → the employee's shift now
+            $curShiftId = attendance_shift_timing($empId)['shift_id'];
+            if ($curShiftId) {
+                $cs = get_shift($curShiftId);
+                if (!empty($cs['name'])) $shiftNames = [$cs['name']];
+            }
+        }
+
         $attendanceSummary = [
+            'shift_name'            => $shiftNames ? implode(', ', $shiftNames) : null,
             'total_working_days'    => $workingDays,
             'present_days'          => $att['present'],
             'half_days'             => $att['half_day'],
@@ -491,26 +521,44 @@ class PayrollCalculator
 
     private function getAttendance(int $empId, string $from, string $to): array
     {
-        // Timing pulled from app_settings (OT Settings / Grace Settings pages).
+        // The employee's CURRENT shift timing (legacy global settings fall back
+        // inside the helper when no shift is assigned).
+        $curT = attendance_shift_timing($empId);
+
+        // Legacy global fallbacks — used only for rows with no shift anywhere.
         $officeStart  = setting_office_start();        // 'HH:MM' — late measured from here
         $triggerMins  = setting_ot_trigger_mins();     // checkout must reach this for OT
         $baselineMins = setting_ot_baseline_mins();    // OT hours counted from here
 
-        // Late minutes counted from office start.
-        // OT minutes = checkout − baseline, but ONLY when checkout ≥ OT trigger time
-        // (matches Laravel OT rule: "checkout ≥ Trigger → OT = (checkout − baseline)/60").
+        // Late minutes counted from the SHIFT's start; OT from the SHIFT's
+        // trigger/baseline. Thresholds resolve PER ROW: the shift stamped on the
+        // attendance row (frozen at mark time), else the employee's current
+        // shift, else the legacy globals. A shift with ot_enabled = 0 (straight
+        // shift) contributes ZERO OT minutes regardless of checkout time.
         $stmt = $this->db->prepare(
-            'SELECT status, COUNT(*) AS cnt,
-                    SUM(CASE WHEN in_time IS NOT NULL AND out_time IS NOT NULL
-                             THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, CONCAT(att_date," ",?), CONCAT(att_date," ",in_time)))
+            'SELECT a.status, COUNT(*) AS cnt,
+                    SUM(CASE WHEN a.in_time IS NOT NULL AND a.out_time IS NOT NULL
+                             THEN GREATEST(0, TIMESTAMPDIFF(MINUTE,
+                                  CONCAT(a.att_date," ",COALESCE(s.start_time, ?)),
+                                  CONCAT(a.att_date," ",a.in_time)))
                              ELSE 0 END) AS late_mins,
-                    SUM(CASE WHEN out_time IS NOT NULL
-                              AND (HOUR(out_time) * 60 + MINUTE(out_time)) >= ?
-                             THEN GREATEST(0, (HOUR(out_time) * 60 + MINUTE(out_time)) - ?)
+                    SUM(CASE
+                             /* shift says no OT, or has OT on but no trigger/baseline
+                                configured — mark.php grants no auto-OT in either
+                                state, so payroll must agree. */
+                             WHEN s.id IS NOT NULL AND (s.ot_enabled = 0
+                                  OR s.ot_trigger_time IS NULL OR s.ot_baseline_time IS NULL) THEN 0
+                             WHEN a.out_time IS NOT NULL
+                              AND (HOUR(a.out_time) * 60 + MINUTE(a.out_time)) >=
+                                  COALESCE(HOUR(s.ot_trigger_time) * 60 + MINUTE(s.ot_trigger_time), ?)
+                             THEN GREATEST(0, (HOUR(a.out_time) * 60 + MINUTE(a.out_time)) -
+                                  COALESCE(HOUR(s.ot_baseline_time) * 60 + MINUTE(s.ot_baseline_time), ?))
                              ELSE 0 END) AS ot_mins
-             FROM attendance
-             WHERE employee_id = ? AND att_date BETWEEN ? AND ?
-             GROUP BY status'
+             FROM attendance a
+             LEFT JOIN employees emp ON emp.id = a.employee_id
+             LEFT JOIN shifts    s   ON s.id = COALESCE(a.shift_id, emp.shift_id)
+             WHERE a.employee_id = ? AND a.att_date BETWEEN ? AND ?
+             GROUP BY a.status'
         );
         $stmt->execute([$officeStart, $triggerMins, $baselineMins, $empId, $from, $to]);
         $rows = $stmt->fetchAll();
@@ -546,12 +594,10 @@ class PayrollCalculator
         //   net = 4h (on-time-ish)    → HALF    (no late; ½ day)               → "Half Day Deduction"
         //   net > 4h (on-time-ish)    → PRESENT (late applies; pro-rated)      → "Short Hours Deduction"
         //                               (FULL when net ≥ 8h → no shortfall)
-        $officeStartM = (int) setting_office_start_mins();
-        $officeEndM   = (int) setting_office_end_mins();
-        $graceM       = (int) setting_daily_grace_mins();
-        $lunchWin     = function_exists('employee_lunch_window') ? employee_lunch_window($empId) : null;
+        // Per-row timing (stamped shift → current shift → legacy globals) is
+        // resolved inside the loop by attendance_row_timing().
         $eoStmt = $this->db->prepare(
-            "SELECT att_date, in_time, out_time, status FROM attendance
+            "SELECT att_date, in_time, out_time, status, shift_id FROM attendance
               WHERE employee_id = ? AND att_date BETWEEN ? AND ?
                 AND status IN ('On Time','Late','Half Day')
                 AND in_time IS NOT NULL AND out_time IS NOT NULL"
@@ -564,10 +610,21 @@ class PayrollCalculator
             $inM  = time_to_mins((string)$r['in_time']);
             $outM = time_to_mins((string)$r['out_time']);
             if ($outM <= $inM) continue;
-            $net = max(0, ($outM - $inM) - break_minutes_within($inM, $outM, $lunchWin));
+
+            // Resolve this ROW's shift: the one stamped at mark time, else the
+            // employee's current shift, else the legacy globals. This freezes
+            // historical months to the shift the employee actually worked.
+            // Shared with the attendance reports so both agree — see helpers.php.
+            $rt  = attendance_row_timing(isset($r['shift_id']) ? (int)$r['shift_id'] : null, $empId);
+            $osM = $rt['start_mins'];
+            $oeM = $rt['end_mins'];
+            $grM = $rt['daily_grace'];
+            $hcM = $rt['shift_id'] !== null ? $rt['half_cutoff'] : null;
+
+            $net = max(0, ($outM - $inM) - break_minutes_within($inM, $outM, $rt['lunch'], $rt['breaks']));
             // Type (short / half / present) is decided by the actual hours + check-in
             // time, not by the stored status label — see attendance_classify().
-            $c   = attendance_classify($net, $inM, $officeStartM, $graceM, $outM, $officeEndM);
+            $c   = attendance_classify($net, $inM, $osM, $grM, $outM, $oeM, $hcM);
             if ($c['status'] === 'half') {
                 $halfWorked++;     $halfDedDays  += $c['ded_days'];   // "Half Day" line, no late
             } elseif ($c['status'] === 'short' || $c['status'] === 'present') {
@@ -575,7 +632,7 @@ class PayrollCalculator
             } else {                                                  // 'full'
                 $fullWorked++;
             }
-            if ($c['late']) { $lateMinsPool += ($inM - $officeStartM); $lateDaysPool++; }
+            if ($c['late']) { $lateMinsPool += ($inM - $osM); $lateDaysPool++; }
             $workedDays[] = ['date' => $r['att_date'], 'net' => $net, 'status' => $c['status'], 'ded_days' => $c['ded_days']];
         }
         $present = $fullWorked + $presentPartial + $halfWorked + $odCnt + $compCnt;   // all "not absent"

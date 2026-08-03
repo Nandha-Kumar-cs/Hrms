@@ -51,23 +51,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($vals as $k => $v) setting_set($k, $v);
             setting_set('daily_grace_minutes', $dailyGrace);
             setting_set('monthly_grace_minutes', $monthlyGrace);
-            flash('success', 'Office settings saved.');
+            // Mirror onto the General shift — attendance and payroll read the
+            // shifts table now, so without this the values saved here would have
+            // no effect. Other shifts are edited in Settings → Shifts.
+            try {
+                $db->prepare(
+                    "UPDATE shifts
+                        SET start_time = ?, ot_trigger_time = ?, ot_baseline_time = ?,
+                            daily_grace_mins = ?, monthly_grace_mins = ?,
+                            lunch_start = ?, lunch_end = ?
+                      WHERE name = 'General'"
+                )->execute([
+                    $vals['office_start_time'], $vals['ot_trigger_time'], $vals['ot_baseline_time'],
+                    $dailyGrace, $monthlyGrace, $vals['lunch_start'], $vals['lunch_end'],
+                ]);
+                $gid = (int)($db->query("SELECT id FROM shifts WHERE name='General' LIMIT 1")->fetchColumn() ?: 0);
+                if ($gid) {
+                    $upB = $db->prepare('UPDATE shift_breaks SET start_time=?, end_time=? WHERE shift_id=? AND name=?');
+                    $upB->execute([$vals['tea1_start'], $vals['tea1_end'], $gid, 'Tea Break 1']);
+                    $upB->execute([$vals['tea2_start'], $vals['tea2_end'], $gid, 'Tea Break 2']);
+                }
+            } catch (Throwable $e) { /* shifts tables absent — legacy install */ }
+            flash('success', 'Office settings saved (applied to the General shift; other shifts are edited in Settings → Shifts).');
             redirect($self);
         }
     }
 
     if ($action === 'add_batch' || $action === 'update_batch') {
         $name = trim($_POST['name'] ?? ''); $s = trim($_POST['start_time'] ?? ''); $e = trim($_POST['end_time'] ?? '');
+        // A batch belongs to one shift; blank = available to every shift.
+        $bShift = (int)($_POST['shift_id'] ?? 0) ?: null;
         if ($name === '')            $errors[] = 'Batch name is required.';
         if (!preg_match($timeRe, $s)) $errors[] = 'Batch start must be a valid time.';
         if (!preg_match($timeRe, $e)) $errors[] = 'Batch end must be a valid time.';
         if (!$errors && time_to_mins($e) <= time_to_mins($s)) $errors[] = 'Batch end must be after its start.';
         if (!$errors) {
             if ($action === 'add_batch') {
-                $db->prepare('INSERT INTO lunch_batches (name,start_time,end_time) VALUES (?,?,?)')->execute([$name,$s,$e]);
+                $db->prepare('INSERT INTO lunch_batches (name,start_time,end_time,shift_id) VALUES (?,?,?,?)')
+                   ->execute([$name,$s,$e,$bShift]);
                 flash('success', 'Lunch batch added.');
             } else {
-                $db->prepare('UPDATE lunch_batches SET name=?,start_time=?,end_time=? WHERE id=?')->execute([$name,$s,$e,(int)($_POST['id'] ?? 0)]);
+                $bid = (int)($_POST['id'] ?? 0);
+                $db->prepare('UPDATE lunch_batches SET name=?,start_time=?,end_time=?,shift_id=? WHERE id=?')
+                   ->execute([$name,$s,$e,$bShift,$bid]);
+                if ($bShift !== null) {
+                    $db->prepare('UPDATE employees SET lunch_batch_id = NULL WHERE lunch_batch_id = ? AND shift_id <> ?')
+                       ->execute([$bid, $bShift]);
+                }
                 flash('success', 'Lunch batch updated.');
             }
             redirect($self);
@@ -96,7 +126,15 @@ $cur = [
 ];
 $dailyGrace   = setting_daily_grace_mins();
 $monthlyGrace = setting_monthly_grace_mins();
-$batches = $db->query('SELECT b.*, (SELECT COUNT(*) FROM employees e WHERE e.lunch_batch_id=b.id) AS emp_count FROM lunch_batches b ORDER BY b.start_time')->fetchAll();
+$batches = $db->query(
+    'SELECT b.*, s.name AS shift_name,
+            (SELECT COUNT(*) FROM employees e WHERE e.lunch_batch_id=b.id) AS emp_count
+       FROM lunch_batches b LEFT JOIN shifts s ON s.id = b.shift_id
+      ORDER BY b.start_time'
+)->fetchAll();
+$shiftOpts = [];
+try { $shiftOpts = $db->query("SELECT id, name FROM shifts WHERE status='active' ORDER BY id")->fetchAll(); }
+catch (Throwable $e) { /* shifts table absent */ }
 $dur = fn(string $s, string $e) => max(0, time_to_mins($e) - time_to_mins($s));
 
 $page_title = 'Office Settings';
@@ -175,15 +213,25 @@ require_once __DIR__ . '/../../includes/header.php';
         <div class="card-header bg-white py-3"><h6 class="mb-0 fw-semibold"><i class="fa fa-layer-group me-2 text-primary"></i>Lunch Batches</h6></div>
         <div class="card-body">
             <table class="table table-sm align-middle">
-                <thead class="table-light"><tr><th>Batch</th><th>Start</th><th>End</th><th class="text-center">Dur.</th><th class="text-center">Emps</th><th class="text-end">Action</th></tr></thead>
+                <thead class="table-light"><tr><th>Batch</th><th>Shift</th><th>Start</th><th>End</th><th class="text-center">Dur.</th><th class="text-center">Emps</th><th class="text-end">Action</th></tr></thead>
                 <tbody>
                 <?php if (!$batches): ?>
-                    <tr><td colspan="6" class="text-center text-muted py-3">No batches yet — add one below.</td></tr>
+                    <tr><td colspan="7" class="text-center text-muted py-3">No batches yet — add one below.</td></tr>
                 <?php else: foreach ($batches as $b): ?>
                     <tr>
                         <form method="POST" action="<?= $self ?>">
                         <?= csrf_field() ?><input type="hidden" name="action" value="update_batch"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
                         <td><input type="text" name="name" class="form-control form-control-sm" value="<?= h($b['name']) ?>" required></td>
+                        <td>
+                            <?php if ($shiftOpts): ?>
+                            <select name="shift_id" class="form-select form-select-sm">
+                                <option value="">All shifts</option>
+                                <?php foreach ($shiftOpts as $so): ?>
+                                <option value="<?= (int)$so['id'] ?>" <?= (int)($b['shift_id'] ?? 0) === (int)$so['id'] ? 'selected' : '' ?>><?= h($so['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <?php else: ?><span class="text-muted small">—</span><?php endif; ?>
+                        </td>
                         <td><input type="time" name="start_time" class="form-control form-control-sm" value="<?= h(substr($b['start_time'],0,5)) ?>" required></td>
                         <td><input type="time" name="end_time" class="form-control form-control-sm" value="<?= h(substr($b['end_time'],0,5)) ?>" required></td>
                         <td class="text-center"><?= $dur(substr($b['start_time'],0,5), substr($b['end_time'],0,5)) ?>m</td>
@@ -203,9 +251,17 @@ require_once __DIR__ . '/../../includes/header.php';
             <hr>
             <form method="POST" action="<?= $self ?>" class="row g-2 align-items-end">
                 <?= csrf_field() ?><input type="hidden" name="action" value="add_batch">
-                <div class="col-md-4"><label class="form-label small mb-1">New Batch Name</label><input type="text" name="name" class="form-control form-control-sm" placeholder="e.g. Batch C" required></div>
-                <div class="col-md-3"><label class="form-label small mb-1">Start</label><input type="time" name="start_time" class="form-control form-control-sm" value="14:00" required></div>
-                <div class="col-md-3"><label class="form-label small mb-1">End</label><input type="time" name="end_time" class="form-control form-control-sm" value="14:30" required></div>
+                <div class="col-md-3"><label class="form-label small mb-1">New Batch Name</label><input type="text" name="name" class="form-control form-control-sm" placeholder="e.g. Batch C" required></div>
+                <div class="col-md-3"><label class="form-label small mb-1">Shift</label>
+                    <select name="shift_id" class="form-select form-select-sm">
+                        <option value="">All shifts</option>
+                        <?php foreach ($shiftOpts as $so): ?>
+                        <option value="<?= (int)$so['id'] ?>"><?= h($so['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2"><label class="form-label small mb-1">Start</label><input type="time" name="start_time" class="form-control form-control-sm" value="14:00" required></div>
+                <div class="col-md-2"><label class="form-label small mb-1">End</label><input type="time" name="end_time" class="form-control form-control-sm" value="14:30" required></div>
                 <div class="col-md-2"><button class="btn btn-success btn-sm w-100"><i class="fa fa-plus me-1"></i>Add</button></div>
             </form>
         </div>

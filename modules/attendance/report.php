@@ -120,19 +120,27 @@ for ($d = 1; $d <= $days; $d++) {
 }
 
 /* ── Load employees (self-scoped users see only their own row) ───────────── */
+// Optional shift filter (?shift_id=) — narrows the matrix to one shift.
+$shiftFilter = (int)($_GET['shift_id'] ?? 0);
+$shiftOpts   = [];
+try { $shiftOpts = $db->query("SELECT id, name FROM shifts ORDER BY id")->fetchAll(); }
+catch (Throwable $e) { /* shifts table absent */ }
+
 $employees = $db->query(
     "SELECT e.id, e.name, e.employee_id AS emp_code,
-            COALESCE(d.name, '—') AS dept_name
+            COALESCE(d.name, '—') AS dept_name, s.name AS shift_name
      FROM   employees e
      LEFT JOIN departments d ON d.id = e.department_id
-     WHERE  e.status = 'Active'" . (is_self_scoped() ? ' AND e.id = ' . current_employee_id() : '') . "
+     LEFT JOIN shifts s ON s.id = e.shift_id
+     WHERE  e.status = 'Active'" . (is_self_scoped() ? ' AND e.id = ' . current_employee_id() : '')
+       . ($shiftFilter ? ' AND e.shift_id = ' . $shiftFilter : '') . "
      ORDER  BY e.name"
 )->fetchAll();
 $empCount = count($employees);
 
 /* ── Load all attendance records for the month ───────────────────────────── */
 $attStmt = $db->prepare(
-    "SELECT employee_id, att_date, status, leave_classification, in_time, out_time, ot_hours, remarks
+    "SELECT employee_id, shift_id, att_date, status, leave_classification, in_time, out_time, ot_hours, remarks
      FROM   attendance
      WHERE  att_date BETWEEN ? AND ?"
 );
@@ -169,6 +177,10 @@ foreach ($employees as $emp) {
     $empId    = (int)$emp['id'];
     $empRecs  = $records[$empId] ?? [];
     $empDates = $recDateSet[$empId] ?? [];
+
+    // Monthly grace comes from the employee's CURRENT shift (it is a per-month
+    // allowance, not a per-day value); per-day thresholds are resolved per row.
+    $empMonthlyGrace = attendance_shift_timing($empId)['monthly_grace'];
 
     $presentCnt = 0;
     $absentCnt  = 0;
@@ -223,10 +235,12 @@ foreach ($employees as $emp) {
             // EXEMPT from the late penalty (they're already deducted as Half/Short
             // Hours), so their late minutes must NOT be added to the late pool —
             // this keeps the report's Late total in step with the salary slip.
-            $isHalfShort = _rep_isEarlyOut($rec, employee_lunch_window($empId));
+            $isHalfShort = _rep_isEarlyOut($rec, employee_lunch_window($empId), $empId);
             if ($status === 'Late' && !$isHalfShort && !empty($rec['in_time'])) {
                 $ciMins  = _rep_timeToMins($rec['in_time']);
-                $dayLate = max(0, $ciMins - $officeStartMins);
+                // Late measured from the shift stamped on THIS row (payroll does the same).
+                $rowStart = attendance_row_timing(isset($rec['shift_id']) ? (int)$rec['shift_id'] : null, $empId)['start_mins'];
+                $dayLate = max(0, $ciMins - $rowStart);
                 if ($dayLate > 0) {
                     $lateByDay[$empId][$dayNum] = $dayLate;
                     $lateMins += $dayLate;
@@ -245,10 +259,10 @@ foreach ($employees as $emp) {
         if (!isset($empDates[$dateStr])) $absentCnt++;
     }
 
-    $exceeds      = $lateMins > $monthlyGraceMins;
-    $exceededMins = $exceeds ? ($lateMins - $monthlyGraceMins) : 0;
+    $exceeds      = $lateMins > $empMonthlyGrace;
+    $exceededMins = $exceeds ? ($lateMins - $empMonthlyGrace) : 0;
     $deductMins   = $exceeds ? ($lateMins * 2) : 0;
-    $remainPerm   = max(0, $monthlyGraceMins - $lateMins);
+    $remainPerm   = max(0, $empMonthlyGrace - $lateMins);
 
     $empStats[$empId] = [
         'present_count'  => $presentCnt,
@@ -290,6 +304,16 @@ foreach ($employees as $emp) {
                 <option value="<?= $y ?>" <?= $y === $reqYear ? 'selected' : '' ?>><?= $y ?></option>
                 <?php endfor; ?>
             </select>
+            <?php if ($shiftOpts): ?>
+            <select name="shift_id" class="form-select form-select-sm" title="Filter by shift">
+                <option value="">All Shifts</option>
+                <?php foreach ($shiftOpts as $so): ?>
+                <option value="<?= (int)$so['id'] ?>" <?= $shiftFilter === (int)$so['id'] ? 'selected' : '' ?>>
+                    <?= h($so['name']) ?>
+                </option>
+                <?php endforeach; ?>
+            </select>
+            <?php endif; ?>
             <button type="submit" class="btn btn-sm btn-primary">Go</button>
         </form>
     </div>
@@ -372,13 +396,14 @@ foreach ($employees as $emp) {
         <!-- ── Late permission info box ───────────────────────────────────── -->
         <div class="alert alert-info border py-2 mb-3 small">
             <i class="fa fa-clock me-1"></i>
-            <strong>Office start: <?= $officeStartFmt ?></strong>.
-            &nbsp;Daily grace: <strong><?= $dailyGraceMins ?> min</strong> &rarr; late if check-in after <strong><?= $lateThreshFmt ?></strong>.
-            &nbsp;Monthly late permission: <strong><?= $mGraceFmt ?> (<?= $monthlyGraceMins ?> min)</strong>.
-            If total late exceeds <strong><?= $mGraceFmt ?></strong>, the <em>entire</em> late amount is deducted at <strong>2&times; rate</strong>.
-            <span class="text-muted ms-2">Half-day auto-triggers if check-in is after <strong><?= $halfDayFmt ?></strong>.</span>
-            <a href="<?= BASE_URL ?>/modules/settings/" class="ms-2 text-decoration-none small">
-                <i class="fa fa-gear"></i> Change
+            <strong>General shift: office start <?= $officeStartFmt ?></strong>,
+            daily grace <strong><?= $dailyGraceMins ?> min</strong> &rarr; late if check-in after <strong><?= $lateThreshFmt ?></strong>,
+            monthly late permission <strong><?= $mGraceFmt ?> (<?= $monthlyGraceMins ?> min)</strong>,
+            half-day if check-in after <strong><?= $halfDayFmt ?></strong>.
+            If total late exceeds the permission, the <em>entire</em> late amount is deducted at <strong>2&times; rate</strong>.
+            <span class="text-muted ms-1">Employees on other shifts are judged by their own shift's timings.</span>
+            <a href="<?= BASE_URL ?>/modules/settings/shifts.php" class="ms-2 text-decoration-none small">
+                <i class="fa fa-gear"></i> Shifts
             </a>
         </div>
 
@@ -463,6 +488,12 @@ foreach ($employees as $emp) {
                     <td>
                         <strong><?= h($emp['name']) ?></strong><br>
                         <small class="text-muted"><?= h($emp['emp_code']) ?></small>
+                        <?php if (!empty($emp['shift_name'])): ?>
+                        <br><small class="text-muted" style="font-size:.62rem"
+                                   title="Late / half-day thresholds on this row come from this shift">
+                            <i class="fa fa-clock"></i> <?= h($emp['shift_name']) ?>
+                        </small>
+                        <?php endif; ?>
                     </td>
 
                     <!-- ── Daily grid cells ──────────────────────────────── -->
@@ -484,7 +515,7 @@ foreach ($employees as $emp) {
                         $isOnDuty = (!$isNonWrk && !$isCompOffDay && $status === 'OD');
 
                         // Under 8 net working hours (after breaks) on a working day → Half Day.
-                        $isEarlyOut = !$isNonWrk && !$isCompOffDay && !$noCheckout && _rep_isEarlyOut($rec, employee_lunch_window($empId));
+                        $isEarlyOut = !$isNonWrk && !$isCompOffDay && !$noCheckout && _rep_isEarlyOut($rec, employee_lunch_window($empId), $empId);
 
                         // Admin-approved PAID leave covering this date.
                         $hasPaidLeave = isset($paidLeaveDates[$empId][$cellDateStr]);
@@ -630,7 +661,8 @@ foreach ($employees as $emp) {
                     <!-- ── Summary columns ─────────────────────────────── -->
                     <?php
                         $lateMins    = (int)($stat['late_mins']      ?? 0);
-                        $remainPerm  = (int)($stat['remaining_perm'] ?? $monthlyGraceMins);
+                        $rowGrace    = attendance_shift_timing((int)$emp['id'])['monthly_grace'];
+                        $remainPerm  = (int)($stat['remaining_perm'] ?? $rowGrace);
                         $exceededMin = (int)($stat['exceeded_mins']  ?? 0);
                         $deductMin   = (int)($stat['deduct_mins']    ?? 0);
                         $otHrsVal    = (float)($stat['ot_hours']     ?? 0);
@@ -660,17 +692,17 @@ foreach ($employees as $emp) {
                         <?= $lateMins > 0 ? _rep_fmtMins($lateMins) : '&mdash;' ?>
                     </td>
 
-                    <!-- Remaining Permission — hardcoded 90 matches Laravel source exactly -->
-                    <td class="text-center <?= $remainPerm < 90 ? ($remainPerm === 0 ? 'text-danger fw-semibold' : 'text-info fw-semibold') : 'text-muted' ?>"
+                    <!-- Remaining Permission (per this employee's shift grace) -->
+                    <td class="text-center <?= $remainPerm < $rowGrace ? ($remainPerm === 0 ? 'text-danger fw-semibold' : 'text-info fw-semibold') : 'text-muted' ?>"
                         style="font-size:.78rem"
-                        title="Remaining late grace (90 min/month)">
+                        title="Remaining late grace (<?= (int)$rowGrace ?> min/month)">
                         <?= _rep_fmtMins($remainPerm) ?>
                     </td>
 
                     <!-- Exceeded -->
                     <td class="text-center <?= $exceededMin > 0 ? 'text-danger fw-semibold' : 'text-muted' ?>"
                         style="font-size:.78rem"
-                        title="Late time beyond the 90-min grace">
+                        title="Late time beyond the <?= (int)$rowGrace ?>-min grace">
                         <?= $exceededMin > 0 ? _rep_fmtMins($exceededMin) : '&mdash;' ?>
                     </td>
 
@@ -844,16 +876,27 @@ function _rep_satCountUpTo(DateTime $d): int {
  * day (check-in by 11:00 and ≥ 8 hours) is a full day. Shown as Half Day in the
  * report; payroll pro-rates the salary on the hours actually worked.
  */
-function _rep_isEarlyOut(?array $rec, ?array $lunchWindow = null): bool {
+function _rep_isEarlyOut(?array $rec, ?array $lunchWindow = null, int $empId = 0): bool {
     if (!$rec || empty($rec['in_time']) || empty($rec['out_time'])) return false;
     if (!in_array($rec['status'] ?? '', ['On Time', 'Late'], true)) return false;
     $in  = _rep_timeToMins($rec['in_time']);
     $out = _rep_timeToMins($rec['out_time']);
     if ($out <= $in) return false;                 // ignore midnight-cross / bad data
-    // Net worked = presence − break windows (the employee's lunch batch + 2 tea breaks) within it.
-    // Shows "H" when: check-in after ~11:00, OR net worked ≤ 4h (half/short day). A day
-    // worked > 4h with an on-time-ish check-in stays PRESENT (salary is pro-rated by payroll).
+    // Net worked = presence − break windows within it, judged against the shift
+    // STAMPED ON THIS ROW (falling back to the employee's current shift, then the
+    // legacy globals) — the same resolver payroll uses, so the report and the
+    // salary slip never disagree about a past month.
+    // Shows "H" when: check-in after the cutoff, OR net worked ≤ 4h (half/short).
     // (The slip splits H into "Half Day" vs "Short Hours"; the report shows both as H.)
+    if ($empId > 0 && function_exists('attendance_row_timing')) {
+        $t      = attendance_row_timing(isset($rec['shift_id']) ? (int)$rec['shift_id'] : null, $empId);
+        $worked = max(0, ($out - $in) - break_minutes_within($in, $out, $t['lunch'], $t['breaks']));
+        return in_array(
+            attendance_classify($worked, $in, $t['start_mins'], $t['daily_grace'], $out, $t['end_mins'],
+                                $t['shift_id'] !== null ? $t['half_cutoff'] : null)['status'],
+            ['half', 'short'], true
+        );
+    }
     $worked = max(0, ($out - $in) - break_minutes_within($in, $out, $lunchWindow));
     $osM = function_exists('setting_office_start_mins') ? (int) setting_office_start_mins() : 9 * 60;
     $grM = function_exists('setting_daily_grace_mins')  ? (int) setting_daily_grace_mins()  : 15;

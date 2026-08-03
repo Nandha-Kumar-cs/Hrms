@@ -11,8 +11,9 @@ require_permission('attendance', 'view');
 $db         = db();
 $month      = preg_replace('/[^0-9\-]/', '', $_GET['month'] ?? date('Y-m'));
 if (!preg_match('/^\d{4}-\d{2}$/', $month)) $month = date('Y-m');
-$emp_filter = (int)($_GET['emp_id'] ?? 0);
-$activeTab  = in_array($_GET['tab'] ?? '', ['records','report']) ? $_GET['tab'] : 'records';
+$emp_filter   = (int)($_GET['emp_id'] ?? 0);
+$shift_filter = (int)($_GET['shift_id'] ?? 0);
+$activeTab    = in_array($_GET['tab'] ?? '', ['records','report']) ? $_GET['tab'] : 'records';
 
 // Employee self-service: force the filter to the logged-in employee's own id.
 if (is_self_scoped()) $emp_filter = current_employee_id();
@@ -31,16 +32,28 @@ $employees = $db->query(
     "SELECT id, name, employee_id FROM employees e WHERE status='Active'{$scopeEmp} ORDER BY name"
 )->fetchAll();
 
+// Shifts for the filter dropdown (empty on installs without the shift system)
+$shiftOpts = [];
+try { $shiftOpts = $db->query("SELECT id, name FROM shifts ORDER BY id")->fetchAll(); }
+catch (Throwable $e) { /* shifts table absent */ }
+
 /* ──────────────────────────────────────────────────────────────────────────
    TAB 1: Records — attendance rows for the month
    ────────────────────────────────────────────────────────────────────────── */
-$sql = "SELECT a.*, e.name AS emp_name, e.employee_id AS emp_code, d.name AS dept_name
+// Shift shown per row = the shift stamped when the day was marked, falling back
+// to the employee's current shift for legacy (unstamped) rows.
+$sql = "SELECT a.*, e.name AS emp_name, e.employee_id AS emp_code, d.name AS dept_name,
+               COALESCE(rs.name, es.name) AS shift_name,
+               COALESCE(a.shift_id, e.shift_id) AS eff_shift_id
         FROM attendance a
         JOIN  employees e  ON e.id = a.employee_id
         LEFT JOIN departments d ON d.id = e.department_id
+        LEFT JOIN shifts rs ON rs.id = a.shift_id
+        LEFT JOIN shifts es ON es.id = e.shift_id
         WHERE a.att_date BETWEEN ? AND ?";
 $params = [$monthStart, $monthEnd];
-if ($emp_filter) { $sql .= ' AND a.employee_id = ?'; $params[] = $emp_filter; }
+if ($emp_filter)   { $sql .= ' AND a.employee_id = ?'; $params[] = $emp_filter; }
+if ($shift_filter) { $sql .= ' AND COALESCE(a.shift_id, e.shift_id) = ?'; $params[] = $shift_filter; }
 $sql .= ' ORDER BY a.att_date DESC, e.name';
 $stmt = $db->prepare($sql);
 $stmt->execute($params);
@@ -149,17 +162,20 @@ if ($activeTab === 'report') {
     }
 
     // Employees with dept (separate from filter-dropdown query)
+    $mxShiftWhere = $shift_filter ? (' AND e.shift_id = ' . (int)$shift_filter) : '';
     $mxEmployees = $db->query(
-        "SELECT e.id, e.name, e.employee_id AS emp_code, COALESCE(d.name,'—') AS dept_name
+        "SELECT e.id, e.name, e.employee_id AS emp_code, COALESCE(d.name,'—') AS dept_name,
+                s.name AS shift_name
          FROM employees e
          LEFT JOIN departments d ON d.id = e.department_id
-         WHERE e.status='Active'{$scopeEmp} ORDER BY e.name"
+         LEFT JOIN shifts s ON s.id = e.shift_id
+         WHERE e.status='Active'{$scopeEmp}{$mxShiftWhere} ORDER BY e.name"
     )->fetchAll();
     $empCount = count($mxEmployees);
 
     // Attendance records for the month
     $attStmt2 = $db->prepare(
-        "SELECT employee_id, att_date, status, in_time, out_time, ot_hours, remarks
+        "SELECT employee_id, shift_id, att_date, status, in_time, out_time, ot_hours, remarks
          FROM attendance WHERE att_date BETWEEN ? AND ?"
     );
     $attStmt2->execute([$mStartStr, $mEndStr]);
@@ -179,6 +195,9 @@ if ($activeTab === 'report') {
         $empId    = (int)$emp['id'];
         $empRecs  = $mxRecords[$empId] ?? [];
         $empDates = $mxRecDateSet[$empId] ?? [];
+        // Monthly grace comes from the employee's CURRENT shift (a per-month
+        // allowance); per-day thresholds are resolved per row below.
+        $empMonthlyGrace = attendance_shift_timing($empId)['monthly_grace'];
         $presentCnt = $absentCnt = $halfCnt = $lateMins = 0;
         $otHrs = 0.0; $manMins = 0;
         $mxLateByDay[$empId] = [];
@@ -202,7 +221,9 @@ if ($activeTab === 'report') {
             if (in_array($status, ['On Time','Late'], true)) {
                 if ($status === 'Late' && !empty($rec['in_time'])) {
                     $ciMins  = _rep_timeToMins($rec['in_time']);
-                    $dayLate = max(0, $ciMins - $officeStartMins);
+                    // Late measured from the shift stamped on THIS row (payroll does the same).
+                    $rowStart = attendance_row_timing(isset($rec['shift_id']) ? (int)$rec['shift_id'] : null, $empId)['start_mins'];
+                    $dayLate = max(0, $ciMins - $rowStart);
                     if ($dayLate > 0) { $mxLateByDay[$empId][$dayNum] = $dayLate; $lateMins += $dayLate; }
                 }
                 $presentCnt++;
@@ -213,14 +234,14 @@ if ($activeTab === 'report') {
             if ($dateStr > $todayStr || isset($nwDateSet[$dateStr]) || isset($empDates[$dateStr])) continue;
             $absentCnt++;
         }
-        $exceeds = $lateMins > $monthlyGraceMins;
+        $exceeds = $lateMins > $empMonthlyGrace;
         $mxEmpStats[$empId] = [
             'present_count'  => $presentCnt,
             'absent_days'    => $absentCnt,
             'half_days'      => $halfCnt,
             'late_mins'      => $lateMins,
-            'remaining_perm' => max(0, $monthlyGraceMins - $lateMins),
-            'exceeded_mins'  => $exceeds ? ($lateMins - $monthlyGraceMins) : 0,
+            'remaining_perm' => max(0, $empMonthlyGrace - $lateMins),
+            'exceeded_mins'  => $exceeds ? ($lateMins - $empMonthlyGrace) : 0,
             'deduct_mins'    => $exceeds ? ($lateMins * 2) : 0,
             'ot_hours'       => round($otHrs, 2),
             'man_hours'      => round($manMins / 60, 2),
@@ -356,6 +377,19 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                 <?php endforeach; ?>
             </select>
         </div>
+        <?php if ($shiftOpts): ?>
+        <div class="field" style="margin:0;min-width:170px">
+            <label>Shift</label>
+            <select name="shift_id">
+                <option value="">All Shifts</option>
+                <?php foreach ($shiftOpts as $so): ?>
+                <option value="<?= (int)$so['id'] ?>" <?= $shift_filter === (int)$so['id'] ? 'selected' : '' ?>>
+                    <?= h($so['name']) ?>
+                </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <?php endif; ?>
         <button type="submit" class="btn btn-primary"><i class="fa fa-filter"></i> Filter</button>
         <a href="index.php" class="btn btn-ghost">Reset</a>
     </form>
@@ -420,6 +454,7 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
             <th>Date</th>
             <th>Employee</th>
             <th>Dept</th>
+            <?php if ($shiftOpts): ?><th>Shift</th><?php endif; ?>
             <th>Status</th>
             <th>In</th>
             <th>Out</th>
@@ -461,6 +496,14 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                 <div class="small muted"><?= h($r['emp_code']) ?></div>
             </td>
             <td class="small"><?= h($r['dept_name'] ?? '—') ?></td>
+            <?php if ($shiftOpts): ?>
+            <td class="small">
+                <span class="pill pill-neutral" style="font-size:.68rem"
+                      title="<?= empty($r['shift_id']) ? 'Not stamped — showing the employee\'s current shift' : 'Shift stamped when this day was marked' ?>">
+                    <?= h($r['shift_name'] ?? '—') ?>
+                </span>
+            </td>
+            <?php endif; ?>
             <td><span class="pill <?= $pc ?>"><?= h($r['status']) ?></span></td>
             <td><?= $r['in_time']  ? date('h:i A', strtotime($r['in_time']))  : '—' ?></td>
             <td><?= $r['out_time'] ? date('h:i A', strtotime($r['out_time'])) : '—' ?></td>
@@ -480,7 +523,9 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
         </tr>
         <?php endforeach; ?>
         <?php if (!$records): ?>
-        <tr><td colspan="9" class="empty">No attendance records found for <?= date('F Y', strtotime($monthStart)) ?>.</td></tr>
+        <?php // Date, Employee, Dept, [Shift], Status, In, Out, Hours, Remarks, [Action]
+              $emptyCols = 8 + ($shiftOpts ? 1 : 0) + (can('attendance','edit') ? 1 : 0); ?>
+        <tr><td colspan="<?= $emptyCols ?>" class="empty">No attendance records found for <?= date('F Y', strtotime($monthStart)) ?>.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>
@@ -560,13 +605,14 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
         <!-- Late permission info box -->
         <div class="alert alert-info border py-2 mb-3 small">
             <i class="fa fa-clock me-1"></i>
-            <strong>Office start: <?= $officeStartFmt ?></strong>.
-            &nbsp;Daily grace: <strong><?= $dailyGraceMins ?> min</strong> &rarr; late if check-in after <strong><?= $lateThreshFmt ?></strong>.
-            &nbsp;Monthly late permission: <strong><?= $mGraceFmt ?> (<?= $monthlyGraceMins ?> min)</strong>.
-            If total late exceeds <strong><?= $mGraceFmt ?></strong>, the <em>entire</em> late amount is deducted at <strong>2&times; rate</strong>.
-            <span class="text-muted ms-2">Half-day auto-triggers if check-in is after <strong><?= $halfDayFmt ?></strong>.</span>
-            <a href="<?= BASE_URL ?>/modules/settings/" class="ms-2 text-decoration-none small">
-                <i class="fa fa-gear"></i> Change
+            <strong>General shift: office start <?= $officeStartFmt ?></strong>,
+            daily grace <strong><?= $dailyGraceMins ?> min</strong> &rarr; late if check-in after <strong><?= $lateThreshFmt ?></strong>,
+            monthly late permission <strong><?= $mGraceFmt ?> (<?= $monthlyGraceMins ?> min)</strong>,
+            half-day if check-in after <strong><?= $halfDayFmt ?></strong>.
+            If total late exceeds the permission, the <em>entire</em> late amount is deducted at <strong>2&times; rate</strong>.
+            <span class="text-muted ms-1">Employees on other shifts are judged by their own shift's timings.</span>
+            <a href="<?= BASE_URL ?>/modules/settings/shifts.php" class="ms-2 text-decoration-none small">
+                <i class="fa fa-gear"></i> Shifts
             </a>
         </div>
 
@@ -627,6 +673,12 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                     <td>
                         <strong><?= h($emp['name']) ?></strong><br>
                         <small class="text-muted"><?= h($emp['emp_code']) ?></small>
+                        <?php if (!empty($emp['shift_name'])): ?>
+                        <br><small class="text-muted" style="font-size:.62rem"
+                                   title="Thresholds on this row come from this shift">
+                            <i class="fa fa-clock"></i> <?= h($emp['shift_name']) ?>
+                        </small>
+                        <?php endif; ?>
                     </td>
                     <?php for ($d = 1; $d <= $days; $d++):
                         $cellDateStr   = "$reqYear-$padMonth-" . str_pad($d, 2, '0', STR_PAD_LEFT);

@@ -36,8 +36,13 @@ $designs = $db->query(
 
 $lunchBatches = [];
 try {
-    $lunchBatches = $db->query("SELECT id, name, start_time, end_time FROM lunch_batches ORDER BY start_time")->fetchAll(PDO::FETCH_ASSOC);
+    $lunchBatches = $db->query("SELECT id, name, start_time, end_time, shift_id FROM lunch_batches ORDER BY start_time")->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) { /* table absent */ }
+
+$shifts = [];
+try {
+    $shifts = $db->query("SELECT id, name, lunch_start FROM shifts WHERE status='active' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) { /* shifts table absent */ }
 
 $managersStmt = $db->prepare(
     "SELECT id, name, employee_id FROM employees
@@ -70,6 +75,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── Employment ────────────────────────────────────────────────────────────
     $entity_id     = (int)($_POST['entity_id']           ?? 0) ?: null;
     $lunch_batch_id = (int)($_POST['lunch_batch_id']     ?? 0) ?: null;
+    $shift_id      = (int)($_POST['shift_id']            ?? 0) ?: null;
+    // A lunch batch must belong to the chosen shift; otherwise clear it.
+    if ($lunch_batch_id !== null && $shift_id !== null) {
+        try {
+            $bChk = $db->prepare('SELECT 1 FROM lunch_batches WHERE id=? AND (shift_id IS NULL OR shift_id=?) LIMIT 1');
+            $bChk->execute([$lunch_batch_id, $shift_id]);
+            if (!$bChk->fetchColumn()) $lunch_batch_id = null;
+        } catch (Throwable $e) { /* ignore */ }
+    }
     $dept_id       = (int)($_POST['department_id']        ?? 0) ?: null;
     $des_id        = (int)($_POST['designation_id']       ?? 0) ?: null;
     $mgr_id        = (int)($_POST['reporting_manager_id'] ?? 0) ?: null;
@@ -158,7 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // ── UPDATE employees ──────────────────────────────────────────────────
         $stmt = $db->prepare(
             "UPDATE employees SET
-                entity_id=:entity_id, lunch_batch_id=:lunch_batch_id,
+                entity_id=:entity_id, lunch_batch_id=:lunch_batch_id, shift_id=:shift_id,
                 name=:name, email=:email, phone=:phone, gender=:gender, dob=:dob,
                 address=:address, city=:city, state=:state, pincode=:pincode,
                 department_id=:dept_id, designation_id=:des_id,
@@ -173,6 +187,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([
             ':entity_id'    => $entity_id,
             ':lunch_batch_id' => $lunch_batch_id,
+            ':shift_id'       => $shift_id,
             ':name'         => $full_name,
             ':email'        => $email,
             ':phone'        => $phone         ?: null,
@@ -235,7 +250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             activity_change('CTC/Month',
                 '₹' . number_format((float)($emp['fixed_salary'] ?? 0), 2),
                 '₹' . number_format((float)$fixed_salary, 2)),
-            activity_change('PF Deduction',
+            activity_change('PF & ESI Deduction',
                 !empty($emp['pf_enabled']) ? 'Enabled' : 'Disabled',
                 $pf_enabled ? 'Enabled' : 'Disabled'),
         ]));
@@ -258,6 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'pincode'        => $pincode,
         'department_id'  => $dept_id,
         'designation_id' => $des_id,
+        'shift_id'       => $shift_id,
         'manager_id'     => $mgr_id,
         'join_date'      => $joining_date,
         'probation_end'  => $probation_end,
@@ -426,18 +442,55 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                     </select>
                 </div>
 
+                <?php if ($shifts): ?>
+                <div class="col-md-4">
+                    <label class="form-label">Shift</label>
+                    <select name="shift_id" id="shiftSelect" class="form-select">
+                        <?php foreach ($shifts as $s): ?>
+                        <option value="<?= $s['id'] ?>" data-haslunch="<?= !empty($s['lunch_start']) ? 1 : 0 ?>" <?= $sel('shift_id', $s['id']) ?>>
+                            <?= h($s['name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Drives attendance &amp; payroll timing.</div>
+                </div>
+                <?php endif; ?>
+
                 <div class="col-md-4">
                     <label class="form-label">Lunch Batch</label>
-                    <select name="lunch_batch_id" class="form-select">
+                    <select name="lunch_batch_id" id="lunchBatchSelect" class="form-select">
                         <option value="">Default lunch</option>
                         <?php foreach ($lunchBatches as $lb): ?>
-                        <option value="<?= $lb['id'] ?>" <?= $sel('lunch_batch_id', $lb['id']) ?>>
+                        <option value="<?= $lb['id'] ?>" data-shift="<?= (int)($lb['shift_id'] ?? 0) ?>" <?= $sel('lunch_batch_id', $lb['id']) ?>>
                             <?= h($lb['name']) ?> (<?= h(date('h:i A', strtotime($lb['start_time']))) ?>–<?= h(date('h:i A', strtotime($lb['end_time']))) ?>)
                         </option>
                         <?php endforeach; ?>
                     </select>
                     <div class="form-text">Used in salary calculation.</div>
                 </div>
+
+                <script>
+                (function () {
+                    var shiftSel = document.getElementById('shiftSelect');
+                    var lunchSel = document.getElementById('lunchBatchSelect');
+                    if (!shiftSel || !lunchSel) return;
+                    function apply() {
+                        var opt = shiftSel.options[shiftSel.selectedIndex];
+                        var sid = shiftSel.value;
+                        var hasLunch = opt && opt.getAttribute('data-haslunch') === '1';
+                        Array.prototype.forEach.call(lunchSel.options, function (o) {
+                            if (o.value === '') { o.hidden = false; return; }
+                            o.hidden = (o.getAttribute('data-shift') !== sid);
+                        });
+                        var cur = lunchSel.options[lunchSel.selectedIndex];
+                        if (cur && cur.hidden) lunchSel.value = '';
+                        if (!hasLunch) { lunchSel.value = ''; lunchSel.disabled = true; }
+                        else { lunchSel.disabled = false; }
+                    }
+                    shiftSel.addEventListener('change', apply);
+                    apply();
+                })();
+                </script>
 
                 <div class="col-md-4">
                     <label class="form-label">Status</label>
@@ -544,12 +597,12 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                                    name="pf_enabled" value="1" id="pfEnabled"
                                    <?= !empty($emp['pf_enabled']) ? 'checked' : '' ?>>
                             <label class="form-check-label fw-semibold" for="pfEnabled">
-                                <i class="fa fa-piggy-bank me-1 text-success"></i>PF Deduction
+                                <i class="fa fa-piggy-bank me-1 text-success"></i>PF &amp; ESI Deduction
                             </label>
                         </div>
                         <div class="form-text">
-                            Deduct Provident Fund from this employee's salary.<br>
-                            PF = 12% of Basic, capped at ₹1,800/month.
+                            Deduct statutory contributions from this employee's salary.<br>
+                            When off, <strong>both PF and ESI</strong> are skipped.
                         </div>
                     </div>
                 </div>

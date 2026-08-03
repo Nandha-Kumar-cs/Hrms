@@ -60,8 +60,8 @@ if (!defined('BASE_URL')) die(); // safety guard — must be included, not acces
             Upload a <strong>CSV</strong> or <strong>XLSX</strong> for <em>one specific day</em>.
             Existing records for that date are <strong>updated</strong>; new ones are <strong>inserted</strong>.<br>
             <span style="color:var(--text-muted)">
-                Status auto-calculated from In Time if blank
-                (grace: <?= ATTENDANCE_GRACE_MINUTES ?> min after <?= WORK_START_TIME ?>).
+                Status auto-calculated from In Time if blank — judged against
+                <strong>each employee's shift</strong> (start time + grace).
             </span>
         </div>
 

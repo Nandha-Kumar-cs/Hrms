@@ -25,8 +25,16 @@ $managers = $db->query(
 
 $lunchBatches = [];
 try {
-    $lunchBatches = $db->query("SELECT id, name, start_time, end_time FROM lunch_batches ORDER BY start_time")->fetchAll(PDO::FETCH_ASSOC);
+    $lunchBatches = $db->query("SELECT id, name, start_time, end_time, shift_id FROM lunch_batches ORDER BY start_time")->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) { /* table absent */ }
+
+// Shifts drive attendance & payroll timing; new employees default to General.
+$shifts = [];
+$defaultShiftId = '';
+try {
+    $shifts = $db->query("SELECT id, name, lunch_start FROM shifts WHERE status='active' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($shifts as $s) if ($s['name'] === 'General') $defaultShiftId = $s['id'];
+} catch (Throwable $e) { /* shifts table absent */ }
 
 // ── Repopulate on validation failure ─────────────────────────────────────────
 $old = $_SESSION['form_old'] ?? [];
@@ -168,18 +176,59 @@ $sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match 
                     </select>
                 </div>
 
+                <?php if ($shifts): ?>
+                <div class="col-md-4">
+                    <label class="form-label">Shift</label>
+                    <select name="shift_id" id="shiftSelect" class="form-select">
+                        <?php foreach ($shifts as $s):
+                            $selShift = isset($old['shift_id'])
+                                ? $sel('shift_id', $s['id'])
+                                : ((string)$s['id'] === (string)$defaultShiftId ? 'selected' : '');
+                        ?>
+                        <option value="<?= $s['id'] ?>" data-haslunch="<?= !empty($s['lunch_start']) ? 1 : 0 ?>" <?= $selShift ?>>
+                            <?= h($s['name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Drives attendance &amp; payroll timing for this employee.</div>
+                </div>
+                <?php endif; ?>
+
                 <div class="col-md-4">
                     <label class="form-label">Lunch Batch</label>
-                    <select name="lunch_batch_id" class="form-select">
+                    <select name="lunch_batch_id" id="lunchBatchSelect" class="form-select">
                         <option value="">Default lunch</option>
                         <?php foreach ($lunchBatches as $lb): ?>
-                        <option value="<?= $lb['id'] ?>" <?= $sel('lunch_batch_id', $lb['id']) ?>>
+                        <option value="<?= $lb['id'] ?>" data-shift="<?= (int)($lb['shift_id'] ?? 0) ?>" <?= $sel('lunch_batch_id', $lb['id']) ?>>
                             <?= h($lb['name']) ?> (<?= h(date('h:i A', strtotime($lb['start_time']))) ?>–<?= h(date('h:i A', strtotime($lb['end_time']))) ?>)
                         </option>
                         <?php endforeach; ?>
                     </select>
                     <div class="form-text">Staggered lunch window used in salary calculation.</div>
                 </div>
+
+                <script>
+                (function () {
+                    var shiftSel = document.getElementById('shiftSelect');
+                    var lunchSel = document.getElementById('lunchBatchSelect');
+                    if (!shiftSel || !lunchSel) return;
+                    function apply() {
+                        var opt = shiftSel.options[shiftSel.selectedIndex];
+                        var sid = shiftSel.value;
+                        var hasLunch = opt && opt.getAttribute('data-haslunch') === '1';
+                        Array.prototype.forEach.call(lunchSel.options, function (o) {
+                            if (o.value === '') { o.hidden = false; return; }
+                            o.hidden = (o.getAttribute('data-shift') !== sid);
+                        });
+                        var cur = lunchSel.options[lunchSel.selectedIndex];
+                        if (cur && cur.hidden) lunchSel.value = '';
+                        if (!hasLunch) { lunchSel.value = ''; lunchSel.disabled = true; }
+                        else { lunchSel.disabled = false; }
+                    }
+                    shiftSel.addEventListener('change', apply);
+                    apply();
+                })();
+                </script>
 
                 <div class="col-md-4">
                     <label class="form-label">Status</label>
@@ -287,12 +336,12 @@ $sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match 
                                             validation error, an unchecked box is simply absent from $_POST. */ ?>
                                    <?= empty($old) || !empty($old['pf_enabled']) ? 'checked' : '' ?>>
                             <label class="form-check-label fw-semibold" for="pfEnabled">
-                                <i class="fa fa-piggy-bank me-1 text-success"></i>PF Deduction
+                                <i class="fa fa-piggy-bank me-1 text-success"></i>PF &amp; ESI Deduction
                             </label>
                         </div>
                         <div class="form-text">
-                            Deduct Provident Fund from this employee's salary.<br>
-                            PF = 12% of Basic, capped at ₹1,800/month.
+                            Deduct statutory contributions from this employee's salary.<br>
+                            When off, <strong>both PF and ESI</strong> are skipped.
                         </div>
                     </div>
                 </div>

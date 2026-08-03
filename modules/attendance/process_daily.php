@@ -138,10 +138,11 @@ $skipped  = 0;
 $errors   = [];
 
 $upsertSql = "INSERT INTO attendance
-    (employee_id, att_date, status, in_time, out_time, remarks, marked_by, created_at)
+    (employee_id, shift_id, att_date, status, in_time, out_time, remarks, marked_by, created_at)
   VALUES
-    (:emp_id, :att_date, :status, :in_time, :out_time, :remarks, :marked_by, NOW())
+    (:emp_id, :shift_id, :att_date, :status, :in_time, :out_time, :remarks, :marked_by, NOW())
   ON DUPLICATE KEY UPDATE
+    shift_id  = VALUES(shift_id),
     status    = VALUES(status),
     in_time   = VALUES(in_time),
     out_time  = VALUES(out_time),
@@ -175,10 +176,11 @@ if ($isDailyReport) {
     // This format carries an OT column, so upsert ot_hours too.
     $upsertD = $db->prepare(
         "INSERT INTO attendance
-            (employee_id, att_date, status, in_time, out_time, ot_hours, remarks, marked_by, created_at)
+            (employee_id, shift_id, att_date, status, in_time, out_time, ot_hours, remarks, marked_by, created_at)
          VALUES
-            (:emp_id, :att_date, :status, :in_time, :out_time, :ot_hours, :remarks, :marked_by, NOW())
+            (:emp_id, :shift_id, :att_date, :status, :in_time, :out_time, :ot_hours, :remarks, :marked_by, NOW())
          ON DUPLICATE KEY UPDATE
+            shift_id = VALUES(shift_id),
             status   = VALUES(status),   in_time  = VALUES(in_time),
             out_time = VALUES(out_time), ot_hours = VALUES(ot_hours),
             remarks  = VALUES(remarks),  marked_by = VALUES(marked_by)"
@@ -227,8 +229,12 @@ if ($isDailyReport) {
         $outTime = ($outRaw === '--:--') ? null : _att_normalize_time($outRaw);
         $otHours = _att_hhmm_to_hours($otRaw);
 
+        // Judge against this employee's shift; zero OT for no-OT (straight) shifts
+        $timing = attendance_shift_timing($empDbId);
+        if (!$timing['shift_ot_on']) $otHours = 0;
+
         if ($inTime) {
-            $status = $autoClassify ? _att_classify_from_time($inTime, $attDate) : 'On Time';
+            $status = $autoClassify ? _att_classify_from_time($inTime, $attDate, $empDbId) : 'On Time';
         } else {
             $status = 'Absent';
             $inTime = $outTime = null;
@@ -239,6 +245,7 @@ if ($isDailyReport) {
         try {
             $upsertD->execute([
                 ':emp_id'    => $empDbId,
+                ':shift_id'  => $timing['shift_id'],
                 ':att_date'  => $attDate,
                 ':status'    => $status,
                 ':in_time'   => $inTime,
@@ -291,12 +298,12 @@ foreach ($rows as $i => $row) {
     $inTime  = _att_normalize_time($r['in_time']  ?? $r['check_in']  ?? $r['time_in']  ?? '');
     $outTime = _att_normalize_time($r['out_time'] ?? $r['check_out'] ?? $r['time_out'] ?? '');
 
-    /* Normalize / auto-classify status */
+    /* Normalize / auto-classify status (against this employee's shift) */
     $rawStatus = $r['status'] ?? $r['attendance'] ?? '';
     if ($rawStatus !== '') {
         $status = _att_normalize_status($rawStatus);
     } elseif ($autoClassify) {
-        $status = _att_classify_from_time($inTime, $useDate);
+        $status = _att_classify_from_time($inTime, $useDate, $empDbId);
     } else {
         $status = $inTime ? 'On Time' : 'Absent';
     }
@@ -314,6 +321,7 @@ foreach ($rows as $i => $row) {
         $wasExisting = isset($existingEmpIds[$empDbId]);
         $upsertStmt->execute([
             ':emp_id'    => $empDbId,
+            ':shift_id'  => attendance_shift_timing($empDbId)['shift_id'],
             ':att_date'  => $useDate,
             ':status'    => $status,
             ':in_time'   => $inTime,
@@ -391,19 +399,25 @@ function _att_normalize_status(string $raw): string
 }
 
 /**
- * Auto-classify status based on in_time vs configured work start + grace period.
- * Uses the att_date to build the correct full timestamp comparison.
+ * Auto-classify status based on in_time vs work start + grace period.
+ * When an employee id is given, the threshold comes from THAT employee's shift
+ * (attendance_shift_timing); otherwise the legacy global constants apply.
  */
-function _att_classify_from_time(?string $inTime, string $attDate): string
+function _att_classify_from_time(?string $inTime, string $attDate, int $empDbId = 0): string
 {
     if (!$inTime) return 'Absent';
 
     try {
+        if ($empDbId > 0) {
+            $t     = attendance_shift_timing($empDbId);
+            $inMin = time_to_mins(substr($inTime, 0, 5));
+            return ($inMin <= $t['late_thresh']) ? 'On Time' : 'Late';
+        }
         $deadline = new DateTime($attDate . ' ' . WORK_START_TIME);
         $deadline->modify('+' . ATTENDANCE_GRACE_MINUTES . ' minutes');
         $actual   = new DateTime($attDate . ' ' . $inTime);
         return ($actual <= $deadline) ? 'On Time' : 'Late';
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         return 'On Time';
     }
 }

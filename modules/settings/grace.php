@@ -23,59 +23,81 @@ $db     = db();
 $errors = [];
 
 /**
- * Recalculate present/late/half-day statuses for ALL attendance records based
- * on the current daily-grace setting.  Returns count of affected rows.
+ * Recalculate present/late/half-day statuses for ALL attendance records.
+ * Each row is judged against ITS OWN shift (the shift stamped on the row, else
+ * the employee's current shift); rows with no shift fall back to the global
+ * office-start + daily-grace settings. Returns count of affected rows.
  */
 function recalc_attendance_statuses(PDO $db): int {
     $threshold      = setting_office_start_mins() + setting_daily_grace_mins();
-    $halfDayCheckin = 11 * 60; // 11:00 AM
+    $halfDayCheckin = 11 * 60; // legacy fallback: 11:00 AM
     $affected       = 0;
 
-    // Rule 1: check-in ≥ 11:00 AM → Half Day
+    // Per-row shift thresholds (fallback to the global values when no shift):
+    //   half-day cutoff = shifts.half_day_cutoff, else shift start + 2h, else 11:00
+    //   late threshold  = shift start + shift daily grace, else global threshold
+    $halfExpr  = "COALESCE(
+                    HOUR(s.half_day_cutoff) * 60 + MINUTE(s.half_day_cutoff),
+                    HOUR(s.start_time) * 60 + MINUTE(s.start_time) + 120,
+                    ?)";
+    $lateExpr  = "COALESCE(
+                    HOUR(s.start_time) * 60 + MINUTE(s.start_time) + s.daily_grace_mins,
+                    ?)";
+    $inMins    = "(HOUR(a.in_time) * 60 + MINUTE(a.in_time))";
+
+    // Rule 1: check-in ≥ half-day cutoff → Half Day
     $r1 = $db->prepare(
-        "UPDATE attendance
-            SET status = 'Half Day'
-          WHERE status IN ('On Time','Late','Half Day')
-            AND in_time IS NOT NULL
-            AND (HOUR(in_time) * 60 + MINUTE(in_time)) >= ?"
+        "UPDATE attendance a
+            LEFT JOIN employees e ON e.id = a.employee_id
+            LEFT JOIN shifts    s ON s.id = COALESCE(a.shift_id, e.shift_id)
+            SET a.status = 'Half Day'
+          WHERE a.status IN ('On Time','Late','Half Day')
+            AND a.in_time IS NOT NULL
+            AND $inMins >= $halfExpr"
     );
     $r1->execute([$halfDayCheckin]);
     $affected += $r1->rowCount();
 
-    // Rule 2: check-in < 11:00 AND 0 < worked < 4 hrs → Half Day
+    // Rule 2: check-in < cutoff AND 0 < worked < 4 hrs → Half Day
     $r2 = $db->prepare(
-        "UPDATE attendance
-            SET status = 'Half Day'
-          WHERE status IN ('On Time','Late','Half Day')
-            AND in_time  IS NOT NULL
-            AND out_time IS NOT NULL
-            AND (HOUR(in_time) * 60 + MINUTE(in_time)) < ?
-            AND TIMESTAMPDIFF(MINUTE, in_time, out_time) > 0
-            AND TIMESTAMPDIFF(MINUTE, in_time, out_time) < 240"
+        "UPDATE attendance a
+            LEFT JOIN employees e ON e.id = a.employee_id
+            LEFT JOIN shifts    s ON s.id = COALESCE(a.shift_id, e.shift_id)
+            SET a.status = 'Half Day'
+          WHERE a.status IN ('On Time','Late','Half Day')
+            AND a.in_time  IS NOT NULL
+            AND a.out_time IS NOT NULL
+            AND $inMins < $halfExpr
+            AND TIMESTAMPDIFF(MINUTE, a.in_time, a.out_time) > 0
+            AND TIMESTAMPDIFF(MINUTE, a.in_time, a.out_time) < 240"
     );
     $r2->execute([$halfDayCheckin]);
     $affected += $r2->rowCount();
 
-    // Rule 3: check-in < 11:00 AND in_time > threshold → Late
+    // Rule 3: check-in < cutoff AND in_time > late threshold → Late
     $r3 = $db->prepare(
-        "UPDATE attendance
-            SET status = 'Late'
-          WHERE status IN ('On Time','Late')
-            AND in_time IS NOT NULL
-            AND (HOUR(in_time) * 60 + MINUTE(in_time)) < ?
-            AND (HOUR(in_time) * 60 + MINUTE(in_time)) > ?"
+        "UPDATE attendance a
+            LEFT JOIN employees e ON e.id = a.employee_id
+            LEFT JOIN shifts    s ON s.id = COALESCE(a.shift_id, e.shift_id)
+            SET a.status = 'Late'
+          WHERE a.status IN ('On Time','Late')
+            AND a.in_time IS NOT NULL
+            AND $inMins < $halfExpr
+            AND $inMins > $lateExpr"
     );
     $r3->execute([$halfDayCheckin, $threshold]);
     $affected += $r3->rowCount();
 
-    // Rule 4: check-in < 11:00 AND in_time ≤ threshold → On Time
+    // Rule 4: check-in < cutoff AND in_time ≤ late threshold → On Time
     $r4 = $db->prepare(
-        "UPDATE attendance
-            SET status = 'On Time'
-          WHERE status IN ('On Time','Late')
-            AND in_time IS NOT NULL
-            AND (HOUR(in_time) * 60 + MINUTE(in_time)) < ?
-            AND (HOUR(in_time) * 60 + MINUTE(in_time)) <= ?"
+        "UPDATE attendance a
+            LEFT JOIN employees e ON e.id = a.employee_id
+            LEFT JOIN shifts    s ON s.id = COALESCE(a.shift_id, e.shift_id)
+            SET a.status = 'On Time'
+          WHERE a.status IN ('On Time','Late')
+            AND a.in_time IS NOT NULL
+            AND $inMins < $halfExpr
+            AND $inMins <= $lateExpr"
     );
     $r4->execute([$halfDayCheckin, $threshold]);
     $affected += $r4->rowCount();
@@ -103,8 +125,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$errors) {
         setting_set('daily_grace_minutes',   (int)$daily);
         setting_set('monthly_grace_minutes', (int)$monthly);
+        // Keep the General shift in step — its grace values are what attendance
+        // and payroll actually read for General-shift employees. Other shifts'
+        // grace is edited on Settings → Shifts.
+        try {
+            $db->prepare("UPDATE shifts SET daily_grace_mins = ?, monthly_grace_mins = ? WHERE name = 'General'")
+               ->execute([(int)$daily, (int)$monthly]);
+        } catch (Throwable $e) { /* shifts table absent — legacy install */ }
         $updated = recalc_attendance_statuses($db);
-        flash('success', "Grace settings saved. {$updated} attendance record(s) recalculated.");
+        flash('success', "Grace settings saved (applies to the General shift; other shifts are edited in Settings → Shifts). {$updated} attendance record(s) recalculated.");
         redirect(BASE_URL . '/modules/settings/grace.php');
     }
 }

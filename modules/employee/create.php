@@ -111,7 +111,22 @@ $entity_id  = (int)($_POST['entity_id']           ?? 0) ?: null;
 $dept_id    = (int)($_POST['department_id']        ?? 0) ?: null;
 $des_id     = (int)($_POST['designation_id']       ?? 0) ?: null;
 $lunch_batch_id = (int)($_POST['lunch_batch_id']   ?? 0) ?: null;
+$shift_id   = (int)($_POST['shift_id']             ?? 0) ?: null;
 $mgr_id     = (int)($_POST['reporting_manager_id'] ?? 0) ?: null;
+
+// Default new employees to the General shift when none was chosen.
+if ($shift_id === null) {
+    try { $shift_id = (int)($db->query("SELECT id FROM shifts WHERE name='General' LIMIT 1")->fetchColumn() ?: 0) ?: null; }
+    catch (Throwable $e) { $shift_id = null; }
+}
+// A lunch batch must belong to the chosen shift; otherwise clear it.
+if ($lunch_batch_id !== null && $shift_id !== null) {
+    try {
+        $bChk = $db->prepare('SELECT 1 FROM lunch_batches WHERE id=? AND (shift_id IS NULL OR shift_id=?) LIMIT 1');
+        $bChk->execute([$lunch_batch_id, $shift_id]);
+        if (!$bChk->fetchColumn()) $lunch_batch_id = null;
+    } catch (Throwable $e) { /* ignore */ }
+}
 
 $joining_date  = sanitize($_POST['joining_date']  ?? '');
 $probation_end = sanitize($_POST['probation_end'] ?? '');
@@ -244,7 +259,7 @@ if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR
 // ── INSERT ────────────────────────────────────────────────────────────────────
 $stmt = $db->prepare(
     "INSERT INTO employees
-        (entity_id, lunch_batch_id, employee_id, name, email, phone, dob, gender,
+        (entity_id, lunch_batch_id, shift_id, employee_id, name, email, phone, dob, gender,
          department_id, designation_id, ot_enabled, pf_enabled, manager_id,
          join_date, probation_end, status,
          fixed_salary, variable_salary,
@@ -252,7 +267,7 @@ $stmt = $db->prepare(
          pan_number, aadhaar_number, uan_number, esic_number,
          photo, created_at)
      VALUES
-        (:entity_id, :lunch_batch_id, :employee_id, :name, :email, :phone, :dob, :gender,
+        (:entity_id, :lunch_batch_id, :shift_id, :employee_id, :name, :email, :phone, :dob, :gender,
          :department_id, :designation_id, :ot_enabled, :pf_enabled, :manager_id,
          :join_date, :probation_end, :status,
          :fixed_salary, :variable_salary,
@@ -264,6 +279,7 @@ $stmt = $db->prepare(
 $stmt->execute([
     ':entity_id'      => $entity_id,
     ':lunch_batch_id' => $lunch_batch_id,
+    ':shift_id'       => $shift_id,
     ':employee_id'    => $employee_code,
     ':name'           => $full_name,
     ':email'          => $email,

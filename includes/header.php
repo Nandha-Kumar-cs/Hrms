@@ -72,7 +72,7 @@ $_repActive  = _sb_active('/payroll/benefits_report', '/payroll/bonus_report',
                            '/employee/history_report', '/payroll/payroll_impact_report');
 // Include salary_components in settings group so the Settings accordion opens on that page.
 $_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/',
-                           '/payroll/salary_components', '/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php');
+                           '/payroll/salary_components', '/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php', '/settings/shifts.php');
 
 // ── Navbar: role badge colour map ─────────────────────────────────────────────
 $_roleColours = [
@@ -768,6 +768,8 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                     <?php if (can('settings','office')): ?>
                     <li><a href="<?= BASE_URL ?>/modules/settings/office.php"
                            class="nav-link <?= _sb_active('/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php') ?>">Office Settings</a></li>
+                    <li><a href="<?= BASE_URL ?>/modules/settings/shifts.php"
+                           class="nav-link <?= _sb_active('/settings/shifts.php') ?>">Shifts</a></li>
                     <?php endif; ?>
                     <?php if (can('settings','branding')): ?>
                     <li><a href="<?= BASE_URL ?>/modules/settings/branding.php"

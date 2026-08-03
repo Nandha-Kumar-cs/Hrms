@@ -69,7 +69,7 @@ if ($isWorkingHoliday) {
     $nonWorkingLabel = 'Public Holiday: ' . $holidayName;
 }
 
-/* ── Config (passed to JS) ────────────────────────────────────────────────── */
+/* ── Config: legacy global defaults (fallback when an employee has no shift) ─ */
 $officeStartMins = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; })(WORK_START_TIME);
 $dailyGraceMins  = ATTENDANCE_GRACE_MINUTES;
 $lateThreshMins  = $officeStartMins + $dailyGraceMins;
@@ -79,6 +79,52 @@ $otTriggerTime  = OT_TRIGGER_TIME;
 $otBaselineTime = OT_BASELINE_TIME;
 $otTriggerMins  = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; })($otTriggerTime);
 $otBaselineMins = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; })($otBaselineTime);
+
+/* ── Per-employee shift timing map ────────────────────────────────────────────
+ * Classification (On Time / Late / Half Day) and auto-OT are judged against the
+ * EMPLOYEE'S SHIFT (employees.shift_id → shifts). Employees without a shift row
+ * fall back to the legacy globals above, so behaviour is unchanged for them.
+ * OT needs BOTH gates on: shifts.ot_enabled AND employees.ot_enabled.       */
+$shiftTiming = [];   // emp_id => [shift_id, shift_name, late_thresh, half_cutoff, shift_ot_on, ot_trigger, ot_baseline]
+try {
+    $stRows = $db->query(
+        "SELECT e.id AS emp_id, s.id AS shift_id, s.name AS shift_name,
+                s.start_time, s.daily_grace_mins, s.half_day_cutoff,
+                s.ot_enabled AS shift_ot, s.ot_trigger_time, s.ot_baseline_time
+           FROM employees e
+           LEFT JOIN shifts s ON s.id = e.shift_id
+          WHERE e.status = 'Active'"
+    )->fetchAll();
+    foreach ($stRows as $r) {
+        if ($r['shift_id'] === null) continue;               // no shift → legacy fallback
+        $sStart = time_to_mins(substr((string)$r['start_time'], 0, 5));
+        $grace  = (int)$r['daily_grace_mins'];
+        $shiftTiming[(int)$r['emp_id']] = [
+            'shift_id'    => (int)$r['shift_id'],
+            'shift_name'  => (string)$r['shift_name'],
+            'late_thresh' => $sStart + $grace,
+            'half_cutoff' => $r['half_day_cutoff'] !== null
+                                ? time_to_mins(substr((string)$r['half_day_cutoff'], 0, 5))
+                                : $sStart + 120,
+            'shift_ot_on' => (bool)$r['shift_ot'],
+            'ot_trigger'  => $r['ot_trigger_time']  !== null ? time_to_mins(substr((string)$r['ot_trigger_time'], 0, 5))  : null,
+            'ot_baseline' => $r['ot_baseline_time'] !== null ? time_to_mins(substr((string)$r['ot_baseline_time'], 0, 5)) : null,
+        ];
+    }
+} catch (Throwable $e) { /* shifts table absent — everyone uses legacy globals */ }
+
+/** Timing set for one employee: their shift's, else the legacy globals. */
+function _mark_timing(int $empId, array $shiftTiming, int $lateThresh, int $halfCut, int $otTrig, int $otBase): array {
+    return $shiftTiming[$empId] ?? [
+        'shift_id'    => null,
+        'shift_name'  => null,
+        'late_thresh' => $lateThresh,
+        'half_cutoff' => $halfCut,
+        'shift_ot_on' => true,          // legacy behaviour: OT gate is employee-level only
+        'ot_trigger'  => $otTrig,
+        'ot_baseline' => $otBase,
+    ];
+}
 
 /* ── OT format helper ─────────────────────────────────────────────────────── */
 function _mark_fmtOtHrs(float $dec): string {
@@ -100,9 +146,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
 
     $upsert = $db->prepare(
         "INSERT INTO attendance
-             (employee_id, att_date, status, in_time, out_time, ot_hours, remarks, marked_by)
-         VALUES (?,?,?,?,?,?,?,?)
+             (employee_id, shift_id, att_date, status, in_time, out_time, ot_hours, remarks, marked_by)
+         VALUES (?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
+             shift_id  = VALUES(shift_id),
              status    = VALUES(status),
              in_time   = VALUES(in_time),
              out_time  = VALUES(out_time),
@@ -117,13 +164,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
         $outTime  = trim($data['out_time'] ?? '');
         $remarks  = sanitize($data['remarks'] ?? '');
 
+        // This employee's timing (their shift, or the legacy globals)
+        $t = _mark_timing((int)$empId, $shiftTiming, $lateThreshMins, $halfDayCutoff, $otTriggerMins, $otBaselineMins);
+
         // Auto-classify whenever check-in is present; only skip truly manual statuses
         if ($inTime && !in_array($status, ['OD','Comp Off','On Leave'], true)) {
             $inParts = explode(':', $inTime);
             $inMins  = (int)$inParts[0] * 60 + (int)($inParts[1] ?? 0);
-            if ($inMins >= $halfDayCutoff) {
+            if ($inMins >= $t['half_cutoff']) {
                 $status = 'Half Day';
-            } elseif ($inMins > $lateThreshMins) {
+            } elseif ($inMins > $t['late_thresh']) {
                 $status = 'Late';
             } else {
                 $status = 'On Time';
@@ -135,20 +185,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
             $status = 'Absent';
         }
 
-        // OT hours: auto-calculate for ot_enabled employees, manual for others
-        $isOtEnabled = (bool)($otEnabledMap[(int)$empId] ?? false);
-        if ($isOtEnabled) {
+        // OT hours — two gates: the SHIFT must allow OT and the employee must be
+        // ot_enabled. A straight shift (ot_enabled=0) earns no OT, auto OR manual.
+        if (!$t['shift_ot_on']) {
             $otHours = null;
-            if ($outTime) {
-                $outParts = explode(':', $outTime);
-                $outMins  = (int)$outParts[0] * 60 + (int)($outParts[1] ?? 0);
-                if ($outMins >= $otTriggerMins) {
-                    $otCalc = round(($outMins - $otBaselineMins) / 60, 2);
-                    if ($otCalc > 0) $otHours = $otCalc;
-                }
-            }
         } else {
-            $otHours = ($data['ot_hours'] ?? '') !== '' ? (float)($data['ot_hours']) : null;
+            $isOtEnabled = (bool)($otEnabledMap[(int)$empId] ?? false);
+            if ($isOtEnabled) {
+                $otHours = null;
+                if ($outTime && $t['ot_trigger'] !== null && $t['ot_baseline'] !== null) {
+                    $outParts = explode(':', $outTime);
+                    $outMins  = (int)$outParts[0] * 60 + (int)($outParts[1] ?? 0);
+                    if ($outMins >= $t['ot_trigger']) {
+                        $otCalc = round(($outMins - $t['ot_baseline']) / 60, 2);
+                        if ($otCalc > 0) $otHours = $otCalc;
+                    }
+                }
+            } else {
+                $otHours = ($data['ot_hours'] ?? '') !== '' ? (float)($data['ot_hours']) : null;
+            }
         }
 
         // Clear times only for truly manual no-time statuses
@@ -165,6 +220,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
 
         $upsert->execute([
             (int)$empId,
+            $t['shift_id'],          // freeze the shift that judged this day
             $selDate,
             $status,
             $inTime  ?: null,
@@ -189,6 +245,7 @@ $employees = $db->prepare(
     "SELECT e.id, e.name, e.employee_id AS emp_code,
             COALESCE(d.name, '—') AS dept_name,
             COALESCE(e.ot_enabled, 0) AS ot_enabled,
+            s.name AS shift_name,
             a.id        AS att_id,
             a.status    AS att_status,
             a.in_time,
@@ -197,6 +254,7 @@ $employees = $db->prepare(
             a.remarks
      FROM   employees e
      LEFT JOIN departments d  ON d.id = e.department_id
+     LEFT JOIN shifts      s  ON s.id = e.shift_id
      LEFT JOIN attendance  a  ON a.employee_id = e.id AND a.att_date = ?
      WHERE  e.status = 'Active'
      ORDER  BY e.name"
@@ -342,10 +400,11 @@ require_once __DIR__ . '/../../includes/header.php';
                         <th style="width:40px">#</th>
                         <th>Employee</th>
                         <th>Department</th>
+                        <th>Shift</th>
                         <th style="min-width:160px">
                             Status
                             <small class="fw-normal text-warning d-block" style="font-size:.65rem">
-                                Auto-calculated when times are set
+                                Auto-calculated from the employee's shift
                             </small>
                         </th>
                         <th style="min-width:110px">Check In</th>
@@ -353,8 +412,8 @@ require_once __DIR__ . '/../../includes/header.php';
                         <th style="min-width:90px">
                             OT Hrs
                             <br><small class="fw-normal text-warning" style="font-size:.65rem"
-                                 title="Auto OT: checkout must reach trigger time. Hours counted from baseline.">
-                                &#9201; &ge;<?= OT_TRIGGER_TIME ?> / from <?= OT_BASELINE_TIME ?>
+                                 title="Auto OT: checkout must reach the shift's trigger time. Hours counted from the shift's baseline. Shifts with OT off never earn OT.">
+                                &#9201; per shift
                             </small>
                         </th>
                         <th>Remarks</th>
@@ -381,11 +440,19 @@ require_once __DIR__ . '/../../includes/header.php';
                     $savedStat = $e['att_status'] ?? 'Absent';
                     $hasTime   = !empty($e['in_time']) || !empty($e['out_time']);
                     $isAutoMode = $hasTime && array_key_exists($savedStat, $autoLabels);
-                    $isOtEnabled = (bool)$e['ot_enabled'];
+                    // This row's timing: the employee's shift, else legacy globals
+                    $t = _mark_timing((int)$e['id'], $shiftTiming, $lateThreshMins, $halfDayCutoff, $otTriggerMins, $otBaselineMins);
+                    $shiftOtOn   = $t['shift_ot_on'];
+                    $isOtEnabled = (bool)$e['ot_enabled'] && $shiftOtOn;   // effective auto-OT
                 ?>
                 <tr class="att-row"
                     data-emp-id="<?= $e['id'] ?>"
                     data-ot-enabled="<?= $isOtEnabled ? '1' : '0' ?>"
+                    data-late-thresh="<?= (int)$t['late_thresh'] ?>"
+                    data-half-cutoff="<?= (int)$t['half_cutoff'] ?>"
+                    data-shift-ot="<?= $shiftOtOn ? '1' : '0' ?>"
+                    data-ot-trigger="<?= $t['ot_trigger'] !== null ? (int)$t['ot_trigger'] : '' ?>"
+                    data-ot-baseline="<?= $t['ot_baseline'] !== null ? (int)$t['ot_baseline'] : '' ?>"
                     data-name="<?= strtolower(h($e['name'])) ?> <?= strtolower(h($e['emp_code'])) ?>">
                     <td class="text-muted"><?= $i + 1 ?></td>
                     <td>
@@ -399,6 +466,11 @@ require_once __DIR__ . '/../../includes/header.php';
                         <?php endif; ?>
                     </td>
                     <td><small><?= h($e['dept_name']) ?></small></td>
+                    <td>
+                        <small><span class="badge bg-light text-dark border" style="font-size:.68rem">
+                            <?= h($e['shift_name'] ?? 'General') ?>
+                        </span></small>
+                    </td>
                     <td style="min-width:130px">
                         <input type="hidden"
                                name="attendance[<?= $e['id'] ?>][status]"
@@ -443,7 +515,9 @@ require_once __DIR__ . '/../../includes/header.php';
                                value="<?= $e['out_time'] ? substr($e['out_time'], 0, 5) : '' ?>">
                     </td>
                     <td>
-                        <?php if ($isOtEnabled): ?>
+                        <?php if (!$shiftOtOn): ?>
+                            <span class="text-muted" title="This shift does not earn overtime">—</span>
+                        <?php elseif ($isOtEnabled): ?>
                             <input type="hidden"
                                    name="attendance[<?= $e['id'] ?>][ot_hours]"
                                    class="ot-hours-input"
@@ -575,14 +649,19 @@ $(function () {
         'Absent'   : 'bg-danger',
     };
 
-    /* ── Auto-calculate status from check-in / check-out ─────────────────── */
-    function calcAutoStatus(checkIn, checkOut) {
+    /* ── Auto-calculate status from check-in / check-out ──────────────────
+     * Thresholds come from the row's shift (data-late-thresh / data-half-cutoff);
+     * the globals above remain as fallback for rows without shift data.     */
+    function calcAutoStatus($tr, checkIn, checkOut) {
         if (!checkIn) return 'Absent';
+
+        var lateThresh = parseInt($tr.attr('data-late-thresh'), 10) || LATE_THRESHOLD;
+        var halfCutoff = parseInt($tr.attr('data-half-cutoff'), 10) || HALF_DAY_CHECKIN;
 
         var parts  = checkIn.split(':');
         var inMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
 
-        if (inMins >= HALF_DAY_CHECKIN) return 'Half Day';
+        if (inMins >= halfCutoff) return 'Half Day';
 
         if (checkOut) {
             var op   = checkOut.split(':');
@@ -590,7 +669,7 @@ $(function () {
             if (outM - inMins > 0 && outM - inMins < 240) return 'Half Day';
         }
 
-        return inMins > LATE_THRESHOLD ? 'Late' : 'On Time';
+        return inMins > lateThresh ? 'Late' : 'On Time';
     }
 
     /* ── Format decimal OT hours as "Xh Ym" ─────────────────────────────── */
@@ -611,7 +690,7 @@ $(function () {
 
         if (checkIn || checkOut) {
             /* ── Auto mode ──────────────────────────────────────────────── */
-            var status = calcAutoStatus(checkIn, checkOut);
+            var status = calcAutoStatus($tr, checkIn, checkOut);
             var bc = BADGE_CLASS[status] || 'bg-secondary';
             var lbl = AUTO_LABELS[status] || status;
             $badge.attr('class', 'badge status-auto-badge ' + bc)
@@ -635,10 +714,20 @@ $(function () {
         }
     }
 
-    /* ── Auto OT (ot_enabled employees only) ────────────────────────────── */
+    /* ── Auto OT (ot_enabled employees on OT-enabled shifts only) ────────── */
     function calcAutoOT($tr, checkoutVal) {
         var $hoursInput = $tr.find('.ot-hours-input');
         var $hoursDisp  = $tr.find('.ot-hours-display');
+        if (!$hoursInput.length) return;                    // shift has no OT — no input rendered
+        if ($tr.attr('data-shift-ot') === '0') {            // hard gate: straight shift
+            $hoursInput.val('');
+            $hoursDisp.html('<span class="text-muted">—</span>');
+            return;
+        }
+        var trigRaw = $tr.attr('data-ot-trigger');
+        var baseRaw = $tr.attr('data-ot-baseline');
+        var trigger  = trigRaw !== '' && trigRaw !== undefined ? parseInt(trigRaw, 10) : OT_TRIGGER_MINS;
+        var baseline = baseRaw !== '' && baseRaw !== undefined ? parseInt(baseRaw, 10) : OT_BASELINE_MINS;
         if (!checkoutVal) {
             $hoursInput.val('');
             $hoursDisp.html('<span class="text-muted">—</span>');
@@ -646,12 +735,12 @@ $(function () {
         }
         var parts   = checkoutVal.split(':');
         var outMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
-        if (outMins < OT_TRIGGER_MINS) {
+        if (outMins < trigger) {
             $hoursInput.val('');
             $hoursDisp.html('<span class="text-muted">—</span>');
             return;
         }
-        var otHours = Math.round((outMins - OT_BASELINE_MINS) / 60 * 100) / 100;
+        var otHours = Math.round((outMins - baseline) / 60 * 100) / 100;
         $hoursInput.val(otHours.toFixed(2));
         $hoursDisp.text(fmtOtHrs(otHours));
     }

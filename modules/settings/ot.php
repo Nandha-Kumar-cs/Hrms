@@ -39,7 +39,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setting_set('office_start_time', $officeStart);
         setting_set('ot_trigger_time',   $otTrigger);
         setting_set('ot_baseline_time',  $otBaseline);
-        flash('success', 'OT & attendance settings saved successfully.');
+        // Mirror onto the General shift — attendance and payroll read the shifts
+        // table now, so without this these values would have no effect. Other
+        // shifts (and their OT on/off) are edited in Settings → Shifts.
+        try {
+            db()->prepare(
+                "UPDATE shifts SET start_time = ?, ot_trigger_time = ?, ot_baseline_time = ?
+                  WHERE name = 'General'"
+            )->execute([$officeStart, $otTrigger, $otBaseline]);
+        } catch (Throwable $e) { /* shifts table absent — legacy install */ }
+        flash('success', 'OT & attendance settings saved (applied to the General shift; other shifts are edited in Settings → Shifts).');
         redirect(BASE_URL . '/modules/settings/ot.php');
     }
 }

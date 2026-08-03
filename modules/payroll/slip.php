@@ -205,13 +205,17 @@ if (!function_exists('_inr_words')) {
     <!-- ── Employee Info ───────────────────────────────────────────────────── -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin:18px 24px;border:1px solid #000;border-radius:var(--radius)">
         <?php
+        // Shift worked in this month — frozen into the slip's attendance summary
+        // at generation time (see PayrollCalculator), so it never drifts.
+        $slipShift = $attSummary['shift_name'] ?? null;
         $infoRows = [
             ['Employee Name',  $s['name'],            'Employee ID',  $s['emp_code']],
             ['Department',     $s['dept_name'] ?? '—','Designation',  $s['desig_name'] ?? '—'],
-            ['Pay Period',     $monthLabel,           'PAN Number',   $s['pan_number'] ?: '—'],
+            ['Pay Period',     $monthLabel,           'Shift',        $slipShift ?: '—'],
+            ['PAN Number',     $s['pan_number'] ?: '—', 'Bank Account', $s['bank_account'] ?: '—'],
         ];
         if ($s['uan_number']) {
-            $infoRows[] = ['UAN Number', $s['uan_number'], 'Bank Account', $s['bank_account'] ?: '—'];
+            $infoRows[] = ['UAN Number', $s['uan_number'], 'Bank Name', $s['bank_name'] ?: '—'];
         }
         foreach ($infoRows as $i => [$lbl1, $val1, $lbl2, $val2]):
             $border = $i < count($infoRows)-1 ? 'border-bottom:1px solid #000' : '';

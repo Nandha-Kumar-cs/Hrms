@@ -91,8 +91,9 @@ foreach ($employees as $emp) {
         ? min(round($basic * PAYROLL_PF_EMPLOYEE, 2), round(15000 * PAYROLL_PF_EMPLOYEE, 2))
         : 0.0;
     $pf_er  = $pf_emp; // Employer PF match
+    // ESI gated by the same pf_enabled toggle — off means no PF and no ESI.
     $esi_emp = 0; $esi_er = 0;
-    if ($gross_e <= PAYROLL_ESI_WAGE_LIMIT) {
+    if (!empty($emp['pf_enabled']) && $gross_e <= PAYROLL_ESI_WAGE_LIMIT) {
         $esi_emp = round($gross_e * PAYROLL_ESI_EMPLOYEE, 2);
         $esi_er  = round($gross_e * PAYROLL_ESI_EMPLOYER, 2);
     }

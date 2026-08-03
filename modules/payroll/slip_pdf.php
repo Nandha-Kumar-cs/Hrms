@@ -173,10 +173,12 @@ ob_start();
     <tr><td><strong>Department:</strong> <?= $h($s['dept_name'] ?? '—') ?: '—' ?></td>
         <td><strong>Designation:</strong> <?= $h($s['desig_name'] ?? '—') ?: '—' ?></td></tr>
     <tr><td><strong>Pay Period:</strong> <?= $h($monthLabel) ?></td>
-        <td><strong>PAN Number:</strong> <?= $h($s['pan_number'] ?? '—') ?: '—' ?></td></tr>
+        <td><strong>Shift:</strong> <?= $h($attSummary['shift_name'] ?? '—') ?: '—' ?></td></tr>
+    <tr><td><strong>PAN Number:</strong> <?= $h($s['pan_number'] ?? '—') ?: '—' ?></td>
+        <td><strong>Bank Account:</strong> <?= $h($s['bank_account'] ?? '—') ?: '—' ?></td></tr>
     <?php if (!empty($s['uan_number'])): ?>
     <tr><td><strong>UAN Number:</strong> <?= $h($s['uan_number']) ?></td>
-        <td><strong>Bank Account:</strong> <?= $h($s['bank_account'] ?? '—') ?: '—' ?></td></tr>
+        <td><strong>Bank Name:</strong> <?= $h($s['bank_name'] ?? '—') ?: '—' ?></td></tr>
     <?php endif; ?>
 </table>
 
