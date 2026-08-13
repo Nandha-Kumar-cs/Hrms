@@ -243,6 +243,42 @@ class PayrollCalculator
             $allowances['Variable Pay'] = round($variableSalary, 2);
         }
 
+        // ── Step 4b: EARNED-SALARY PRORATION ─────────────────────────────────
+        // The payslip pays for DAYS EARNED rather than paying the full CTC and
+        // then subtracting an "Absent Deduction". Both models yield the same
+        // take-home, but this one states it honestly: each component shows what
+        // was actually earned.
+        //
+        //   paid days = calendar days − unpaid absent days − half/short shortfall
+        //
+        // Weekly-offs and holidays are NOT subtracted, so an employee who works
+        // every working day is paid 31/31 = the full CTC. Because these days are
+        // now priced into the earnings, the Absent / Half Day / Short Hours
+        // deduction lines are gone — keeping them would charge absence twice.
+        // Half days caused by a LATE ARRIVAL (check-in at/after the cutoff) are
+        // excluded here — they are charged against BASIC further down instead of
+        // being prorated out of every component at the CTC rate. A half day that
+        // was genuinely worked/availed stays in the CTC proration.
+        $lateHalfDays = (float)($att['late_half_ded_days'] ?? 0);
+        $unpaidDays = $lopDays
+                    + max(0.0, (float)($att['half_ded_days'] ?? 0) - $lateHalfDays)
+                    + (float)($att['short_ded_days'] ?? 0);
+        $paidDays   = max(0.0, $calDays - $unpaidDays);
+        $earnRatio  = $calDays > 0 ? ($paidDays / $calDays) : 0.0;
+
+        // Full-month Basic, captured BEFORE proration. OT and the late penalty
+        // are priced off the standard wage rate, not the earned amount, so they
+        // keep using this figure.
+        $basicFullMonth = $basicSalary;
+
+        if ($earnRatio < 1.0) {
+            foreach ($allowances as $k => $v) {
+                $allowances[$k] = round($v * $earnRatio, 2);
+            }
+            // Basic follows the same proration — PF is then charged on EARNED wages.
+            $basicSalary = round($basicSalary * $earnRatio, 2);
+        }
+
         // ── Step 5: OT ────────────────────────────────────────────────────────
         // Per-day rate = CTC ÷ calendar days (drives absent & late deductions).
         // OT rate = Basic ÷ calendar days ÷ 8 × 2  (formula: Basic ÷ days ÷ 8 × 2 × hrs).
@@ -254,11 +290,16 @@ class PayrollCalculator
         if (!attendance_shift_timing($empId)['shift_ot_on']) {
             $otHours = 0.0;
         }
-        $perDay     = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
-        $perHour    = round($perDay / 8, 4);
-        $otPerDay   = $calDays > 0 ? round($basicSalary / $calDays, 4) : 0;
-        $otPerHour  = round($otPerDay / 8, 4);
-        $otAmount   = round($otHours * $otPerHour * 2, 2);
+        // Two rate bases:
+        //   perDay/perHour       — CTC-based. Absent, half-day and short-hours
+        //                          deductions are charged at this rate.
+        //   basicPerDay/PerHour  — BASIC-based. Overtime is PAID at 2× this, and
+        //                          the late penalty is CHARGED at this rate.
+        $perDay       = $calDays > 0 ? round($fixedSalary / $calDays, 4) : 0;
+        $perHour      = round($perDay / 8, 4);
+        $basicPerDay  = $calDays > 0 ? round($basicFullMonth / $calDays, 4) : 0;
+        $basicPerHour = round($basicPerDay / 8, 4);
+        $otAmount     = round($otHours * $basicPerHour * 2, 2);
         if ($otAmount > 0) {
             $allowances['Overtime (' . number_format($otHours, 1) . ' hrs)'] = $otAmount;
         }
@@ -307,29 +348,29 @@ class PayrollCalculator
             }
         }
 
-        // Step 10: Absent deduction
-        if ($absentDays > 0) {
-            $absentDeduction = round($absentDays * $perDay, 2);
-            if ($absentDeduction > 0) {
-                $deductions['Absent Deduction (' . $this->formatDays($absentDays) . ' days)'] = $absentDeduction;
-            }
-        } else {
-            $absentDeduction = 0.0;
-        }
-
-        // Half days (check-in after ~11:00, or net ≤ 4h) → NO late penalty; salary
-        // pro-rated on worked hours (≥ ½ day; at exactly 4h this equals ½ day).
+        // Steps 10-12: Absent / Half Day / Short Hours are NOT deduction lines any
+        // more. Under the earned-salary model those days were already removed from
+        // the earnings by the proration in Step 4b — charging them again here would
+        // deduct the same absence twice. The amounts are still computed so the
+        // attendance summary, the reports and the per-day attendance write-back can
+        // show what each shortfall was worth.
+        $absentDeduction  = $absentDays > 0 ? round($absentDays * $perDay, 2) : 0.0;
         $halfDayCount     = (int)($att['half_day'] ?? 0);
         $halfDayDeduction = round((float)($att['half_ded_days'] ?? 0) * $perDay, 2);
-        if ($halfDayDeduction > 0) {
-            $deductions['Half Day Deduction (' . $halfDayCount . ' day' . ($halfDayCount === 1 ? '' : 's') . ')'] = $halfDayDeduction;
-        }
-        // Present but under 8h (check-in within cutoff, worked > 4h, early checkout) →
-        // pro-rate the shortfall hours. These days still incur the late penalty below.
-        $shortDays      = (int)($att['short_days'] ?? 0);
-        $shortDeduction = round((float)($att['short_ded_days'] ?? 0) * $perDay, 2);
-        if ($shortDeduction > 0) {
-            $deductions['Short Hours Deduction (' . $shortDays . ' day' . ($shortDays === 1 ? '' : 's') . ')'] = $shortDeduction;
+        $shortDays        = (int)($att['short_days'] ?? 0);
+        $shortDeduction   = round((float)($att['short_ded_days'] ?? 0) * $perDay, 2);
+
+        // Half day caused by arriving at/after the cutoff (~11:00): charged
+        // against BASIC, at the Basic day-rate — not prorated out of the whole
+        // CTC. These days were deliberately kept out of $unpaidDays above, so
+        // this is the only place they are charged.
+        $lateHalfDeduction = 0.0;
+        if ($lateHalfDays > 0) {
+            $lateHalfDeduction = round($lateHalfDays * $basicPerDay, 2);
+            if ($lateHalfDeduction > 0) {
+                $n = $this->formatDays($lateHalfDays * 2);   // 0.5 ded-day = 1 half day
+                $deductions['Half Day - Late Arrival (' . $n . ' day' . ($lateHalfDays * 2 == 1 ? '' : 's') . ')'] = $lateHalfDeduction;
+            }
         }
 
         // Persist per-day worked hours + deduction to the attendance rows (audit/history).
@@ -345,15 +386,17 @@ class PayrollCalculator
         // Late penalty: once total late for the month exceeds the grace allowance,
         // charge the FULL total late doubled (NOT just the minutes beyond grace).
         //   deductable minutes = total late × 2
-        //   deduction          = deductable minutes × per-hour rate ÷ 60
-        // (matches Laravel SalarySlipController behaviour.)
+        //   deduction          = deductable minutes × BASIC per-hour rate ÷ 60
+        // The rate is BASIC-based (not CTC) — a late hour is charged against the
+        // same wage base overtime is paid from. Absent / half-day / short-hours
+        // deductions remain on the CTC rate.
         $lateDeduction     = 0.0;
         $monthlyGrace      = attendance_shift_timing($empId)['monthly_grace']; // employee's shift (legacy setting when shift-less)
         $totalLateMinutes  = $att['late_minutes'];
         $deductableLateMin = 0;
         if ($totalLateMinutes > $monthlyGrace) {
             $deductableLateMin = $totalLateMinutes * 2;                 // full total late, doubled
-            $lateDeduction     = round($deductableLateMin * ($perHour / 60), 2);
+            $lateDeduction     = round($deductableLateMin * ($basicPerHour / 60), 2);
             if ($lateDeduction > 0) {
                 $deductions['Late Deduction (' . $totalLateMinutes . ' min, 2× rate)'] = $lateDeduction;
             }
@@ -401,12 +444,16 @@ class PayrollCalculator
             'short_deduction'       => $shortDeduction,
             'ot_hours'              => $otHours,
             'ot_amount'             => $otAmount,
-            'ot_per_hour_rate'      => round($otPerHour, 2),
+            'ot_per_hour_rate'      => round($basicPerHour, 2),
             'late_minutes'          => $totalLateMinutes,
             'late_grace_minutes'    => $monthlyGrace,
             'deductable_late_mins'  => $deductableLateMin,
             'late_deduction'        => $lateDeduction,
             'absent_deduction'      => $absentDeduction,
+            'paid_days'             => round($paidDays, 2),   // calendar days actually earned
+            'unpaid_days'           => round($unpaidDays, 2), // LOP + half/short shortfall
+            'earn_ratio'            => round($earnRatio, 6),  // paid_days ÷ calendar_days
+            'basic_full_month'      => round($basicFullMonth, 2),
             'per_day_salary'        => round($perDay, 2),
             'per_hour_rate'         => round($perHour, 2),
             'calendar_days'         => $calDays,
@@ -604,7 +651,7 @@ class PayrollCalculator
         );
         $eoStmt->execute([$empId, $from, $to]);
         $fullWorked = 0; $halfWorked = 0; $presentPartial = 0;
-        $halfDedDays = 0.0; $shortDedDays = 0.0;
+        $halfDedDays = 0.0; $shortDedDays = 0.0; $lateHalfDedDays = 0.0;
         $lateMinsPool = 0; $lateDaysPool = 0; $workedDays = [];
         foreach ($eoStmt->fetchAll() as $r) {
             $inM  = time_to_mins((string)$r['in_time']);
@@ -627,6 +674,10 @@ class PayrollCalculator
             $c   = attendance_classify($net, $inM, $osM, $grM, $outM, $oeM, $hcM);
             if ($c['status'] === 'half') {
                 $halfWorked++;     $halfDedDays  += $c['ded_days'];   // "Half Day" line, no late
+                // A half day caused by arriving at/after the cutoff is tracked
+                // separately — payroll charges THAT one against Basic, while a
+                // genuinely half-worked/availed day stays on the CTC rate.
+                if (($c['reason'] ?? '') === 'late_arrival') $lateHalfDedDays += $c['ded_days'];
             } elseif ($c['status'] === 'short' || $c['status'] === 'present') {
                 $presentPartial++; $shortDedDays += $c['ded_days'];   // "Short Hours" line (late only if 'present')
             } else {                                                  // 'full'
@@ -641,6 +692,7 @@ class PayrollCalculator
             'present'        => $present,
             'half_day'       => $halfWorked,
             'half_ded_days'  => round($halfDedDays, 4),    // total ½-day-equivalent to deduct
+            'late_half_ded_days' => round($lateHalfDedDays, 4), // of which caused by a late (≥cutoff) arrival
             'short_days'     => $presentPartial,           // present-but-under-8h days
             'short_ded_days' => round($shortDedDays, 4),   // total shortfall (in days) to deduct
             'worked_days'    => $workedDays,               // per-day [date, net, status, ded_days] for write-back

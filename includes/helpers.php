@@ -398,10 +398,47 @@ function shift_lunch_window(int $empId): ?array {
 }
 
 /**
+ * The shift an employee is on for a GIVEN DATE — the rotation resolver.
+ *
+ * Looks in employee_shift_schedule for a row covering $date (latest start_date
+ * wins if ranges overlap); falls back to the employee's standing shift
+ * (employees.shift_id) when they have no schedule, which is the case for every
+ * non-rotating employee. Passing $date = null skips the schedule entirely.
+ *
+ * This is what makes back-dated marking and biometric imports correct: a day
+ * imported next week is still judged by the shift in force on the day worked.
+ */
+function employee_shift_on(int $empId, ?string $date = null): array {
+    static $cache = [];
+    if ($date === null) return employee_shift($empId);
+    $key = $empId . '|' . $date;
+    if (array_key_exists($key, $cache)) return $cache[$key];
+
+    $shift = [];
+    try {
+        $st = db()->prepare(
+            'SELECT shift_id FROM employee_shift_schedule
+              WHERE employee_id = ?
+                AND start_date <= ?
+                AND (end_date IS NULL OR end_date >= ?)
+              ORDER BY start_date DESC, id DESC LIMIT 1'
+        );
+        $st->execute([$empId, $date, $date]);
+        $sid = $st->fetchColumn();
+        if ($sid) $shift = get_shift((int)$sid);
+    } catch (Throwable $e) { /* schedule table absent — no rotation configured */ }
+
+    return $cache[$key] = ($shift ?: employee_shift($empId));
+}
+
+/**
  * Attendance-classification timing for one employee, resolved from their shift
  * (falls back to the legacy global settings when they have none). Cached via
  * employee_shift(). Used by mark.php and the daily/monthly importers so the
  * late/half-day/OT thresholds live in exactly one place.
+ *
+ * $date (optional): resolve the shift AS OF that attendance date, honouring any
+ * rotation schedule. Omit it to use the employee's current standing shift.
  *
  * Returns:
  *   shift_id      ?int  — null on legacy fallback
@@ -413,17 +450,20 @@ function shift_lunch_window(int $empId): ?array {
  *   ot_trigger    ?int  — mins; null when the shift has no OT times
  *   ot_baseline   ?int
  */
-function attendance_shift_timing(int $empId): array {
+function attendance_shift_timing(int $empId, ?string $date = null): array {
     static $cache = [];
-    if (array_key_exists($empId, $cache)) return $cache[$empId];
+    $key = $empId . '|' . ($date ?? '');
+    if (array_key_exists($key, $cache)) return $cache[$key];
 
-    $s = employee_shift($empId);   // shift row, General, or hardcoded legacy set
+    // With a date, honour any rotation schedule for that day; without one, the
+    // employee's current standing shift.
+    $s = employee_shift_on($empId, $date);
     $startMins = time_to_mins(substr((string)$s['start_time'], 0, 5));
     $grace     = (int)($s['daily_grace_mins'] ?? setting_daily_grace_mins());
     $halfCut   = !empty($s['half_day_cutoff'])
                     ? time_to_mins(substr((string)$s['half_day_cutoff'], 0, 5))
                     : $startMins + 120;
-    return $cache[$empId] = [
+    return $cache[$key] = [
         'shift_id'      => !empty($s['id']) ? (int)$s['id'] : null,
         'start_mins'    => $startMins,
         'end_mins'      => time_to_mins(substr((string)$s['end_time'], 0, 5)),
@@ -561,15 +601,20 @@ function attendance_classify(int $netMin, ?int $inMin, int $officeStartMin, int 
         return ['status' => 'short', 'worked_h' => round($workedH, 2),
                 'ded_days' => $shortfallDays, 'late' => false];
     }
-    // Rule: check-in at/after ~11:00 (with ≥ 4h worked) → half day (no late), ≥ ½ day off.
+    // Rule: check-in at/after the cutoff (~11:00) with ≥ 4h worked → half day
+    // (no late), ≥ ½ day off. 'reason' => late_arrival: the employee turned up
+    // too late to be credited a full day. Payroll prices THIS case off BASIC.
     if ($inMin !== null && $inMin >= $cutoff) {
         return ['status' => 'half', 'worked_h' => round($workedH, 2),
-                'ded_days' => max(0.5, $shortfallDays), 'late' => false];
+                'ded_days' => max(0.5, $shortfallDays), 'late' => false,
+                'reason' => 'late_arrival'];
     }
-    // Rule: net = 4h exactly → half day (no late), ½-day deduction.
+    // Rule: net = 4h exactly → half day (no late), ½-day deduction. This is a
+    // genuine half day worked/availed, so payroll prices it off CTC as usual.
     if ($netMin === $HALF_MIN) {
         return ['status' => 'half', 'worked_h' => round($workedH, 2),
-                'ded_days' => $shortfallDays, 'late' => false];
+                'ded_days' => $shortfallDays, 'late' => false,
+                'reason' => 'half_worked'];
     }
     // net > 4h, on-time-ish.
     $lateElig  = ($inMin  !== null && $inMin  > $officeStartMin + $graceMin);
@@ -609,6 +654,57 @@ function break_minutes_within(int $inMins, int $outMins, ?array $lunchWindow = n
         if ($overlap > 0) $total += $overlap;
     }
     return $total;
+}
+
+// ─── Entity name font ─────────────────────────────────────────────────────────
+// Each entity can print its NAME in its own typeface (payslips, letters,
+// circulars). Only the name is affected — body text is never restyled.
+//
+// The database stores a KEY, never CSS. entity_font_css() maps the key through
+// this whitelist, so a value from the DB cannot inject arbitrary styling.
+// Only web-safe stacks are offered, so they render identically in the browser
+// and in printed/PDF output without needing a downloaded font.
+
+/** key => [label, css font-family stack] */
+function entity_font_options(): array {
+    return [
+        ''           => ['Default (document font)', ''],
+        'serif'      => ['Serif — Times',           "'Times New Roman', Times, serif"],
+        'georgia'    => ['Serif — Georgia',         "Georgia, 'Times New Roman', serif"],
+        'garamond'   => ['Serif — Garamond',        "Garamond, Georgia, serif"],
+        'sans'       => ['Sans — Arial',            "Arial, Helvetica, sans-serif"],
+        'helvetica'  => ['Sans — Helvetica',        "'Helvetica Neue', Helvetica, Arial, sans-serif"],
+        'verdana'    => ['Sans — Verdana',          "Verdana, Geneva, sans-serif"],
+        'tahoma'     => ['Sans — Tahoma',           "Tahoma, Verdana, sans-serif"],
+        'trebuchet'  => ['Sans — Trebuchet',        "'Trebuchet MS', Tahoma, sans-serif"],
+        'impact'     => ['Display — Impact',        "Impact, 'Arial Black', sans-serif"],
+        'arialblack' => ['Display — Arial Black',   "'Arial Black', Gadget, sans-serif"],
+        'palatino'   => ['Elegant — Palatino',      "'Palatino Linotype', 'Book Antiqua', Palatino, serif"],
+        'copperplate'=> ['Elegant — Copperplate',   "Copperplate, 'Copperplate Gothic Light', fantasy"],
+        'cursive'    => ['Script — Brush',          "'Brush Script MT', 'Segoe Script', cursive"],
+        'mono'       => ['Monospace — Courier',     "'Courier New', Courier, monospace"],
+    ];
+}
+
+/**
+ * CSS font-family for an entity's name, ready to drop into a style attribute.
+ * Returns '' for the default (no font-family emitted at all), and '' for any
+ * key not in the whitelist.
+ */
+function entity_font_css(?string $key): string {
+    $opts = entity_font_options();
+    $key  = (string)$key;
+    return isset($opts[$key]) ? $opts[$key][1] : '';
+}
+
+/**
+ * Ready-made style attribute value for the entity name, e.g.
+ *   <div style="<?= entity_name_style($row['name_font']) ?>">
+ * Empty string when the entity uses the document default.
+ */
+function entity_name_style(?string $key): string {
+    $css = entity_font_css($key);
+    return $css === '' ? '' : 'font-family:' . $css . ';';
 }
 
 /** Format decimal OT hours as "Xh Ym" (e.g. 2.78 → "2h 47m"). */

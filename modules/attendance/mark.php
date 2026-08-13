@@ -85,16 +85,40 @@ $otBaselineMins = (function($t) { [$h,$m] = explode(':', $t); return $h*60+$m; }
  * EMPLOYEE'S SHIFT (employees.shift_id → shifts). Employees without a shift row
  * fall back to the legacy globals above, so behaviour is unchanged for them.
  * OT needs BOTH gates on: shifts.ot_enabled AND employees.ot_enabled.       */
+// The shift is resolved AS OF $selDate, so a rotating employee is judged by the
+// shift they were on that day — including when marking a back-dated sheet.
 $shiftTiming = [];   // emp_id => [shift_id, shift_name, late_thresh, half_cutoff, shift_ot_on, ot_trigger, ot_baseline]
+$_shiftCols = "e.id AS emp_id, s.id AS shift_id, s.name AS shift_name,
+               s.start_time, s.daily_grace_mins, s.half_day_cutoff,
+               s.ot_enabled AS shift_ot, s.ot_trigger_time, s.ot_baseline_time";
+$stRows = [];
 try {
-    $stRows = $db->query(
-        "SELECT e.id AS emp_id, s.id AS shift_id, s.name AS shift_name,
-                s.start_time, s.daily_grace_mins, s.half_day_cutoff,
-                s.ot_enabled AS shift_ot, s.ot_trigger_time, s.ot_baseline_time
+    // Rotation-aware: the schedule row covering $selDate wins, else the standing shift.
+    $stSt = $db->prepare(
+        "SELECT {$_shiftCols}
            FROM employees e
-           LEFT JOIN shifts s ON s.id = e.shift_id
+           LEFT JOIN shifts s ON s.id = COALESCE(
+                (SELECT sc.shift_id FROM employee_shift_schedule sc
+                  WHERE sc.employee_id = e.id
+                    AND sc.start_date <= :d1
+                    AND (sc.end_date IS NULL OR sc.end_date >= :d2)
+                  ORDER BY sc.start_date DESC, sc.id DESC LIMIT 1),
+                e.shift_id)
           WHERE e.status = 'Active'"
-    )->fetchAll();
+    );
+    $stSt->execute([':d1' => $selDate, ':d2' => $selDate]);
+    $stRows = $stSt->fetchAll();
+} catch (Throwable $e) {
+    // No rotation table on this install — fall back to the standing shift only.
+    try {
+        $stRows = $db->query(
+            "SELECT {$_shiftCols} FROM employees e
+               LEFT JOIN shifts s ON s.id = e.shift_id
+              WHERE e.status = 'Active'"
+        )->fetchAll();
+    } catch (Throwable $e2) { $stRows = []; }   // no shifts table at all → legacy globals
+}
+try {
     foreach ($stRows as $r) {
         if ($r['shift_id'] === null) continue;               // no shift → legacy fallback
         $sStart = time_to_mins(substr((string)$r['start_time'], 0, 5));

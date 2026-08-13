@@ -9,7 +9,7 @@ $letter = db()->query("SELECT l.*, e.name AS emp_name, e.employee_id AS emp_code
     e.join_date, e.gender, e.fixed_salary, e.variable_salary,
     d.name AS dept_name, des.name AS designation,
     u.name AS issued_by_name,
-    ent.name AS entity_name, ent.address AS entity_address, ent.city AS entity_city,
+    ent.name AS entity_name, ent.name_font AS entity_name_font, ent.address AS entity_address, ent.city AS entity_city,
     ent.state AS entity_state, ent.pincode AS entity_pincode,
     ent.email AS entity_email, ent.phone AS entity_phone, ent.logo AS entity_logo,
     ent.signature AS entity_signature, ent.signatory_title AS entity_signatory_title
@@ -108,7 +108,7 @@ include '../../includes/header.php';
         <div class="letter-header">
             <div class="letter-company">
                 <?php if ($co_logo): ?><img src="<?= h($co_logo) ?>" alt="<?= h($co_name) ?>" class="letter-logo"><?php endif; ?>
-                <h2><?= h($co_name) ?></h2>
+                <h2 style="<?= entity_name_style($letter['entity_name_font'] ?? '') ?>"><?= h($co_name) ?></h2>
                 <p><?= h($co_addr) ?></p>
                 <?php if ($co_email || $co_phone): ?><p><?= h(trim($co_email . ($co_email && $co_phone ? ' | ' : '') . $co_phone)) ?></p><?php endif; ?>
             </div>

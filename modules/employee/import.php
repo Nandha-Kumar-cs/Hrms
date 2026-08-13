@@ -90,10 +90,15 @@ if (!$empRoleId) {
 foreach ($rows as $i => $row) {
     $rowNum = $i + 2; // +1 for header, +1 for 1-based display
 
-    // Normalize keys
+    // Normalize keys.
+    // Excel saves CSV as "UTF-8 with BOM", so the FIRST header arrives as
+    // "\xEF\xBB\xBFEmpcode". Without stripping it the first column can never be
+    // matched — which silently made every employee code fall back to an
+    // auto-generated EMP0001… sequence. Strip the BOM before normalising.
     $r = [];
     foreach ($row as $k => $v) {
-        $key      = strtolower(trim(str_replace([' ', '-'], '_', (string)$k)));
+        $key      = preg_replace('/^\xEF\xBB\xBF/', '', (string)$k);
+        $key      = strtolower(trim(str_replace([' ', '-'], '_', $key)));
         $r[$key]  = trim((string)$v);
     }
 

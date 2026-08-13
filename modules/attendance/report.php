@@ -138,6 +138,14 @@ $employees = $db->query(
 )->fetchAll();
 $empCount = count($employees);
 
+/* ── Keep attendance in step with the current shift assignment ─────────────
+   If a shift was changed (or a rotation block added) after these days were
+   marked, re-derive their status from the punches already stored — no Excel
+   re-import needed. Only rows whose stamped shift no longer matches are
+   touched, so a refresh with nothing changed does no writes at all. */
+require_once __DIR__ . '/../../includes/attendance_resync.php';
+attendance_resync_shifts($mStartStr, $mEndStr, is_self_scoped() ? current_employee_id() : null);
+
 /* ── Load all attendance records for the month ───────────────────────────── */
 $attStmt = $db->prepare(
     "SELECT employee_id, shift_id, att_date, status, leave_classification, in_time, out_time, ot_hours, remarks
@@ -614,12 +622,15 @@ foreach ($employees as $emp) {
                                 if ($paidLeaveAbsent) {
                                     // Admin-approved PAID leave → lavender (not red absent)
                                     echo '<span class="badge" style="background:#e6e6fa;color:#5b21b6;font-size:.7rem;border:1px solid #c4b5fd" title="Approved paid leave">PL</span>';
-                                } elseif ($status === 'Absent') {
-                                    // Absent day (real row) — classifiable as Paid / Unpaid leave.
-                                    echo _rep_absentBadge($empId, $cellDateStr, $rec['leave_classification'] ?? null, $canClassify, $paidUsedByEmp[$empId] ?? 0);
                                 } elseif ($noCheckout) {
-                                    // Orange A — checked in but no checkout
+                                    // Orange A — checked in but no checkout. MUST be tested before
+                                    // the plain-Absent branch: the no-checkout rule stores these
+                                    // rows AS 'Absent' (keeping in_time), so an Absent-first test
+                                    // would paint them red and this branch would be unreachable.
                                     echo '<span class="badge" style="background:#e67e22;font-size:.7rem;"' . $titleHtml . '>A</span>';
+                                } elseif ($status === 'Absent') {
+                                    // Genuine absence (no punches at all) — classifiable as Paid / Unpaid leave.
+                                    echo _rep_absentBadge($empId, $cellDateStr, $rec['leave_classification'] ?? null, $canClassify, $paidUsedByEmp[$empId] ?? 0);
                                 } elseif ($isEarlyOut) {
                                     // Under a full 8 net hours (excl. breaks) → partial day (Half)
                                     echo '<span class="badge bg-warning text-dark" style="font-size:.7rem" title="Half / Short day &mdash; under 8 net working hours, excl. breaks (in ' . h(date('h:i A', strtotime($rec['in_time']))) . ', out ' . h(date('h:i A', strtotime($rec['out_time']))) . ')">H</span>';

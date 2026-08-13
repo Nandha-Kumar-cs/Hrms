@@ -21,9 +21,9 @@ if (!$id && !empty($_GET['employee_id'])) {
 $slip = $db->prepare(
     'SELECT ss.*, e.name, e.employee_id AS emp_code, e.designation_id,
             e.department_id, e.created_at, e.entity_id,
-            e.bank_account, e.bank_name, e.bank_ifsc, e.pan_number, e.uan_number,
+            e.bank_account, e.bank_name, e.bank_ifsc, e.pan_number, e.uan_number, e.esic_number,
             d.name AS dept_name, des.name AS desig_name,
-            ent.name AS entity_name, ent.address AS entity_address,
+            ent.name AS entity_name, ent.name_font AS entity_name_font, ent.address AS entity_address,
             ent.city AS entity_city, ent.state AS entity_state,
             ent.pincode AS entity_pincode, ent.logo AS entity_logo
      FROM salary_slips ss
@@ -195,7 +195,7 @@ if (!function_exists('_inr_words')) {
         <?php if ($logoUrl): ?>
         <img src="<?= $logoUrl ?>" alt="Logo" style="max-height:54px;margin-bottom:8px">
         <?php endif; ?>
-        <div style="font-size:18px;font-weight:800;color:#000"><?= h($companyName) ?></div>
+        <div style="font-size:18px;font-weight:800;color:#000;<?= entity_name_style($s['entity_name_font'] ?? '') ?>"><?= h($companyName) ?></div>
         <div style="font-size:11px;color:#000;margin-top:3px;line-height:1.5"><?= h($companyAddress) ?></div>
     </div>
     <div style="text-align:center;padding:8px 24px;border-top:1px solid #000;border-bottom:1px solid #000">
@@ -208,14 +208,28 @@ if (!function_exists('_inr_words')) {
         // Shift worked in this month — frozen into the slip's attendance summary
         // at generation time (see PayrollCalculator), so it never drifts.
         $slipShift = $attSummary['shift_name'] ?? null;
+
+        // LOP / Late — the earnings above are already net of these (components are
+        // prorated to paid days), so these lines are informational: they say WHY
+        // the earnings are lower, without deducting anything a second time.
+        $lopDays   = (float)($attSummary['unpaid_days'] ?? $attSummary['absent_days'] ?? 0);
+        $paidDays  = $attSummary['paid_days']     ?? null;
+        $calDays   = $attSummary['calendar_days'] ?? null;
+        $lateMins  = (int)($attSummary['late_minutes'] ?? 0);
+        $fmtDays   = fn(float $d) => rtrim(rtrim(number_format($d, 2), '0'), '.');
+        $lopText   = $fmtDays($lopDays) . ' day' . ($lopDays == 1 ? '' : 's');
+        $lateText  = $lateMins > 0 ? fmt_ot_hours($lateMins / 60) : '—';
+
         $infoRows = [
             ['Employee Name',  $s['name'],            'Employee ID',  $s['emp_code']],
             ['Department',     $s['dept_name'] ?? '—','Designation',  $s['desig_name'] ?? '—'],
             ['Pay Period',     $monthLabel,           'Shift',        $slipShift ?: '—'],
-            ['PAN Number',     $s['pan_number'] ?: '—', 'Bank Account', $s['bank_account'] ?: '—'],
+            ['LOP',            $lopText,              'Late',         $lateText],
+            ['PAN Number',     $s['pan_number'] ?: '—', 'ESI Number',  $s['esic_number'] ?: '—'],
+            ['Bank Account',   $s['bank_account'] ?: '—', 'Bank Name',  $s['bank_name'] ?: '—'],
         ];
         if ($s['uan_number']) {
-            $infoRows[] = ['UAN Number', $s['uan_number'], 'Bank Name', $s['bank_name'] ?: '—'];
+            $infoRows[] = ['UAN Number', $s['uan_number'], 'IFSC', $s['bank_ifsc'] ?: '—'];
         }
         foreach ($infoRows as $i => [$lbl1, $val1, $lbl2, $val2]):
             $border = $i < count($infoRows)-1 ? 'border-bottom:1px solid #000' : '';
@@ -289,16 +303,13 @@ if (!function_exists('_inr_words')) {
         </tbody>
     </table>
 
-    <!-- ── Net Pay ─────────────────────────────────────────────────────────── -->
-    <div style="margin:0 24px 6px;border:2px solid #000;padding:12px 14px;color:#000">
+    <!-- ── Net Pay (rounded to the nearest rupee) ──────────────────────────── -->
+    <?php $netRounded = round((float)$s['net_pay']); ?>
+    <div style="margin:0 24px 16px;border:2px solid #000;padding:12px 14px;color:#000">
         <div style="font-weight:700;font-size:14px">
-            Net Pay for the month (Total Earnings &minus; Total Deductions): <?= money($s['net_pay']) ?>
+            Net Pay for the month (Total Earnings &minus; Total Deductions): <?= money($netRounded) ?>
         </div>
-        <div style="font-size:12px;margin-top:4px">(Rupees <?= h(_inr_words((float)$s['net_pay'])) ?> Only)</div>
-    </div>
-    <div style="margin:0 24px 16px;font-size:11px;color:#000;display:flex;justify-content:flex-end;gap:18px">
-        <span>PF Employer: <?= money($s['pf_employer']) ?></span>
-        <span>ESI Employer: <?= money($s['esi_employer']) ?></span>
+        <div style="font-size:12px;margin-top:4px">(Rupees <?= h(_inr_words($netRounded)) ?> Only)</div>
     </div>
 
     <!-- ── Footer ──────────────────────────────────────────────────────────── -->

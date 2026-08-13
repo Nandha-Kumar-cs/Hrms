@@ -97,6 +97,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    // ── Assign employees to a shift (bulk) ───────────────────────────────────
+    if ($action === 'assign_employees') {
+        $sid    = (int)($_POST['shift_id'] ?? 0);
+        $empIds = array_filter(array_map('intval', (array)($_POST['emp_ids'] ?? [])));
+        $shiftRow = $db->prepare('SELECT name FROM shifts WHERE id = ?');
+        $shiftRow->execute([$sid]);
+        $sName = $shiftRow->fetchColumn();
+        if (!$sName) { flash('error', 'Shift not found.'); redirect($self); }
+        if (!$empIds) { flash('error', 'Select at least one employee.'); redirect($self . '?assign=' . $sid); }
+
+        $in  = implode(',', array_fill(0, count($empIds), '?'));
+        $db->prepare("UPDATE employees SET shift_id = ? WHERE id IN ($in)")
+           ->execute(array_merge([$sid], $empIds));
+        // A lunch batch belonging to a DIFFERENT shift no longer applies — clear it
+        // so payroll does not subtract a lunch the new shift does not have.
+        $db->prepare(
+            "UPDATE employees e
+               LEFT JOIN lunch_batches b ON b.id = e.lunch_batch_id
+                SET e.lunch_batch_id = NULL
+              WHERE e.id IN ($in)
+                AND e.lunch_batch_id IS NOT NULL
+                AND b.shift_id IS NOT NULL AND b.shift_id <> ?"
+        )->execute(array_merge($empIds, [$sid]));
+
+        flash('success', count($empIds) . " employee(s) moved to '{$sName}'. New attendance uses this shift; already-marked days keep the shift they were judged by.");
+        redirect($self . '?assign=' . $sid);
+    }
+
     // ── Delete a shift ───────────────────────────────────────────────────────
     if ($action === 'delete_shift') {
         $id = (int)($_POST['id'] ?? 0);
@@ -151,6 +179,24 @@ $shifts = $db->query(
        FROM shifts s ORDER BY s.id'
 )->fetchAll();
 
+// Bulk-assign panel: ?assign=<shiftId>
+$assignId  = (int)($_GET['assign'] ?? 0);
+$assignRow = null;
+$allEmps   = [];
+if ($assignId) {
+    foreach ($shifts as $s) if ((int)$s['id'] === $assignId) $assignRow = $s;
+    if ($assignRow) {
+        $allEmps = $db->query(
+            "SELECT e.id, e.name, e.employee_id AS code, e.shift_id,
+                    COALESCE(d.name,'—') AS dept, s.name AS shift_name
+               FROM employees e
+               LEFT JOIN departments d ON d.id = e.department_id
+               LEFT JOIN shifts s ON s.id = e.shift_id
+              WHERE e.status='Active' ORDER BY e.name"
+        )->fetchAll();
+    }
+}
+
 $editId = (int)($_GET['edit'] ?? 0);
 $edit   = null;
 $editBreaks = [];
@@ -203,6 +249,9 @@ require_once __DIR__ . '/../../includes/header.php';
                         <td class="text-center"><?= ($s['lunch_start'] && $s['lunch_end']) ? h($fmt12($s['lunch_start'])) : '—' ?></td>
                         <td class="text-center"><span class="badge bg-secondary"><?= (int)$s['emp_count'] ?></span></td>
                         <td class="text-end text-nowrap">
+                            <a href="<?= $self ?>?assign=<?= (int)$s['id'] ?>" class="btn btn-sm btn-outline-success" title="Assign employees to this shift">
+                                <i class="fa fa-users"></i> Assign
+                            </a>
                             <a href="<?= $self ?>?edit=<?= (int)$s['id'] ?>" class="btn btn-sm btn-outline-primary" title="Edit"><i class="fa fa-pen-to-square"></i></a>
                             <?php if ($s['name'] !== 'General'): ?>
                             <form method="POST" action="<?= $self ?>" style="display:inline" onsubmit="return confirm('Delete this shift? (Only allowed when no employees are assigned.)')">
@@ -217,6 +266,64 @@ require_once __DIR__ . '/../../includes/header.php';
             </table>
         </div>
     </div>
+
+    <?php if ($assignRow): ?>
+    <!-- ── Assign employees to a shift ────────────────────────────────────── -->
+    <div class="card page-card">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h6 class="mb-0 fw-semibold"><i class="fa fa-users me-2 text-success"></i>Assign Employees to <?= h($assignRow['name']) ?></h6>
+            <a href="<?= $self ?>" class="btn btn-sm btn-light">Close</a>
+        </div>
+        <div class="card-body">
+            <p class="small text-muted">
+                Ticked employees move to <strong><?= h($assignRow['name']) ?></strong>. Their
+                <em>future</em> attendance is judged by it — days already marked keep the shift they
+                were judged by, so past payslips do not change. For an employee who alternates
+                shifts, use <a href="<?= BASE_URL ?>/modules/settings/shift_rotation.php">Shift Rotation</a> instead.
+            </p>
+            <form method="POST" action="<?= $self ?>">
+                <?= csrf_field() ?>
+                <input type="hidden" name="action" value="assign_employees">
+                <input type="hidden" name="shift_id" value="<?= (int)$assignRow['id'] ?>">
+                <div class="d-flex gap-2 mb-2">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="document.querySelectorAll('.emp-pick').forEach(c=>c.checked=true)">Select all</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="document.querySelectorAll('.emp-pick').forEach(c=>c.checked=false)">Clear</button>
+                    <input type="search" class="form-control form-control-sm" style="max-width:240px"
+                           placeholder="Filter by name or code…" oninput="
+                             var q=this.value.toLowerCase();
+                             document.querySelectorAll('#assignTable tbody tr').forEach(function(tr){
+                               tr.style.display = tr.dataset.search.indexOf(q) > -1 ? '' : 'none';
+                             });">
+                </div>
+                <div class="table-responsive" style="max-height:430px;overflow-y:auto">
+                <table class="table table-sm align-middle mb-0" id="assignTable">
+                    <thead class="table-light" style="position:sticky;top:0;z-index:2">
+                        <tr><th style="width:40px"></th><th>Employee</th><th>Department</th><th>Current shift</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($allEmps as $emp):
+                        $onThis = (int)$emp['shift_id'] === (int)$assignRow['id']; ?>
+                        <tr data-search="<?= h(strtolower($emp['name'] . ' ' . $emp['code'])) ?>" class="<?= $onThis ? 'table-success' : '' ?>">
+                            <td><input type="checkbox" class="form-check-input emp-pick" name="emp_ids[]" value="<?= (int)$emp['id'] ?>" <?= $onThis ? 'checked' : '' ?>></td>
+                            <td><?= h($emp['name']) ?> <small class="text-muted"><?= h($emp['code']) ?></small></td>
+                            <td class="small"><?= h($emp['dept']) ?></td>
+                            <td>
+                                <span class="badge <?= $onThis ? 'bg-success' : 'bg-light text-dark border' ?>" style="font-size:.68rem">
+                                    <?= h($emp['shift_name'] ?? '—') ?>
+                                </span>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+                </div>
+                <button type="submit" class="btn btn-success mt-3">
+                    <i class="fa fa-check me-1"></i>Assign selected to <?= h($assignRow['name']) ?>
+                </button>
+            </form>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <?php if ($editId): $isNew = ($edit === null); ?>
     <!-- ── Add / edit shift form ──────────────────────────────────────────── -->

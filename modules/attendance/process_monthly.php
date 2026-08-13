@@ -250,7 +250,7 @@ if ($isFormatC) {
         $otHours = _attm_hhmm_to_hours($otRaw);
 
         // Judge against this employee's shift; zero OT for no-OT (straight) shifts
-        $timing = attendance_shift_timing($curEmpId);
+        $timing = attendance_shift_timing($curEmpId, $useDate);
         if (!$timing['shift_ot_on']) $otHours = 0;
 
         if ($inTime) {
@@ -368,7 +368,7 @@ elseif (!$isFormatB) {
         try {
             $upsertStmt->execute([
                 ':emp_id'    => $empDbId,
-                ':shift_id'  => attendance_shift_timing($empDbId)['shift_id'],
+                ':shift_id'  => attendance_shift_timing($empDbId, $useDate)['shift_id'],
                 ':att_date'  => $useDate,
                 ':status'    => $status,
                 ':in_time'   => $inTime,
@@ -451,7 +451,7 @@ else {
             try {
                 $upsertStmt->execute([
                     ':emp_id'    => $empDbId,
-                    ':shift_id'  => attendance_shift_timing($empDbId)['shift_id'],
+                    ':shift_id'  => attendance_shift_timing($empDbId, $useDate)['shift_id'],
                     ':att_date'  => $useDate,
                     ':status'    => $status,
                     ':in_time'   => null,
@@ -548,7 +548,7 @@ function _attm_classify_from_time(?string $inTime, string $attDate, int $empDbId
     if (!$inTime) return 'Absent';
     try {
         if ($empDbId > 0) {
-            $t     = attendance_shift_timing($empDbId);
+            $t     = attendance_shift_timing($empDbId, $attDate);
             $inMin = time_to_mins(substr($inTime, 0, 5));
             return ($inMin <= $t['late_thresh']) ? 'On Time' : 'Late';
         }

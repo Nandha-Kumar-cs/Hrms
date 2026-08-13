@@ -12,7 +12,7 @@ require_permission('holidays', 'view');
 
 $id = (int)($_GET['id'] ?? 0);
 $h  = db()->prepare(
-    'SELECT h.*, e.name AS entity_name, e.address AS entity_address, e.city AS entity_city,
+    'SELECT h.*, e.name AS entity_name, e.name_font AS entity_name_font, e.address AS entity_address, e.city AS entity_city,
             e.state AS entity_state, e.pincode AS entity_pincode, e.phone AS entity_phone,
             e.email AS entity_email, e.website AS entity_website, e.logo AS entity_logo
      FROM holidays h LEFT JOIN entities e ON e.id = h.entity_id WHERE h.id = ?'
@@ -121,7 +121,7 @@ $isPvt = (stripos($entityName, 'private') !== false || stripos($entityName, 'pvt
 <div class="header">
     <div class="header-logo"><?php if ($logoSrc): ?><img src="<?= h($logoSrc) ?>" alt="Logo"><?php endif; ?></div>
     <div class="header-company">
-        <div class="company-name"><?= h($entityName) ?></div>
+        <div class="company-name" style="<?= entity_name_style($holiday['entity_name_font'] ?? '') ?>"><?= h($entityName) ?></div>
         <?php if (!$isPvt): ?><div class="company-sub">Private Limited</div><?php endif; ?>
     </div>
 </div>

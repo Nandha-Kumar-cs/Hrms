@@ -44,6 +44,10 @@ if (!empty($_GET['ajax'])) {
         $email     = trim($_POST['email'] ?? '');
         $website   = trim($_POST['website'] ?? '');
         $sigTitle  = trim($_POST['signatory_title'] ?? '');
+        // Only a key from the whitelist is ever stored, so the value can never
+        // carry CSS of its own into a document.
+        $nameFont  = trim($_POST['name_font'] ?? '');
+        if (!array_key_exists($nameFont, entity_font_options())) $nameFont = '';
 
         $errors = [];
         if ($name === '')                                           $errors[] = 'Name is required.';
@@ -106,10 +110,10 @@ if (!empty($_GET['ajax'])) {
 
         if ($action === 'create') {
             $st = $db->prepare(
-                'INSERT INTO entities (name, address, city, state, pincode, phone, email, website, signatory_title, logo, signature)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+                'INSERT INTO entities (name, name_font, address, city, state, pincode, phone, email, website, signatory_title, logo, signature)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
             );
-            $st->execute([$name, $address, $city, $state, $pincode, $phone, $email, $website, $sigTitle, $newLogo, $newSig]);
+            $st->execute([$name, $nameFont ?: null, $address, $city, $state, $pincode, $phone, $email, $website, $sigTitle, $newLogo, $newSig]);
             echo json_encode(['success' => true, 'message' => 'Entity created.']);
             exit;
         }
@@ -122,8 +126,8 @@ if (!empty($_GET['ajax'])) {
             $logo     = $newLogo ?: $oldLogo;
             $sig      = $newSig  ?: $oldSig;
             $db->prepare(
-                'UPDATE entities SET name=?, address=?, city=?, state=?, pincode=?, phone=?, email=?, website=?, signatory_title=?, logo=?, signature=? WHERE id=?'
-            )->execute([$name, $address, $city, $state, $pincode, $phone, $email, $website, $sigTitle, $logo, $sig, $id]);
+                'UPDATE entities SET name=?, name_font=?, address=?, city=?, state=?, pincode=?, phone=?, email=?, website=?, signatory_title=?, logo=?, signature=? WHERE id=?'
+            )->execute([$name, $nameFont ?: null, $address, $city, $state, $pincode, $phone, $email, $website, $sigTitle, $logo, $sig, $id]);
             if ($newLogo && $oldLogo && $oldLogo !== $newLogo && is_file($LOGO_DIR . '/' . $oldLogo)) @unlink($LOGO_DIR . '/' . $oldLogo);
             if ($newSig  && $oldSig  && $oldSig  !== $newSig  && is_file($LOGO_DIR . '/' . $oldSig))  @unlink($LOGO_DIR . '/' . $oldSig);
             echo json_encode(['success' => true, 'message' => 'Entity updated.']);
@@ -160,7 +164,7 @@ $rows = $db->query('SELECT * FROM entities ORDER BY name')->fetchAll();
                                 <span class="text-muted">—</span>
                             <?php endif; ?>
                         </td>
-                        <td class="fw-semibold"><?= h($r['name']) ?></td>
+                        <td class="fw-semibold" style="<?= entity_name_style($r['name_font'] ?? '') ?>"><?= h($r['name']) ?></td>
                         <td><?= h(trim(($r['city'] ?? '') . ($r['city'] && $r['state'] ? ', ' : '') . ($r['state'] ?? ''))) ?: '—' ?></td>
                         <td>
                             <?php if (!empty($r['phone'])): ?><div><i class="fa fa-phone fa-xs text-muted me-1"></i><?= h($r['phone']) ?></div><?php endif; ?>
@@ -179,7 +183,8 @@ $rows = $db->query('SELECT * FROM entities ORDER BY name')->fetchAll();
                                     data-email="<?= h($r['email'] ?? '') ?>"
                                     data-website="<?= h($r['website'] ?? '') ?>"
                                     data-signature="<?= h($r['signature'] ?? '') ?>"
-                                    data-sigtitle="<?= h($r['signatory_title'] ?? '') ?>"><i class="fa fa-pen"></i></button>
+                                    data-sigtitle="<?= h($r['signatory_title'] ?? '') ?>"
+                                    data-namefont="<?= h($r['name_font'] ?? '') ?>"><i class="fa fa-pen"></i></button>
                             <button class="btn btn-sm btn-outline-danger btn-del-ent" data-id="<?= $r['id'] ?>" data-name="<?= h($r['name']) ?>"><i class="fa fa-trash"></i></button>
                         </td>
                     </tr>
@@ -209,6 +214,28 @@ $rows = $db->query('SELECT * FROM entities ORDER BY name')->fetchAll();
                         <label class="form-label fw-semibold">Logo</label>
                         <input type="file" id="entLogo" class="form-control" accept=".jpg,.jpeg,.png,.gif,.webp,.svg">
                         <small class="text-muted">Max 2 MB. Leave blank to keep existing.</small>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-5 mb-3">
+                        <label class="form-label fw-semibold">Name Font Style</label>
+                        <select id="entNameFont" class="form-select">
+                            <?php foreach (entity_font_options() as $k => [$label, $css]): ?>
+                            <option value="<?= h($k) ?>" data-css="<?= h($css) ?>"
+                                    style="<?= $css !== '' ? 'font-family:' . h($css) : '' ?>">
+                                <?= h($label) ?>
+                            </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small class="text-muted">Applies to the entity name only — on payslips, letters and circulars.</small>
+                    </div>
+                    <div class="col-md-7 mb-3">
+                        <label class="form-label fw-semibold">Preview</label>
+                        <div id="entFontPreview"
+                             class="form-control bg-light d-flex align-items-center"
+                             style="min-height:46px;font-size:18px;font-weight:800;color:#000;overflow:hidden;white-space:nowrap">
+                            <span class="text-muted fst-italic" style="font-weight:400;font-size:14px">Type a name to preview…</span>
+                        </div>
                     </div>
                 </div>
                 <div class="mb-3">
@@ -280,7 +307,24 @@ $(function () {
         $('#entId,#entName,#entAddress,#entCity,#entState,#entPincode,#entPhone,#entEmail,#entWebsite,#entSigTitle').val('');
         $('#entLogo,#entSignature').val('');
         $('#entSigCurrent').text('');
+        $('#entNameFont').val('');
+        updateFontPreview();
     }
+
+    // Live preview — shows the entity name exactly as it will print.
+    function updateFontPreview(){
+        var name = $('#entName').val().trim();
+        var css  = $('#entNameFont').find(':selected').data('css') || '';
+        var $p   = $('#entFontPreview');
+        if (!name) {
+            $p.html('<span class="text-muted fst-italic" style="font-weight:400;font-size:14px">Type a name to preview…</span>')
+              .css('font-family', '');
+            return;
+        }
+        $p.text(name).css('font-family', css || '');
+    }
+    $(document).on('input', '#entName', updateFontPreview);
+    $(document).on('change', '#entNameFont', updateFontPreview);
 
     $('#btnAddEnt').on('click', function () {
         $('#entModalTitle').text('Add Entity'); clearForm();
@@ -301,6 +345,8 @@ $(function () {
         $('#entWebsite').val(b.data('website'));
         $('#entSigTitle').val(b.data('sigtitle'));
         $('#entSigCurrent').text(b.data('signature') ? 'Current: ' + b.data('signature') : 'No signature uploaded');
+        $('#entNameFont').val(b.data('namefont') || '');
+        updateFontPreview();
         $('#entErr').addClass('d-none'); modal.show();
     });
 
@@ -319,6 +365,7 @@ $(function () {
         fd.append('email', $('#entEmail').val().trim());
         fd.append('website', $('#entWebsite').val().trim());
         fd.append('signatory_title', $('#entSigTitle').val().trim());
+        fd.append('name_font', $('#entNameFont').val() || '');
         var logo = $('#entLogo')[0].files[0];
         if (logo) fd.append('logo', logo);
         var sig = $('#entSignature')[0].files[0];

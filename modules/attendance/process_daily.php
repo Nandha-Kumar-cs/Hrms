@@ -230,7 +230,7 @@ if ($isDailyReport) {
         $otHours = _att_hhmm_to_hours($otRaw);
 
         // Judge against this employee's shift; zero OT for no-OT (straight) shifts
-        $timing = attendance_shift_timing($empDbId);
+        $timing = attendance_shift_timing($empDbId, $attDate);
         if (!$timing['shift_ot_on']) $otHours = 0;
 
         if ($inTime) {
@@ -321,7 +321,7 @@ foreach ($rows as $i => $row) {
         $wasExisting = isset($existingEmpIds[$empDbId]);
         $upsertStmt->execute([
             ':emp_id'    => $empDbId,
-            ':shift_id'  => attendance_shift_timing($empDbId)['shift_id'],
+            ':shift_id'  => attendance_shift_timing($empDbId, $useDate)['shift_id'],
             ':att_date'  => $useDate,
             ':status'    => $status,
             ':in_time'   => $inTime,
@@ -409,7 +409,7 @@ function _att_classify_from_time(?string $inTime, string $attDate, int $empDbId 
 
     try {
         if ($empDbId > 0) {
-            $t     = attendance_shift_timing($empDbId);
+            $t     = attendance_shift_timing($empDbId, $attDate);
             $inMin = time_to_mins(substr($inTime, 0, 5));
             return ($inMin <= $t['late_thresh']) ? 'On Time' : 'Late';
         }

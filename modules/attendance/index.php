@@ -37,6 +37,14 @@ $shiftOpts = [];
 try { $shiftOpts = $db->query("SELECT id, name FROM shifts ORDER BY id")->fetchAll(); }
 catch (Throwable $e) { /* shifts table absent */ }
 
+/* ── Keep attendance in step with the current shift assignment ─────────────
+   If a shift was changed (or a rotation block added) after these days were
+   marked, re-derive their status from the punches already stored — no Excel
+   re-import needed. Only rows whose stamped shift no longer matches are
+   touched, so a refresh with nothing changed does no writes at all. */
+require_once __DIR__ . '/../../includes/attendance_resync.php';
+attendance_resync_shifts($monthStart, $monthEnd, is_self_scoped() ? current_employee_id() : null);
+
 /* ──────────────────────────────────────────────────────────────────────────
    TAB 1: Records — attendance rows for the month
    ────────────────────────────────────────────────────────────────────────── */
@@ -207,7 +215,11 @@ if ($activeTab === 'report') {
             $dateStr    = "$reqYear-$padMonth-" . str_pad($dayNum, 2, '0', STR_PAD_LEFT);
             $isNonWrk   = isset($nwDateSet[$dateStr]);
             $status     = $rec['status'];
-            $noCheckout = in_array($status, ['On Time','Late'], true) && empty($rec['out_time']);
+            // "Checked in but never checked out". Covers BOTH shapes: the mark
+            // sheet leaves such a day as On Time/Late, while the no-checkout rule
+            // (and the importers) store it as Absent with in_time kept.
+            $noCheckout = (in_array($status, ['On Time','Late'], true) && empty($rec['out_time']))
+                       || ($status === 'Absent' && !empty($rec['in_time']) && empty($rec['out_time']));
             if (!$isNonWrk && !empty($rec['in_time']) && !empty($rec['out_time'])) {
                 $inM  = _rep_timeToMins($rec['in_time']);
                 $outM = _rep_timeToMins($rec['out_time']);
@@ -688,7 +700,11 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                         $status        = $rec['status'] ?? null;
                         $isFuture      = ($cellDateStr > $todayStr);
                         $dailyLateMins = $lateMap[$d] ?? 0;
-                        $noCheckout    = in_array($status, ['On Time','Late'], true) && empty($rec['out_time'] ?? '');
+                        // Orange A — checked in but no checkout. Also matches rows the
+                        // no-checkout rule stored as Absent (in_time kept, out_time null),
+                        // which is how imported days arrive.
+                        $noCheckout    = (in_array($status, ['On Time','Late'], true) && empty($rec['out_time'] ?? ''))
+                                      || ($status === 'Absent' && !empty($rec['in_time'] ?? '') && empty($rec['out_time'] ?? ''));
                         $isOnDuty      = (!$isNonWrk && !$isCompOffDay && $status === 'OD');
                     ?>
                     <?php if ($isNonWrk): ?>

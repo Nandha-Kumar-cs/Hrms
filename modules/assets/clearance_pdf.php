@@ -20,7 +20,7 @@ if (!$emp_id) {
 
 $empStmt = $db->prepare(
     'SELECT e.*, d.name AS dept, des.name AS desig,
-            ent.name AS entity_name, ent.address AS entity_address,
+            ent.name AS entity_name, ent.name_font AS entity_name_font, ent.address AS entity_address,
             ent.city AS entity_city, ent.state AS entity_state, ent.pincode AS entity_pincode
        FROM employees e
        LEFT JOIN departments d   ON d.id = e.department_id
@@ -93,7 +93,7 @@ ob_start();
 </style>
 
 <!-- Header (centred) -->
-<div style="text-align:center"><span class="company-name"><?= $h($companyName) ?></span></div>
+<div style="text-align:center"><span class="company-name" style="<?= entity_name_style($entRow['entity_name_font'] ?? '') ?>"><?= $h($companyName) ?></span></div>
 <div style="text-align:center"><span class="company-sub"><?= $h($companyAddress) ?></span></div>
 <div style="text-align:center; margin-top:10px"><span class="cert-title">NO-DUE CLEARANCE CERTIFICATE</span></div>
 <div style="border-bottom:3px solid #166534; margin:8px 0 14px; font-size:1pt">&nbsp;</div>

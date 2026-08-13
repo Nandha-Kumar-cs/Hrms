@@ -22,9 +22,9 @@ $user = current_user();
 
 $stmt = $db->prepare(
     'SELECT ss.*, e.name AS emp_name, e.employee_id AS emp_code,
-            e.pan_number, e.uan_number, e.bank_account, e.bank_name, e.bank_ifsc,
+            e.pan_number, e.uan_number, e.esic_number, e.bank_account, e.bank_name, e.bank_ifsc,
             d.name AS dept_name, des.name AS desig_name,
-            ent.name AS entity_name, ent.address AS entity_address,
+            ent.name AS entity_name, ent.name_font AS entity_name_font, ent.address AS entity_address,
             ent.city AS entity_city, ent.state AS entity_state, ent.pincode AS entity_pincode,
             ent.logo AS entity_logo
      FROM salary_slips ss
@@ -161,7 +161,7 @@ ob_start();
 <!-- Header (centred — only the logo is in colour) -->
 <div style="text-align:center;margin-bottom:6px">
     <?php if ($logoData): ?><img src="<?= $logoData ?>" style="height:48px"><br><?php endif; ?>
-    <span class="company-name"><?= $h($companyName) ?></span><br>
+    <span class="company-name" style="<?= entity_name_style($s['entity_name_font'] ?? '') ?>"><?= $h($companyName) ?></span><br>
     <span class="company-sub"><?= $h($companyAddress) ?></span>
 </div>
 <div class="title-bar">Payslip for the month of <?= $h($monthLabel) ?></div>
@@ -174,11 +174,24 @@ ob_start();
         <td><strong>Designation:</strong> <?= $h($s['desig_name'] ?? '—') ?: '—' ?></td></tr>
     <tr><td><strong>Pay Period:</strong> <?= $h($monthLabel) ?></td>
         <td><strong>Shift:</strong> <?= $h($attSummary['shift_name'] ?? '—') ?: '—' ?></td></tr>
+    <?php
+    // LOP / Late — informational. The earnings are already prorated to paid days,
+    // so these explain WHY they are lower; nothing is deducted twice.
+    $lopDays  = (float)($attSummary['unpaid_days'] ?? $attSummary['absent_days'] ?? 0);
+    $paidDays = $attSummary['paid_days']     ?? null;
+    $calDays  = $attSummary['calendar_days'] ?? null;
+    $lateMins = (int)($attSummary['late_minutes'] ?? 0);
+    $fmtDays  = fn(float $d) => rtrim(rtrim(number_format($d, 2), '0'), '.');
+    ?>
+    <tr><td><strong>LOP:</strong> <?= $h($fmtDays($lopDays)) ?> day<?= $lopDays == 1 ? '' : 's' ?></td>
+        <td><strong>Late:</strong> <?= $lateMins > 0 ? $h(fmt_ot_hours($lateMins / 60)) : '—' ?></td></tr>
     <tr><td><strong>PAN Number:</strong> <?= $h($s['pan_number'] ?? '—') ?: '—' ?></td>
-        <td><strong>Bank Account:</strong> <?= $h($s['bank_account'] ?? '—') ?: '—' ?></td></tr>
+        <td><strong>ESI Number:</strong> <?= $h($s['esic_number'] ?? '—') ?: '—' ?></td></tr>
+    <tr><td><strong>Bank Account:</strong> <?= $h($s['bank_account'] ?? '—') ?: '—' ?></td>
+        <td><strong>Bank Name:</strong> <?= $h($s['bank_name'] ?? '—') ?: '—' ?></td></tr>
     <?php if (!empty($s['uan_number'])): ?>
     <tr><td><strong>UAN Number:</strong> <?= $h($s['uan_number']) ?></td>
-        <td><strong>Bank Name:</strong> <?= $h($s['bank_name'] ?? '—') ?: '—' ?></td></tr>
+        <td><strong>IFSC:</strong> <?= $h($s['bank_ifsc'] ?? '—') ?: '—' ?></td></tr>
     <?php endif; ?>
 </table>
 
@@ -202,13 +215,11 @@ ob_start();
     </tr>
 </table>
 
-<!-- Net Pay -->
-<div class="net-box">
-    <span style="font-weight:bold;font-size:11pt">Net Pay for the month (Total Earnings &minus; Total Deductions): <?= $rs ?> <?= $nf($s['net_pay']) ?></span><br>
-    <span style="font-size:8.5pt">(Rupees <?= $h(_inr_words((float)$s['net_pay'])) ?> Only)</span>
-</div>
-<div style="text-align:right;font-size:8pt;margin-bottom:6px">
-    PF Employer: <?= $rs ?> <?= $nf($s['pf_employer']) ?> &nbsp;&nbsp; ESI Employer: <?= $rs ?> <?= $nf($s['esi_employer']) ?>
+<!-- Net Pay (rounded to the nearest rupee) -->
+<?php $netRounded = round((float)$s['net_pay']); ?>
+<div class="net-box" style="margin-bottom:10px">
+    <span style="font-weight:bold;font-size:11pt">Net Pay for the month (Total Earnings &minus; Total Deductions): <?= $rs ?> <?= number_format($netRounded, 2) ?></span><br>
+    <span style="font-size:8.5pt">(Rupees <?= $h(_inr_words($netRounded)) ?> Only)</span>
 </div>
 
 <div class="footer">

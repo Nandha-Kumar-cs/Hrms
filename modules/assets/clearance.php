@@ -46,7 +46,7 @@ $employees = $db->query('SELECT id, name, employee_id, status FROM employees ORD
 $clearanceData = null;
 if ($emp_id) {
     $emp = $db->prepare('SELECT e.*, d.name AS dept, des.name AS desig,
-            ent.name AS entity_name, ent.address AS entity_address,
+            ent.name AS entity_name, ent.name_font AS entity_name_font, ent.address AS entity_address,
             ent.city AS entity_city, ent.state AS entity_state, ent.pincode AS entity_pincode
          FROM employees e
          LEFT JOIN departments d ON d.id=e.department_id
@@ -142,7 +142,7 @@ if ($emp_id) {
 <div class="card form-card" id="clearanceCert">
     <!-- Header (shown when printing) -->
     <div class="slip-header">
-        <h2><?= h($companyName) ?></h2>
+        <h2 style="<?= entity_name_style($entRow['entity_name_font'] ?? '') ?>"><?= h($companyName) ?></h2>
         <p class="muted small"><?= h($companyAddress) ?></p>
         <h3 style="margin-top:12px;text-transform:uppercase;letter-spacing:.06em">No-Due Clearance Certificate</h3>
     </div>
