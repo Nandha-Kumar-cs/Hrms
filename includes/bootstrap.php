@@ -31,3 +31,4 @@ require_once __DIR__ . '/permissions.php';
 require_once __DIR__ . '/activity_log.php';
 require_once __DIR__ . '/scope.php';
 require_once __DIR__ . '/salary_sync.php';
+require_once __DIR__ . '/payslip_render.php';

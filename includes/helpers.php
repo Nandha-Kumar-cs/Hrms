@@ -63,6 +63,21 @@ function sanitize(mixed $input): string {
     return trim(strip_tags((string)$input));
 }
 
+/**
+ * Blood groups offered in the employee form and accepted on save. A whitelist,
+ * so a hand-crafted POST cannot store arbitrary text in the column that the
+ * ID card prints on its reverse.
+ */
+function blood_group_options(): array {
+    return ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+}
+
+/** Normalise a submitted blood group to a whitelisted value, else null. */
+function blood_group_clean(?string $value): ?string {
+    $v = strtoupper(trim((string)$value));
+    return in_array($v, blood_group_options(), true) ? $v : null;
+}
+
 function paginate(int $total, int $perPage, int $current): array {
     $pages = (int) ceil($total / $perPage);
     return ['total' => $total, 'per_page' => $perPage, 'current' => $current, 'pages' => $pages,
@@ -183,6 +198,54 @@ function employee_has_salary(int $empId): bool {
     } catch (Throwable $e) {
         return false;
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NON-WORKING DAYS
+   The company works Mon–Sat except Sundays and the 1st/3rd Saturday, plus any
+   configured holiday. These are the canonical rules; the monthly attendance
+   report and the employee QR portal both resolve "is this an absence?" through
+   them, so a day can never count as Absent on one screen and Week Off on the
+   other.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Count the Saturdays from the 1st of the month up to and including $d. */
+function saturday_index_in_month(DateTime $d): int {
+    $n = 0;
+    $t = (clone $d)->modify('first day of this month');
+    while ($t <= $d) {
+        if ((int)$t->format('N') === 6) $n++;
+        $t->modify('+1 day');
+    }
+    return $n;
+}
+
+/** True when $d is the 1st or 3rd Saturday of its month (a non-working Saturday). */
+function is_non_working_saturday(DateTime $d): bool {
+    if ((int)$d->format('N') !== 6) return false;
+    return in_array(saturday_index_in_month($d), [1, 3], true);
+}
+
+/**
+ * Why $d is a non-working day, or null when it is a normal working day.
+ *
+ * $holidayMap: 'YYYY-MM-DD' => ['name' => ..., 'is_working_day' => bool], as
+ * loaded from the `holidays` table. A holiday flagged is_working_day overrides
+ * everything and makes the day workable.
+ *
+ * Returns a human label ('Sunday', '1st Saturday', or the holiday name).
+ */
+function non_working_day_reason(DateTime $d, array $holidayMap = []): ?string {
+    $key = $d->format('Y-m-d');
+    $hol = $holidayMap[$key] ?? null;
+
+    if ($hol && !empty($hol['is_working_day'])) return null;   // working holiday
+
+    if ((int)$d->format('N') === 7)  return 'Sunday';
+    if (is_non_working_saturday($d)) return (saturday_index_in_month($d) === 1 ? '1st' : '3rd') . ' Saturday';
+    if ($hol)                        return (string) ($hol['name'] ?? 'Holiday');
+
+    return null;
 }
 
 /** Convert "HH:MM" (or "HH:MM:SS") to minutes-since-midnight. */

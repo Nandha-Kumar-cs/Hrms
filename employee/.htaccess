@@ -1,0 +1,2 @@
+# The employee/ tree holds only the public secure-access portal. Never list it.
+Options -Indexes

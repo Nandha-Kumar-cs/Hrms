@@ -64,7 +64,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email     = sanitize($_POST['email']     ?? '');
     $phone     = sanitize($_POST['phone']     ?? '');
     $dob       = sanitize($_POST['dob']       ?? '');
-    $gender    = sanitize($_POST['gender']    ?? '');
+    $gender      = sanitize($_POST['gender'] ?? '');
+    $blood_group = blood_group_clean($_POST['blood_group'] ?? null);
 
     // ── Address ───────────────────────────────────────────────────────────────
     $address = sanitize($_POST['address'] ?? '');
@@ -174,6 +175,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "UPDATE employees SET
                 entity_id=:entity_id, lunch_batch_id=:lunch_batch_id, shift_id=:shift_id,
                 name=:name, email=:email, phone=:phone, gender=:gender, dob=:dob,
+                blood_group=:blood_group,
                 address=:address, city=:city, state=:state, pincode=:pincode,
                 department_id=:dept_id, designation_id=:des_id,
                 ot_enabled=:ot_enabled, pf_enabled=:pf_enabled, manager_id=:mgr_id,
@@ -193,6 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':phone'        => $phone         ?: null,
             ':gender'       => $gender        ?: null,
             ':dob'          => $dob           ?: null,
+            ':blood_group'  => $blood_group,
             ':address'      => $address       ?: null,
             ':city'         => $city          ?: null,
             ':state'        => $state         ?: null,
@@ -266,6 +269,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'email'          => $email,
         'phone'          => $phone,
         'gender'         => $gender,
+        'blood_group'    => $blood_group,
         'dob'            => $dob,
         'address'        => $address,
         'city'           => $city,
@@ -372,6 +376,17 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                         <option value="Other"             <?= $sel('gender', 'Other') ?>>Other</option>
                         <option value="Prefer not to say" <?= $sel('gender', 'Prefer not to say') ?>>Prefer not to say</option>
                     </select>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Blood Group</label>
+                    <select name="blood_group" class="form-select">
+                        <option value="">Select Blood Group</option>
+                        <?php foreach (blood_group_options() as $bg): ?>
+                        <option value="<?= h($bg) ?>" <?= $sel('blood_group', $bg) ?>><?= h($bg) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Printed on the back of the ID card.</div>
                 </div>
 
                 <div class="col-md-12">

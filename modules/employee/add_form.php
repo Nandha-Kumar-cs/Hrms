@@ -132,6 +132,17 @@ $sel = fn(string $key, $match) => (string)($old[$key] ?? '') === (string)$match 
                     </select>
                 </div>
 
+                <div class="col-md-4">
+                    <label class="form-label">Blood Group</label>
+                    <select name="blood_group" class="form-select">
+                        <option value="">Select Blood Group</option>
+                        <?php foreach (blood_group_options() as $bg): ?>
+                        <option value="<?= h($bg) ?>" <?= $sel('blood_group', $bg) ?>><?= h($bg) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Printed on the back of the ID card.</div>
+                </div>
+
             </div>
 
             <!-- ── Employment Information ─────────────────────────────────── -->
