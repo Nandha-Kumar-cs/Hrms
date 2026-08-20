@@ -96,6 +96,7 @@ $email         = sanitize($_POST['email']      ?? '');
 $phone         = sanitize($_POST['phone']      ?? '');
 $dob           = sanitize($_POST['dob']        ?? '');
 $gender_raw    = sanitize($_POST['gender']     ?? '');
+$blood_group   = blood_group_clean($_POST['blood_group'] ?? null);
 
 // Map Laravel lowercase values to HRMS ENUM (Male/Female/Other)
 $gender_map = ['male' => 'Male', 'female' => 'Female', 'other' => 'Other'];
@@ -259,7 +260,7 @@ if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR
 // ── INSERT ────────────────────────────────────────────────────────────────────
 $stmt = $db->prepare(
     "INSERT INTO employees
-        (entity_id, lunch_batch_id, shift_id, employee_id, name, email, phone, dob, gender,
+        (entity_id, lunch_batch_id, shift_id, employee_id, name, email, phone, dob, gender, blood_group,
          department_id, designation_id, ot_enabled, pf_enabled, manager_id,
          join_date, probation_end, status,
          fixed_salary, variable_salary,
@@ -267,7 +268,7 @@ $stmt = $db->prepare(
          pan_number, aadhaar_number, uan_number, esic_number,
          photo, created_at)
      VALUES
-        (:entity_id, :lunch_batch_id, :shift_id, :employee_id, :name, :email, :phone, :dob, :gender,
+        (:entity_id, :lunch_batch_id, :shift_id, :employee_id, :name, :email, :phone, :dob, :gender, :blood_group,
          :department_id, :designation_id, :ot_enabled, :pf_enabled, :manager_id,
          :join_date, :probation_end, :status,
          :fixed_salary, :variable_salary,
@@ -286,6 +287,7 @@ $stmt->execute([
     ':phone'          => $phone         ?: null,
     ':dob'            => $dob           ?: null,
     ':gender'         => $gender,
+    ':blood_group'    => $blood_group,
     ':department_id'  => $dept_id,
     ':designation_id' => $des_id,
     ':ot_enabled'     => $ot_enabled,

@@ -1,0 +1,13 @@
+# Pretty QR URLs:  /employee/secure-access/<64-hex-token>  →  index.php?t=<token>
+#
+# The QR code on the ID card encodes the pretty form. index.php also accepts
+# ?t=<token> directly, so the portal still works if mod_rewrite is unavailable.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^([A-Fa-f0-9]{64})/?$ index.php?t=$1 [QSA,L]
+</IfModule>
+
+# Never list the directory.
+Options -Indexes

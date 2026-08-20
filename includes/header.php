@@ -71,7 +71,7 @@ $_attActive  = _sb_active('/modules/attendance/', '/modules/holidays/');
 $_repActive  = _sb_active('/payroll/benefits_report', '/payroll/bonus_report',
                            '/employee/history_report', '/payroll/payroll_impact_report');
 // Include salary_components in settings group so the Settings accordion opens on that page.
-$_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/',
+$_settActive = _sb_active('/modules/settings/', '/modules/roles/', '/modules/pwa/', '/modules/deployment/',
                            '/payroll/salary_components', '/settings/office.php', '/settings/ot.php', '/settings/grace.php', '/settings/breaks.php', '/settings/shifts.php', '/settings/shift_rotation.php');
 
 // ── Navbar: role badge colour map ─────────────────────────────────────────────
@@ -725,6 +725,14 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         <a href="<?= BASE_URL ?>/modules/pwa/index.php"
                            class="nav-link <?= _sb_active('/modules/pwa/') ?>">
                             Mobile Access
+                        </a>
+                    </li>
+                    <?php endif; ?>
+                    <?php if (can('deployment', 'view')): ?>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/deployment/index.php"
+                           class="nav-link <?= _sb_active('/modules/deployment/') ?>">
+                            System Update
                         </a>
                     </li>
                     <?php endif; ?>

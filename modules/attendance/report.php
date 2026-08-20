@@ -863,21 +863,16 @@ function _rep_timeToMins(string $t): int {
     return (int)($parts[0] ?? 0) * 60 + (int)($parts[1] ?? 0);
 }
 
-/** Returns true if $d is the 1st or 3rd Saturday of its month. */
+/** Returns true if $d is the 1st or 3rd Saturday of its month.
+ *  Thin alias — the rule lives in helpers.php so the employee QR portal
+ *  classifies days identically to this report. */
 function _rep_is13Sat(DateTime $d): bool {
-    if ((int)$d->format('N') !== 6) return false;
-    return in_array(_rep_satCountUpTo($d), [1, 3]);
+    return is_non_working_saturday($d);
 }
 
 /** Count how many Saturdays have occurred from the 1st of the month up to and including $d. */
 function _rep_satCountUpTo(DateTime $d): int {
-    $n = 0;
-    $t = (clone $d)->modify('first day of this month');
-    while ($t <= $d) {
-        if ((int)$t->format('N') === 6) $n++;
-        $t->modify('+1 day');
-    }
-    return $n;
+    return saturday_index_in_month($d);
 }
 
 /**

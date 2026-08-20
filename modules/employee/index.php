@@ -209,6 +209,13 @@ $hasIncrement = $db->query(
                                 </button>
                             </li>
                             <?php endif; ?>
+                            <?php if (can('idcard','view')): ?>
+                            <li>
+                                <a class="dropdown-item" href="id_card.php?id=<?= $eid ?>">
+                                    <i class="fa fa-id-card me-2 text-success"></i>Generate ID Card
+                                </a>
+                            </li>
+                            <?php endif; ?>
                             <li><hr class="dropdown-divider"></li>
                             <?php if (can('letters','create')): ?>
                             <li>

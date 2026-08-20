@@ -42,39 +42,6 @@ if (!$s) {
     redirect(BASE_URL . '/modules/payroll/index.php');
 }
 
-// Company header from the employee's selected entity (fallback to constants).
-$companyName    = $s['entity_name'] ?: COMPANY_NAME;
-$companyAddress = COMPANY_ADDRESS;
-if ($s['entity_name']) {
-    $cityLine = trim(implode(' ', array_filter([$s['entity_city'], $s['entity_state'], $s['entity_pincode']])));
-    $companyAddress = trim(implode(', ', array_filter([$s['entity_address'], $cityLine])));
-}
-
-// Company logo — embedded as a base64 data URI so it renders inside the PDF.
-// Prefer the employee's entity logo, else any configured entity logo.
-$logoData = null;   // base64 data URI — works in mPDF, TCPDF and the HTML fallback
-$logoFile = $s['entity_logo'] ?? null;
-if (!$logoFile) {
-    try {
-        $logoFile = $db->query("SELECT logo FROM entities WHERE logo IS NOT NULL AND logo <> '' LIMIT 1")->fetchColumn() ?: null;
-    } catch (Throwable $e) { /* ignore */ }
-}
-if ($logoFile) {
-    $logoPath = dirname(__DIR__, 2) . '/storage/entities/' . $logoFile;
-    if (is_file($logoPath)) {
-        // Sniff the ACTUAL image type — uploaded files are often mis-named
-        // (e.g. a JPEG saved as ".png"); trusting the extension would emit a
-        // wrong MIME and break decoding in browsers/TCPDF.
-        $info = @getimagesize($logoPath);
-        $mime = $info['mime'] ?? null;
-        if (!$mime) {
-            $ext  = strtolower(pathinfo($logoPath, PATHINFO_EXTENSION));
-            $mime = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'svg' => 'image/svg+xml'][$ext] ?? 'image/png';
-        }
-        $logoData = 'data:' . $mime . ';base64,' . base64_encode((string)file_get_contents($logoPath));
-    }
-}
-
 // A self-scoped user can only download their OWN slip (role self_scope flag, not
 // a hard-coded role name — closes the IDOR for any non-"Employee" scoped role).
 if (is_self_scoped() && (int)$s['employee_id'] !== current_employee_id()) {
@@ -82,152 +49,13 @@ if (is_self_scoped() && (int)$s['employee_id'] !== current_employee_id()) {
     die('Access denied.');
 }
 
-// ─── Parse slip data ──────────────────────────────────────────────────────────
-$monthLabel   = date('F Y', strtotime($s['payroll_month'] . '-01'));
-$allowances   = $s['allowances']   ? json_decode($s['allowances'], true)   : [];
-$deductions   = $s['deductions_json'] ? json_decode($s['deductions_json'], true) : [];
-$attSummary   = $s['attendance_summary'] ? json_decode($s['attendance_summary'], true) : [];
-$isIndividual = ($s['slip_type'] ?? 'batch') === 'individual';
+// ─── Build the payslip ────────────────────────────────────────────────────────
+// Layout lives in includes/payslip_render.php so this download, the employee
+// QR-portal view and the portal PDF are all the same document.
+$monthLabel = date("F Y", strtotime($s["payroll_month"] . "-01"));
+$html       = payslip_html($s);
 
-if (!$isIndividual || empty($allowances)) {
-    $allowances = array_filter([
-        'Basic Salary'      => (float)$s['basic'],
-        'HRA'               => (float)$s['hra'],
-        'Conveyance'        => (float)$s['conveyance'],
-        'Medical Allowance' => (float)$s['medical'],
-        'Special Allowance' => (float)$s['special_allow'],
-        'Other Allowance'   => (float)$s['other_allow'],
-    ]);
-}
-if (!$isIndividual || empty($deductions)) {
-    $deductions = array_filter([
-        'Provident Fund (Employee)' => (float)$s['pf_employee'],
-        'ESI (Employee)'            => (float)$s['esi_employee'],
-        'TDS'                       => (float)$s['tds'],
-        'Other Deductions'          => (float)$s['other_deductions'],
-    ]);
-}
 
-// ── Earnings: base + benefits (each) + a single combined Bonus line ───────────
-// (mirrors modules/payroll/slip.php exactly so the PDF matches the on-screen slip)
-$earnList = []; $bonusTotal = 0.0;
-foreach ($allowances as $name => $amt) {
-    if ($amt <= 0) continue;
-    if (str_starts_with($name, '[BENEFIT]'))    $earnList[trim(substr($name, 9))] = $amt;
-    elseif (str_starts_with($name, '[BONUS]'))   $bonusTotal += (float)$amt;
-    else                                         $earnList[$name] = $amt;
-}
-if ($bonusTotal > 0) $earnList['Bonus'] = $bonusTotal;
-
-// ── Deductions: each on its own line (Absent, Late, Short Hours shown separately).
-//    Strip "(N days …)" detail; merge multiple loans (#id) into one "Loan Deduction".
-$dedList = [];
-foreach ($deductions as $name => $amt) {
-    if ($amt <= 0) continue;
-    $clean = preg_replace('/\s*\(\s*\d+\s*day.*?\)/i', '', $name);   // drop "(N days …)"
-    $clean = preg_replace('/\s*#\d+/', '', $clean);                  // merge loans → "Loan Deduction"
-    $dedList[$clean] = ($dedList[$clean] ?? 0) + (float)$amt;
-}
-
-$eLabels = array_keys($earnList); $eItems = array_values($earnList);
-$dLabels = array_keys($dedList);  $dItems = array_values($dedList);
-$maxRows = max(count($eLabels), count($dLabels), 1);
-
-$totalEarnings   = (float)$s['gross_earnings'];
-$totalDeductions = (float)$s['total_deductions'];
-
-$rs = '&#8377;';   // ₹
-$nf = fn ($a) => number_format((float)$a, 2);
-$h  = fn ($v) => htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
-
-// ─── Build HTML (matches the reference payslip design) ────────────────────────
-ob_start();
-?>
-<style>
-    body { font-family: dejavusans, sans-serif; font-size: 9.5pt; color: #000; }
-    .company-name { font-size: 17pt; font-weight: bold; color: #000; }
-    .company-sub  { font-size: 8pt; color: #000; }
-    .title-bar { font-size: 12pt; font-weight: bold; text-align: center; padding: 5px 0;
-                 border-top: 1px solid #000; border-bottom: 1px solid #000; }
-    table.info { width: 100%; border-collapse: collapse; margin: 12px 0; }
-    table.info td { border: 1px solid #000; padding: 5px 8px; font-size: 9pt; width: 50%; }
-    table.ed { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-    table.ed th, table.ed td { border: 1px solid #000; padding: 5px 8px; font-size: 9pt; }
-    table.ed th { text-align: left; }
-    .net-box { border: 1.5px solid #000; padding: 9px 12px; margin-bottom: 6px; }
-    .footer { font-size: 8pt; color: #000; text-align: center; border-top: 1px solid #000; padding-top: 6px; margin-top: 10px; }
-</style>
-
-<!-- Header (centred — only the logo is in colour) -->
-<div style="text-align:center;margin-bottom:6px">
-    <?php if ($logoData): ?><img src="<?= $logoData ?>" style="height:48px"><br><?php endif; ?>
-    <span class="company-name" style="<?= entity_name_style($s['entity_name_font'] ?? '') ?>"><?= $h($companyName) ?></span><br>
-    <span class="company-sub"><?= $h($companyAddress) ?></span>
-</div>
-<div class="title-bar">Payslip for the month of <?= $h($monthLabel) ?></div>
-
-<!-- Employee info -->
-<table class="info">
-    <tr><td><strong>Employee Name:</strong> <?= $h($s['emp_name']) ?></td>
-        <td><strong>Employee ID:</strong> <?= $h($s['emp_code']) ?></td></tr>
-    <tr><td><strong>Department:</strong> <?= $h($s['dept_name'] ?? '—') ?: '—' ?></td>
-        <td><strong>Designation:</strong> <?= $h($s['desig_name'] ?? '—') ?: '—' ?></td></tr>
-    <tr><td><strong>Pay Period:</strong> <?= $h($monthLabel) ?></td>
-        <td><strong>Shift:</strong> <?= $h($attSummary['shift_name'] ?? '—') ?: '—' ?></td></tr>
-    <?php
-    // LOP / Late — informational. The earnings are already prorated to paid days,
-    // so these explain WHY they are lower; nothing is deducted twice.
-    $lopDays  = (float)($attSummary['unpaid_days'] ?? $attSummary['absent_days'] ?? 0);
-    $paidDays = $attSummary['paid_days']     ?? null;
-    $calDays  = $attSummary['calendar_days'] ?? null;
-    $lateMins = (int)($attSummary['late_minutes'] ?? 0);
-    $fmtDays  = fn(float $d) => rtrim(rtrim(number_format($d, 2), '0'), '.');
-    ?>
-    <tr><td><strong>LOP:</strong> <?= $h($fmtDays($lopDays)) ?> day<?= $lopDays == 1 ? '' : 's' ?></td>
-        <td><strong>Late:</strong> <?= $lateMins > 0 ? $h(fmt_ot_hours($lateMins / 60)) : '—' ?></td></tr>
-    <tr><td><strong>PAN Number:</strong> <?= $h($s['pan_number'] ?? '—') ?: '—' ?></td>
-        <td><strong>ESI Number:</strong> <?= $h($s['esic_number'] ?? '—') ?: '—' ?></td></tr>
-    <tr><td><strong>Bank Account:</strong> <?= $h($s['bank_account'] ?? '—') ?: '—' ?></td>
-        <td><strong>Bank Name:</strong> <?= $h($s['bank_name'] ?? '—') ?: '—' ?></td></tr>
-    <?php if (!empty($s['uan_number'])): ?>
-    <tr><td><strong>UAN Number:</strong> <?= $h($s['uan_number']) ?></td>
-        <td><strong>IFSC:</strong> <?= $h($s['bank_ifsc'] ?? '—') ?: '—' ?></td></tr>
-    <?php endif; ?>
-</table>
-
-<!-- Earnings & Deductions (single combined table) -->
-<table class="ed">
-    <tr>
-        <th style="width:35%">Earnings</th><th style="width:15%;text-align:right">Amount (<?= $rs ?>)</th>
-        <th style="width:35%">Deductions</th><th style="width:15%;text-align:right">Amount (<?= $rs ?>)</th>
-    </tr>
-    <?php for ($i = 0; $i < $maxRows; $i++): ?>
-    <tr>
-        <td><?= isset($eLabels[$i]) ? $h($eLabels[$i]) : '' ?></td>
-        <td style="text-align:right"><?= isset($eItems[$i]) ? $nf($eItems[$i]) : '' ?></td>
-        <td><?= isset($dLabels[$i]) ? $h($dLabels[$i]) : '' ?></td>
-        <td style="text-align:right"><?= isset($dItems[$i]) ? $nf($dItems[$i]) : '' ?></td>
-    </tr>
-    <?php endfor; ?>
-    <tr style="font-weight:bold">
-        <td>Total Earnings</td><td style="text-align:right"><?= $nf($totalEarnings) ?></td>
-        <td>Total Deductions</td><td style="text-align:right"><?= $nf($totalDeductions) ?></td>
-    </tr>
-</table>
-
-<!-- Net Pay (rounded to the nearest rupee) -->
-<?php $netRounded = round((float)$s['net_pay']); ?>
-<div class="net-box" style="margin-bottom:10px">
-    <span style="font-weight:bold;font-size:11pt">Net Pay for the month (Total Earnings &minus; Total Deductions): <?= $rs ?> <?= number_format($netRounded, 2) ?></span><br>
-    <span style="font-size:8.5pt">(Rupees <?= $h(_inr_words($netRounded)) ?> Only)</span>
-</div>
-
-<div class="footer">
-    This is a system generated payslip and does not require signature.<br>
-    Print Date: <?= date('d M Y, h:i A') ?>
-</div>
-<?php
-$html = ob_get_clean();
 
 $filename = 'salary-slip-' . $s['emp_code'] . '-' . str_replace('-', '', $s['payroll_month']) . '.pdf';
 

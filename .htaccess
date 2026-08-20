@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Block web access to database dumps and deployment archives kept in the
+# project root. Without this, http://<host>/hrms/<file>.sql serves the entire
+# database — password hashes, salary and employee PII — to anyone who can reach
+# the server. Same deny pattern already used by install/, storage/, uploads/
+# and employee/.
+#
+# The application itself never serves .sql or .zip over HTTP, so nothing breaks.
+# ─────────────────────────────────────────────────────────────────────────────
+<FilesMatch "\.(sql|zip|tar|gz|bak|dump)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# No directory listings.
+Options -Indexes
