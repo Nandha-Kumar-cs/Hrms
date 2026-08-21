@@ -94,6 +94,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── Salary ────────────────────────────────────────────────────────────────
     $fixed_salary = (float)($_POST['fixed_salary'] ?? 0);
+    // An intern has no CTC. The form disables the input (includes/intern_ctc_guard.php),
+    // but a disabled field simply is not POSTed — so the rule is enforced here too,
+    // which also covers JavaScript being off or a hand-crafted request.
+    if ($des_id) {
+        $dn = db()->prepare('SELECT name FROM designations WHERE id=?');
+        $dn->execute([$des_id]);
+        if (designation_is_intern((string)$dn->fetchColumn())) {
+            $fixed_salary    = 0.0;
+        }
+    }
+
     $ot_enabled   = isset($_POST['ot_enabled']) ? 1 : 0;
     $pf_enabled   = isset($_POST['pf_enabled']) ? 1 : 0;
 
@@ -753,4 +764,6 @@ function removePhoto() {
 </script>
 <?php $page_scripts = ob_get_clean(); ?>
 
+<?php /* Interns have no CTC — disables the CTC input for an intern designation. */ ?>
+<?php include __DIR__ . '/../../includes/intern_ctc_guard.php'; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

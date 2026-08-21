@@ -405,6 +405,22 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                         </a>
                     </li>
                     <?php endif; ?>
+                    <?php if (can('letters', 'experience')): ?>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/letters/index.php?type=experience"
+                           class="nav-link <?= _sb_active('type=experience') ?>">
+                            Experience Letters
+                        </a>
+                    </li>
+                    <?php endif; ?>
+                    <?php if (can('letters', 'internship')): ?>
+                    <li>
+                        <a href="<?= BASE_URL ?>/modules/letters/index.php?type=internship"
+                           class="nav-link <?= _sb_active('type=internship') ?>">
+                            Internship Certificates
+                        </a>
+                    </li>
+                    <?php endif; ?>
                     <?php if (can('documents', 'view')): ?>
                     <li>
                         <a href="<?= BASE_URL ?>/modules/documents/index.php"

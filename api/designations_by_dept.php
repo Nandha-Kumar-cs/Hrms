@@ -16,10 +16,15 @@ if (!$dept_id) {
     exit;
 }
 
+// Designations flagged all_departments are common to every department (e.g.
+// "Intern") and are offered alongside the department's own — see
+// install/add_common_designations.sql. NULL department_id on its own does NOT
+// qualify: that is how a designation is left behind when its department is
+// deleted, and those must stay hidden.
 $stmt = db()->prepare(
     "SELECT id, name FROM designations
-     WHERE department_id = ?
-     ORDER BY name"
+     WHERE department_id = ? OR all_departments = 1
+     ORDER BY all_departments, name"
 );
 $stmt->execute([$dept_id]);
 echo json_encode($stmt->fetchAll(PDO::FETCH_ASSOC));

@@ -1,9 +1,10 @@
 <?php
 require_once __DIR__ . '/../../includes/bootstrap.php';
+require_once __DIR__ . '/../../includes/letter_types.php';
 require_login();
 
-// Sub-menu permission: each letter type (Offer / Confirmation / Increment /
-// Promotion) is granted independently. The "All" list needs the general view.
+// Sub-menu permission: each letter type (see LETTER_TYPES) is granted
+// independently. The "All" list needs the general view permission.
 $type_filter = sanitize($_GET['type'] ?? '');
 if ($type_filter) $type_filter = ucfirst(strtolower($type_filter));
 require_permission('letters', $type_filter !== '' ? strtolower($type_filter) : 'view');
@@ -57,10 +58,10 @@ if ($scopeEmp) {
     <?php if (can('letters', 'view')): ?>
     <a class="tab <?= !$type_filter?'active':'' ?>" href="index.php">All</a>
     <?php endif; ?>
-    <?php foreach (['Offer','Confirmation','Increment','Promotion'] as $t): ?>
+    <?php foreach (LETTER_TYPES as $t): ?>
     <?php if (!can('letters', strtolower($t))) continue; ?>
     <a class="tab <?= $type_filter===$t?'active':'' ?>" href="index.php?type=<?= $t ?>">
-        <?= $t ?> <span class="pill pill-neutral" style="margin-left:4px"><?= $counts[$t] ?? 0 ?></span>
+        <?= h($t) ?> <span class="pill pill-neutral" style="margin-left:4px"><?= $counts[$t] ?? 0 ?></span>
     </a>
     <?php endforeach; ?>
 </div>
@@ -92,8 +93,8 @@ if ($scopeEmp) {
             </td>
             <td>
                 <?php
-                $typeIcons = ['Offer'=>'📩','Confirmation'=>'✅','Increment'=>'📈','Promotion'=>'⭐'];
-                $typePills = ['Offer'=>'pill-info','Confirmation'=>'pill-success','Increment'=>'pill-warn','Promotion'=>'pill-active'];
+                $typeIcons = ['Offer'=>'📩','Confirmation'=>'✅','Increment'=>'📈','Promotion'=>'⭐','Experience'=>'📜','Internship'=>'🎓'];
+                $typePills = ['Offer'=>'pill-info','Confirmation'=>'pill-success','Increment'=>'pill-warn','Promotion'=>'pill-active','Experience'=>'pill-neutral','Internship'=>'pill-info'];
                 echo '<span class="pill '.($typePills[$l['type']]??'pill-neutral').'">';
                 echo ($typeIcons[$l['type']]??'📄').' '.h($l['type']).'</span>';
                 ?>

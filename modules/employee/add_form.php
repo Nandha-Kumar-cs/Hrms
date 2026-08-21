@@ -518,4 +518,6 @@ function removePhoto() {
 </script>
 <?php $page_scripts = ob_get_clean(); ?>
 
+<?php /* Interns have no CTC — disables the CTC input for an intern designation. */ ?>
+<?php include __DIR__ . '/../../includes/intern_ctc_guard.php'; ?>
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

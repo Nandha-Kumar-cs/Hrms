@@ -55,7 +55,12 @@ if (!empty($_GET['ajax'])) {
         }
 
         $name   = trim($_POST['name'] ?? '');
-        $deptId = (int)($_POST['department_id'] ?? 0) ?: null;
+        // department_id = "ALL" marks the designation common to every department
+        // (see install/add_common_designations.sql); department_id is then
+        // meaningless and stored as NULL.
+        $rawDept = (string)($_POST['department_id'] ?? '');
+        $allDept = ($rawDept === 'ALL') ? 1 : 0;
+        $deptId  = $allDept ? null : ((int)$rawDept ?: null);
         $status = ($_POST['status'] ?? 'active') === 'inactive' ? 'inactive' : 'active';
 
         $errors = [];
@@ -71,16 +76,18 @@ if (!empty($_GET['ajax'])) {
         $dn = $deptName($deptId);
 
         if ($action === 'create') {
-            $st = $db->prepare('INSERT INTO designations (name, department_id, status) VALUES (?, ?, ?)');
-            $st->execute([$name, $deptId, $status]);
-            activity_log('created', 'Designation', 'Created designation: ' . $name . ($dn ? " (Dept: $dn)" : ''));
+            $st = $db->prepare('INSERT INTO designations (name, department_id, all_departments, status) VALUES (?, ?, ?, ?)');
+            $st->execute([$name, $deptId, $allDept, $status]);
+            $scope = $allDept ? ' (All Departments)' : ($dn ? " (Dept: $dn)" : '');
+            activity_log('created', 'Designation', 'Created designation: ' . $name . $scope);
             echo json_encode(['success' => true, 'message' => 'Designation created.']);
             exit;
         }
         if ($action === 'update' && $id) {
-            $db->prepare('UPDATE designations SET name = ?, department_id = ?, status = ? WHERE id = ?')
-               ->execute([$name, $deptId, $status, $id]);
-            activity_log('updated', 'Designation', 'Updated designation: ' . $name . ($dn ? " (Dept: $dn)" : ''));
+            $db->prepare('UPDATE designations SET name = ?, department_id = ?, all_departments = ?, status = ? WHERE id = ?')
+               ->execute([$name, $deptId, $allDept, $status, $id]);
+            $scope = $allDept ? ' (All Departments)' : ($dn ? " (Dept: $dn)" : '');
+            activity_log('updated', 'Designation', 'Updated designation: ' . $name . $scope);
             echo json_encode(['success' => true, 'message' => 'Designation updated.']);
             exit;
         }
@@ -116,13 +123,16 @@ $depts = $db->query('SELECT id, name FROM departments ORDER BY name')->fetchAll(
                     <tr>
                         <td><?= $i + 1 ?></td>
                         <td class="fw-semibold"><?= h($r['name']) ?></td>
-                        <td><?= h($r['dept_name'] ?? '—') ?></td>
+                        <td><?php if (!empty($r['all_departments'])): ?>
+                            <span class="badge bg-info"><i class="fa fa-globe me-1"></i>All Departments</span>
+                        <?php else: ?><?= h($r['dept_name'] ?? '—') ?><?php endif; ?></td>
                         <td class="text-center"><?= (int)$r['emp_count'] ?></td>
                         <td class="text-center"><span class="badge bg-<?= $r['status'] === 'active' ? 'success' : 'danger' ?>"><?= ucfirst($r['status']) ?></span></td>
                         <td class="text-center text-nowrap">
                             <button class="btn btn-sm btn-outline-primary btn-edit-desig"
                                     data-id="<?= $r['id'] ?>" data-name="<?= h($r['name']) ?>"
-                                    data-dept="<?= (int)$r['department_id'] ?>" data-status="<?= h($r['status']) ?>"><i class="fa fa-pen"></i></button>
+                                    data-dept="<?= !empty($r['all_departments']) ? 'ALL' : (int)$r['department_id'] ?>"
+                                    data-status="<?= h($r['status']) ?>"><i class="fa fa-pen"></i></button>
                             <button class="btn btn-sm btn-outline-danger btn-del-desig" data-id="<?= $r['id'] ?>" data-name="<?= h($r['name']) ?>"><i class="fa fa-trash"></i></button>
                         </td>
                     </tr>
@@ -161,6 +171,7 @@ $depts = $db->query('SELECT id, name FROM departments ORDER BY name')->fetchAll(
                     <label class="form-label fw-semibold">Department</label>
                     <select id="desigDept" class="form-select">
                         <option value="">— None —</option>
+                        <option value="ALL">— All Departments (common) —</option>
                         <?php foreach ($depts as $d): ?>
                         <option value="<?= $d['id'] ?>"><?= h($d['name']) ?></option>
                         <?php endforeach; ?>

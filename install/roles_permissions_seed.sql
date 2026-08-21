@@ -46,6 +46,8 @@ INSERT IGNORE INTO permissions (module, action, label) VALUES
 ('leaves','view','View Leave Requests'),
 ('letters','confirmation','Confirmation Letters'),
 ('letters','create','Create Letters'),
+('letters','experience','Experience Letters'),
+('letters','internship','Internship Certificates'),
 ('letters','delete','Delete Letters'),
 ('letters','increment','Increment Letters'),
 ('letters','offer','Offer Letters'),
@@ -121,6 +123,8 @@ SELECT r.id, p.id FROM roles r JOIN permissions p
     OR (p.module='letters' AND p.action='increment')
     OR (p.module='letters' AND p.action='confirmation')
     OR (p.module='letters' AND p.action='promotion')
+    OR (p.module='letters' AND p.action='experience')
+    OR (p.module='letters' AND p.action='internship')
     OR (p.module='documents' AND p.action='view')
     OR (p.module='loans' AND p.action='view')
     OR (p.module='increments' AND p.action='view')

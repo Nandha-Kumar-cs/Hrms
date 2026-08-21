@@ -791,3 +791,36 @@ function get_notifications(int $userId, bool $unread_only = false): array {
     $stmt->execute([$userId]);
     return $stmt->fetchAll();
 }
+
+/* ── Interns ──────────────────────────────────────────────────────────────────
+ * An intern is treated differently in two places: the Letters module issues
+ * them an Internship Certificate and nothing else, and the employee form
+ * disables the CTC input. Both read the rule from here so it cannot drift.
+ */
+
+/**
+ * True when a DESIGNATION name denotes an intern.
+ *
+ * Whole-word match, so "Intern", "Software Intern" and "Intern - Accounts"
+ * qualify while "Internal Auditor" and "International Sales" do not.
+ */
+function designation_is_intern(?string $designation): bool
+{
+    $designation = trim((string)$designation);
+    return $designation !== '' && preg_match('/\bintern\b/i', $designation) === 1;
+}
+
+/**
+ * True when an employee row is an intern — by designation name, or by an
+ * employment_type of 'Intern'. Accepts any of the designation key spellings
+ * used across the modules' queries.
+ */
+function employee_is_intern(?array $emp): bool
+{
+    if (!$emp) return false;
+    if (strcasecmp(trim((string)($emp['employment_type'] ?? '')), 'Intern') === 0) return true;
+
+    return designation_is_intern(
+        (string)($emp['designation_name'] ?? $emp['designation'] ?? $emp['desig'] ?? '')
+    );
+}

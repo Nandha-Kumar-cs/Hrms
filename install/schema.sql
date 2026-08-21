@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS salary_slips (
 CREATE TABLE IF NOT EXISTS letters (
     id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     employee_id INT UNSIGNED NOT NULL,
-    type        ENUM('Offer','Confirmation','Increment','Promotion') NOT NULL,
+    type        ENUM('Offer','Confirmation','Increment','Promotion','Experience','Internship') NOT NULL,
     issued_date DATE NOT NULL,
     reference   VARCHAR(60),
     content     LONGTEXT,

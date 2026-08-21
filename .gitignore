@@ -1,5 +1,5 @@
 .claude/*
-
+.uploads/*
 # build artifacts (delta packages produced for deployment)
 hrms-*-delta*.zip
 hrms-all-pending-changes.zip

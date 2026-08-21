@@ -1,5 +1,6 @@
 <?php
 require_once '../../includes/bootstrap.php';
+require_once '../../includes/letter_types.php';
 require_login();
 
 $id = (int)($_GET['id'] ?? 0);
@@ -46,12 +47,12 @@ $co_signature = (!empty($letter['entity_signature']) && file_exists(BASE_PATH . 
     ? BASE_URL . '/storage/entities/' . $letter['entity_signature']
     : null;
 
-$page_title = $letter['type'] . ' Letter';
+$page_title = letter_type_label($letter['type']);
 include '../../includes/header.php';
 ?>
 <div class="page-header">
     <div>
-        <h1 class="page-title"><?= h($letter['type']) ?> Letter</h1>
+        <h1 class="page-title"><?= h(letter_type_label($letter['type'])) ?></h1>
         <p class="page-subtitle">Ref: <?= h($letter['reference']) ?> &mdash; <?= h($letter['emp_name']) ?></p>
     </div>
     <div class="page-actions">
@@ -91,6 +92,22 @@ include '../../includes/header.php';
 ?>
 <div class="letter-wrapper" id="letterContent">
     <?= increment_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'email' => $co_email, 'phone' => $co_phone, 'logo' => $co_logo], $incData, ['screen' => true]) ?>
+</div>
+<?php elseif ($letter['type'] === 'Experience'):
+    // Experience / relieving letter: render the same design as the PDF.
+    require_once '../../includes/experience_letter.php';
+    $expData = experience_letter_data($letter);
+?>
+<div class="letter-wrapper" id="letterContent">
+    <?= experience_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo, 'signature' => $co_signature, 'signatory_title' => $letter['entity_signatory_title'] ?? ''], $expData, ['screen' => true, 'inline_footer' => true]) ?>
+</div>
+<?php elseif ($letter['type'] === 'Internship'):
+    // Internship certificate: render the same framed certificate as the PDF.
+    require_once '../../includes/internship_certificate.php';
+    $intData = internship_certificate_data($letter);
+?>
+<div class="letter-wrapper" id="letterContent">
+    <?= internship_certificate_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo, 'signature' => $co_signature, 'signatory_title' => $letter['entity_signatory_title'] ?? ''], $intData, ['screen' => true, 'inline_footer' => true]) ?>
 </div>
 <?php elseif ($letter['type'] === 'Confirmation'):
     // Confirmation letter: render the same design as the PDF.

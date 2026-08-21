@@ -12,6 +12,7 @@
  * All processing happens before any output so headers send cleanly.
  */
 require_once '../../includes/bootstrap.php';
+require_once '../../includes/letter_types.php';
 require_login();
 
 $id = (int)($_GET['id'] ?? 0);
@@ -87,10 +88,11 @@ if (!in_array($letter['status'], ['Issued', 'Acknowledged'], true)) {
     redirect(BASE_URL . '/modules/letters/view.php?id=' . $id);
 }
 
-// Meaningful PDF filename, e.g. Offer_Letter_Bhavatharani.pdf
+// Meaningful PDF filename, e.g. Offer_Letter_Bhavatharani.pdf or
+// Internship_Certificate_Bhavatharani.pdf.
 $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_', trim((string)($letter['emp_name'] ?: $letter['emp_code'])));
 $safeName = trim($safeName, '_') ?: (string)$letter['emp_code'];
-$filename = $letter['type'] . '_Letter_' . $safeName . '.pdf';
+$filename = letter_type_filename($letter['type']) . '_' . $safeName . '.pdf';
 
 // ── Derive structured fields from the generated content. The labels below are
 //    produced verbatim by modules/letters/create.php, so parsing is reliable;
@@ -158,6 +160,23 @@ if ($letter['type'] === 'Offer') {
     $incData = increment_letter_data($letter);
     $incBody = increment_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'email' => $co_email, 'phone' => $co_phone, 'logo' => $co_logo], $incData);
     $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $incBody . '</body></html>';
+} elseif ($letter['type'] === 'Experience') {
+    // Reconstructed experience / relieving letter — shared with the on-screen
+    // view via includes/experience_letter.php.
+    require_once __DIR__ . '/../../includes/experience_letter.php';
+    $expData = experience_letter_data($letter);
+    $expBody = experience_letter_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo, 'signature' => $co_signature, 'signatory_title' => $letter['entity_signatory_title'] ?? ''], $expData);
+    $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $expBody . '</body></html>';
+    // Entity address as a repeating page footer on every page (mPDF).
+    $pdfFooterHtml = '<div style="border-top:1px solid #aaa;padding-top:4px;text-align:center;font-size:8pt;color:#555">'
+                   . h(trim($co_name . ($co_addr ? ' ' . $co_addr : ''))) . '</div>';
+} elseif ($letter['type'] === 'Internship') {
+    // Reconstructed internship certificate (framed design) — shared with the
+    // on-screen view via includes/internship_certificate.php.
+    require_once __DIR__ . '/../../includes/internship_certificate.php';
+    $intData = internship_certificate_data($letter);
+    $intBody = internship_certificate_html($letter, ['name' => $co_name, 'addr' => $co_addr, 'logo' => $co_logo, 'signature' => $co_signature, 'signatory_title' => $letter['entity_signatory_title'] ?? ''], $intData);
+    $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $intBody . '</body></html>';
 } elseif ($letter['type'] === 'Confirmation') {
     // Reconstructed confirmation letter (reference design) — shared with the
     // on-screen view via includes/confirmation_letter.php.
@@ -244,7 +263,7 @@ $html = ob_get_clean();
 
 // ─── Render: mPDF (best CSS fidelity) → TCPDF → printable HTML ────────────────
 $xamppRoot = dirname(__DIR__, 4);   // e.g. C:/xampp8.2
-$docTitle  = $letter['type'] . ' Letter - ' . $letter['emp_name'];
+$docTitle  = letter_type_label($letter['type']) . ' - ' . $letter['emp_name'];
 
 // 1) mPDF — preserves the letter's CSS layout, tables and fonts.
 $mpdfAutoloads = [

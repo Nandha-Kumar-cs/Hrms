@@ -7,6 +7,7 @@
 require_once __DIR__ . '/../../includes/bootstrap.php';
 require_login();
 require_permission('letters','create');
+require_once __DIR__ . '/../../includes/letter_types.php';
 
 $db       = db();
 $user     = current_user();
@@ -14,9 +15,13 @@ $user     = current_user();
 // employee_id) so the chosen employee is pre-selected on the form.
 $emp_id   = (int)($_GET['emp_id'] ?? $_GET['employee_id'] ?? 0);
 $preType  = ucfirst(strtolower($_GET['type'] ?? ''));   // e.g. ?type=Promotion preselects the template
+// Every employee is loaded — an Experience letter is issued to someone who has
+// already left, so the list cannot be limited to Active staff. The dropdown is
+// narrowed per letter type in JS (see EMP_TYPE_SCOPE): the existing four types
+// still only offer Active employees.
 $employees = $db->query(
     'SELECT e.id, e.name, e.employee_id, e.designation_id, e.department_id, e.join_date,
-            e.gender, e.fixed_salary, e.variable_salary,
+            e.gender, e.fixed_salary, e.variable_salary, e.status, e.employment_type,
             d.name AS dept_name, des.name AS designation_name,
             ent.name AS entity_name, ent.address AS entity_address, ent.city AS entity_city,
             ent.state AS entity_state, ent.pincode AS entity_pincode,
@@ -25,7 +30,6 @@ $employees = $db->query(
      LEFT JOIN departments d   ON d.id   = e.department_id
      LEFT JOIN designations des ON des.id = e.designation_id
      LEFT JOIN entities ent    ON ent.id = e.entity_id
-     WHERE e.status = "Active"
      ORDER BY e.name'
 )->fetchAll();
 
@@ -68,19 +72,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $status    = 'Draft';
 
         if (!$sel_emp) $errors[] = 'Select an employee.';
-        if (!in_array($type, ['Offer','Confirmation','Increment','Promotion'])) $errors[] = 'Invalid type.';
+        if (!in_array($type, LETTER_TYPES, true)) $errors[] = 'Invalid type.';
         if (!$date) $errors[] = 'Date is required.';
+
+        // An intern is eligible for the Internship Certificate only. Enforced on
+        // the server because the form's dropdown is only a convenience.
+        if ($sel_emp && in_array($type, LETTER_TYPES, true)) {
+            $eligible = letter_types_for_employee(getEmpDetail($db, $sel_emp));
+            if (!in_array($type, $eligible, true)) {
+                $errors[] = 'This employee is an intern — only an Internship Certificate can be issued.';
+            }
+        }
         // A promotion letter must name the new designation — it is the record's
         // key field and is what gets applied to the employee profile.
         if ($type === 'Promotion' && !(int)($_POST['new_designation_id'] ?? 0)) {
             $errors[] = 'New Designation is required for a promotion letter.';
+        }
+        // The tenure dates are the substance of these two documents — without
+        // them the certificate would state an empty period.
+        if ($type === 'Experience' && !sanitize($_POST['last_working_day'] ?? '')) {
+            $errors[] = 'Last Working Day is required for an experience letter.';
+        }
+        if ($type === 'Internship') {
+            $iStart = sanitize($_POST['internship_start'] ?? '');
+            $iEnd   = sanitize($_POST['internship_end'] ?? '');
+            if (!$iStart || !$iEnd)                 $errors[] = 'Internship start and end dates are required.';
+            elseif (strtotime($iEnd) < strtotime($iStart)) $errors[] = 'Internship end date cannot be before the start date.';
         }
 
         if (!$errors) {
             // Auto-generate ref number
             if (!$ref) {
                 $cnt = $db->query('SELECT COUNT(*)+1 FROM letters')->fetchColumn();
-                $ref = 'HR/' . $type[0] . '/' . date('Y') . '/' . str_pad($cnt, 4, '0', STR_PAD_LEFT);
+                $ref = 'HR/' . (LETTER_REF_CODES[$type] ?? $type[0]) . '/' . date('Y') . '/' . str_pad($cnt, 4, '0', STR_PAD_LEFT);
             }
             $db->prepare('INSERT INTO letters (employee_id,type,issued_date,reference,content,issued_by,status) VALUES(?,?,?,?,?,?,?)')
                ->execute([$sel_emp, $type, $date, $ref, $content, $user['id'], 'Draft']);
@@ -106,7 +130,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            flash('success', ucfirst(strtolower($type)) . ' letter created (Draft).');
+            flash('success', letter_type_label($type) . ' created (Draft).');
             redirect(BASE_URL . '/modules/letters/view.php?id=' . $lid);
         }
     }
@@ -146,8 +170,10 @@ require_once __DIR__ . '/../../includes/header.php';
             <select name="employee_id" id="sel_emp" onchange="loadTemplate()" required>
                 <option value="">— Select Employee —</option>
                 <?php foreach ($employees as $e): ?>
-                <option value="<?= $e['id'] ?>" <?= ($emp_id==$e['id']||($_POST['employee_id']??'')==$e['id'])?'selected':'' ?>>
-                    <?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)
+                <?php /* data-status drives the per-type scoping in applyEmployeeScope(). */ ?>
+                <option value="<?= $e['id'] ?>" data-status="<?= h($e['status']) ?>"
+                        <?= ($emp_id==$e['id']||($_POST['employee_id']??'')==$e['id'])?'selected':'' ?>>
+                    <?= h($e['name']) ?> (<?= h($e['employee_id']) ?>)<?= $e['status'] !== 'Active' ? ' — ' . h($e['status']) : '' ?>
                 </option>
                 <?php endforeach; ?>
             </select>
@@ -155,8 +181,8 @@ require_once __DIR__ . '/../../includes/header.php';
         <div class="field">
             <label>Letter <u>T</u>ype *</label>
             <select name="type" id="sel_type" onchange="loadTemplate()" accesskey="t">
-                <?php foreach (['Offer','Confirmation','Increment','Promotion'] as $t): ?>
-                <option <?= ($_POST['type'] ?? $preType)===$t?'selected':'' ?>><?= $t ?></option>
+                <?php foreach (LETTER_TYPES as $t): ?>
+                <option value="<?= $t ?>" <?= ($_POST['type'] ?? $preType)===$t?'selected':'' ?>><?= h(letter_type_label($t)) ?></option>
                 <?php endforeach; ?>
             </select>
         </div>
@@ -170,6 +196,12 @@ require_once __DIR__ . '/../../includes/header.php';
             <input type="date" name="issued_date" required value="<?= h($_POST['issued_date'] ?? date('Y-m-d')) ?>">
         </div>
     </div>
+
+    <!-- Shown when switching type de-selects an employee who is not eligible -->
+    <div id="empScopeNote" class="alert alert-warn" style="display:none;margin-top:12px"></div>
+
+    <!-- Shown when the selected employee is an intern (certificate only) -->
+    <div id="typeScopeNote" class="alert alert-info" style="display:none;margin-top:12px"></div>
 
     <!-- Offer letter: warn when the selected employee has no salary configured -->
     <div id="salaryWarn" class="alert alert-error" style="display:none;margin-top:12px">
@@ -321,6 +353,73 @@ Increment: ${pct}
 We appreciate your dedication and expect continued excellence in your work. Congratulations on this well-deserved recognition.`;
     },
 
+    // Experience / relieving letter. The "Label: value" lines are parsed back out
+    // by includes/experience_letter.php, so keep the labels in sync with it.
+    Experience: (emp, fields) => {
+        const company = coName(emp);
+        const sal  = emp.gender === 'Male' ? 'Mr. ' : (emp.gender === 'Female' ? 'Ms. ' : '');
+        const subj = emp.gender === 'Male' ? 'He'   : (emp.gender === 'Female' ? 'She'  : 'They');
+        const pron = emp.gender === 'Male' ? 'his'  : (emp.gender === 'Female' ? 'her'  : 'their');
+        const obj  = emp.gender === 'Male' ? 'him'  : (emp.gender === 'Female' ? 'her'  : 'them');
+        const poss = pron.charAt(0).toUpperCase() + pron.slice(1);
+        const was  = (emp.gender === 'Male' || emp.gender === 'Female') ? 'was' : 'were';
+        const join = fields.join_date || emp.join_date || '';
+        const lwd  = fields.last_working_day || '';
+        return `TO WHOMSOEVER IT MAY CONCERN
+
+Dear ${sal}${emp.name},
+
+This is to certify that ${sal}${emp.name} (Employee ID: ${emp.employee_id || ''}) ${was} employed with ${company} from ${join} to ${lwd}.
+
+Designation: ${fields.designation || emp.designation_name || 'N/A'}
+Department: ${emp.dept_name || 'N/A'}
+Date of Joining: ${join}
+Last Working Day: ${lwd}
+Conduct: ${fields.conduct || 'Satisfactory'}
+
+During ${pron} tenure with us, ${subj.toLowerCase()} handled the responsibilities assigned to ${pron} role diligently. ${poss} conduct and performance during this period were found to be ${(fields.conduct || 'satisfactory').toLowerCase()}.
+
+${subj} ${was} relieved from the services of the company with effect from the close of business hours on ${lwd}, and ${subj.toLowerCase()} ${was} not required to fulfil any further obligations towards the organisation.
+
+We thank ${obj} for the services rendered and wish ${obj} success in all future endeavours.
+
+For ${company}
+${fields.signed_by ? '\nSigned By: ' + fields.signed_by : ''}
+Authorized Signatory`;
+    },
+
+    // Internship certificate. The "Label: value" lines are parsed back out by
+    // includes/internship_certificate.php — keep the labels in sync with it.
+    Internship: (emp, fields) => {
+        const company = coName(emp);
+        const sal  = emp.gender === 'Male' ? 'Mr. ' : (emp.gender === 'Female' ? 'Ms. ' : '');
+        const subj = emp.gender === 'Male' ? 'He'   : (emp.gender === 'Female' ? 'She'  : 'They');
+        const pron = emp.gender === 'Male' ? 'his'  : (emp.gender === 'Female' ? 'her'  : 'their');
+        const obj  = emp.gender === 'Male' ? 'him'  : (emp.gender === 'Female' ? 'her'  : 'them');
+        const poss = pron.charAt(0).toUpperCase() + pron.slice(1);
+        const has  = (emp.gender === 'Male' || emp.gender === 'Female') ? 'has' : 'have';
+        const st   = fields.internship_start || '';
+        const en   = fields.internship_end   || '';
+        return `INTERNSHIP CERTIFICATE
+
+This is to certify that ${sal}${emp.name}${fields.institution ? ' of ' + fields.institution : ''} ${has} successfully completed an internship with ${company} from ${st} to ${en}.
+
+Intern ID: ${emp.employee_id || ''}
+Institution: ${fields.institution || ''}
+Start Date: ${st}
+End Date: ${en}
+Mentor: ${fields.mentor || ''}
+Conduct: ${fields.conduct || 'Satisfactory'}
+
+During the internship, ${subj.toLowerCase()} demonstrated a keen willingness to learn and carried out the assigned tasks sincerely. ${poss} conduct and performance throughout the programme were found to be ${(fields.conduct || 'satisfactory').toLowerCase()}.
+
+We wish ${obj} continued success in all future endeavours.
+
+For ${company}
+${fields.signed_by ? '\nSigned By: ' + fields.signed_by : ''}
+Authorized Signatory`;
+    },
+
     Promotion: (emp, fields) => `${coName(emp)}
 ${coAddress(emp)}
 
@@ -371,6 +470,29 @@ const TYPE_FIELDS = {
         { id:'increment_pct',  label:'Increment %',         type:'number', name:'increment_percentage', step:'0.01', readonly:true },
         { id:'effective_date', label:'Effective Date',      type:'date',   name:'effective_date',       value: TODAY },
     ],
+    // Experience letter: joining date auto-fills from the employee profile; the
+    // last working day has no column on employees, so it is captured here.
+    Experience: [
+        { id:'join_date',        label:'Date of Joining',   type:'date', name:'exp_join_date' },
+        { id:'last_working_day', label:'Last Working Day *',type:'date', name:'last_working_day', value: TODAY },
+        { id:'designation',      label:'Designation',       type:'text', name:'exp_designation' },
+        { id:'conduct',          label:'Conduct',           type:'select', name:'exp_conduct',
+          options:[{id:'Excellent',name:'Excellent'},{id:'Good',name:'Good'},{id:'Satisfactory',name:'Satisfactory'}],
+          blank:'Satisfactory (default)' },
+        { id:'signed_by',        label:'Signed By',         type:'text', name:'exp_signed_by' },
+    ],
+    // Internship certificate: the programme period, what the intern worked on
+    // and who guided them.
+    Internship: [
+        { id:'internship_start', label:'Start Date *',      type:'date', name:'internship_start' },
+        { id:'internship_end',   label:'End Date *',        type:'date', name:'internship_end', value: TODAY },
+        { id:'institution',      label:'College / Institution', type:'text', name:'intern_institution' },
+        { id:'mentor',           label:'Mentor / Guide',     type:'text', name:'intern_mentor' },
+        { id:'conduct',          label:'Conduct',            type:'select', name:'intern_conduct',
+          options:[{id:'Excellent',name:'Excellent'},{id:'Good',name:'Good'},{id:'Satisfactory',name:'Satisfactory'}],
+          blank:'Satisfactory (default)' },
+        { id:'signed_by',        label:'Signed By',          type:'text', name:'intern_signed_by' },
+    ],
     // Promotion fields submit structured IDs (name:) so they sync into the
     // promotion-history table; the letter body still shows the designation names.
     Promotion: [
@@ -395,9 +517,78 @@ function toggleSalaryWarn(emp, total) {
     }
 }
 
+// Which employee statuses each letter type may be issued to. Offer /
+// Confirmation / Increment / Promotion stay Active-only (unchanged behaviour);
+// an Experience letter is by definition issued to someone who has left, and an
+// internship certificate is issued at the end of the programme — so both accept
+// any status.
+const EMP_TYPE_SCOPE = {
+    Experience: null,   // null = no status restriction
+    Internship: null,
+};
+const ACTIVE_ONLY = ['Active'];
+
+/**
+ * Show only the employees eligible for the chosen letter type. Clears the
+ * selection when the currently selected employee is not eligible.
+ */
+function applyEmployeeScope(type) {
+    const sel     = document.getElementById('sel_emp');
+    const allowed = (type in EMP_TYPE_SCOPE) ? EMP_TYPE_SCOPE[type] : ACTIVE_ONLY;
+    let clearedName = '';
+    Array.from(sel.options).forEach(opt => {
+        if (!opt.value) return;                       // keep the placeholder
+        const ok = !allowed || allowed.includes(opt.dataset.status);
+        opt.hidden = opt.disabled = !ok;
+        if (!ok && opt.selected) { clearedName = opt.textContent.trim(); sel.value = ''; }
+    });
+    const note = document.getElementById('empScopeNote');
+    if (note) {
+        note.textContent = clearedName
+            ? clearedName + ' is not eligible for this letter type — select another employee.'
+            : '';
+        note.style.display = clearedName ? '' : 'none';
+    }
+}
+
+// Mirrors letter_employee_is_intern() in includes/letter_types.php — whole-word
+// "intern" in the designation (so "Internal Auditor" does NOT match), or an
+// employment type of Intern.
+function isIntern(emp) {
+    if (!emp) return false;
+    if (String(emp.employment_type || '').trim().toLowerCase() === 'intern') return true;
+    return /\bintern\b/i.test(String(emp.designation_name || ''));
+}
+
+/**
+ * An intern may only be issued an Internship Certificate — every other letter
+ * type is disabled. Switches the selection when the current type is not allowed.
+ */
+function applyTypeScope(empId) {
+    const sel   = document.getElementById('sel_type');
+    const emp   = EMPLOYEES[empId];
+    const intern = isIntern(emp);
+    Array.from(sel.options).forEach(opt => {
+        const ok = !intern || opt.value === 'Internship';
+        opt.hidden = opt.disabled = !ok;
+    });
+    if (intern && sel.value !== 'Internship') sel.value = 'Internship';
+
+    const note = document.getElementById('typeScopeNote');
+    if (note) {
+        note.textContent = intern
+            ? (emp.name || 'This employee') + ' is an intern — only an Internship Certificate can be issued.'
+            : '';
+        note.style.display = intern ? '' : 'none';
+    }
+}
+
 function loadTemplate() {
+    applyTypeScope(document.getElementById('sel_emp').value);   // employee → allowed types
+    const type0 = document.getElementById('sel_type').value;
+    applyEmployeeScope(type0);                                  // type → allowed employees
     const empId = document.getElementById('sel_emp').value;
-    const type  = document.getElementById('sel_type').value;
+    const type  = type0;
     const emp   = EMPLOYEES[empId] || { name: '[Employee Name]' };
     const flds  = TYPE_FIELDS[type] || [];
     const container = document.getElementById('templateFields');
@@ -440,6 +631,22 @@ function loadTemplate() {
         toggleSalaryWarn(e, total);
     } else {
         toggleSalaryWarn(null, 1);
+    }
+
+    // Experience: pre-fill the joining date and designation from the employee's
+    // profile — the last working day is the only field HR has to supply.
+    if (type === 'Experience' && EMPLOYEES[empId]) {
+        const e  = EMPLOYEES[empId];
+        const jd = document.getElementById('tf_join_date');
+        const dg = document.getElementById('tf_designation');
+        if (jd && e.join_date) jd.value = e.join_date;
+        if (dg && e.designation_name) dg.value = e.designation_name;
+    }
+
+    // Internship: the programme start defaults to the intern's joining date.
+    if (type === 'Internship' && EMPLOYEES[empId]) {
+        const st = document.getElementById('tf_internship_start');
+        if (st && EMPLOYEES[empId].join_date) st.value = EMPLOYEES[empId].join_date;
     }
 
     // Promotion: default Previous Designation + Department to the employee's
