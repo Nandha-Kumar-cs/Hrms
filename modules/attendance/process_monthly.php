@@ -163,6 +163,7 @@ $upsertStmt = $db->prepare($upsertSql);
 $inserted = 0;
 $updated  = 0;
 $skipped  = 0;
+$badStatuses = [];   // unrecognised status value => row count (M-19)
 $errors   = [];
 $empProcessed = 0;
 
@@ -349,6 +350,13 @@ elseif (!$isFormatB) {
         $rawStatus = $r['status'] ?? $r['attendance'] ?? '';
         if ($rawStatus !== '') {
             $status = _attm_normalize_status($rawStatus);
+            // Unrecognised → refuse the row rather than silently marking it Absent (M-19).
+            if ($status === null) {
+                $skipped++;
+                $bad = trim($rawStatus);
+                $badStatuses[$bad] = ($badStatuses[$bad] ?? 0) + 1;
+                continue;
+            }
         } elseif ($autoClassify) {
             $status = _attm_classify_from_time($inTime, $useDate, $empDbId);
         } else {
@@ -476,6 +484,17 @@ $empCount = $isFormatC
     ? $empProcessed
     : count(array_unique(array_column($rows, array_key_first($rows[0] ?? []))));
 
+/* Per-VALUE summary first — $errors is sliced to 20 for display (M-19). */
+if ($badStatuses) {
+    arsort($badStatuses);
+    $parts = [];
+    foreach ($badStatuses as $val => $n) $parts[] = '"' . $val . '" (' . $n . ' row' . ($n === 1 ? '' : 's') . ')';
+    array_unshift($errors,
+        'Unrecognised attendance status ' . implode(', ', $parts)
+      . '. Those rows were NOT imported and nothing was guessed for them. '
+      . 'Correct the file, or add the value to the status map in _attm_normalize_status().');
+}
+
 $_SESSION['att_monthly_result'] = [
     'month'     => date('F Y', strtotime($attMonth . '-01')) . " [$formatLabel]",
     'employees' => $empCount,
@@ -506,7 +525,7 @@ redirect(BASE_URL . "/modules/attendance/report.php?month=" . (int)$mMon . "&yea
 /**
  * Normalize an attendance status string to the schema ENUM value.
  */
-function _attm_normalize_status(string $raw): string
+function _attm_normalize_status(string $raw): ?string
 {
     $map = [
         // Present / On Time
@@ -535,7 +554,13 @@ function _attm_normalize_status(string $raw): string
     foreach ($valid as $v) {
         if (strcasecmp($key, strtolower($v)) === 0) return $v;
     }
-    return 'Absent'; // safe fallback
+    /* Unrecognised. Returning 'Absent' here looked "safe" but was the opposite:
+     * a biometric export using an unmapped vocabulary (WO / OFF / PR / A1 …) had
+     * EVERY row silently rewritten to Absent, and the importer still reported a
+     * successful import. A whole month of attendance could be zeroed with nothing
+     * on screen to say so. Signal the failure instead and let the caller refuse
+     * the row (security audit M-19). */
+    return null;
 }
 
 /**

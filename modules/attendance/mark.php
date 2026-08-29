@@ -204,8 +204,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_save'])) {
             }
         }
 
-        // No checkout on On Time/Late → mark Absent
-        if (in_array($status, ['On Time','Late'], true) && !$outTime) {
+        // No checkout on ANY check-in-derived status → Absent. Half Day used to be
+        // exempt, which paid a late arrival with no punch-out MORE than a punctual
+        // one with no punch-out (security audit M-18).
+        if (in_array($status, attendance_checkin_statuses(), true) && !$outTime) {
             $status = 'Absent';
         }
 
@@ -272,6 +274,7 @@ $employees = $db->prepare(
             s.name AS shift_name,
             a.id        AS att_id,
             a.status    AS att_status,
+            a.shift_id  AS att_shift_id,
             a.in_time,
             a.out_time,
             a.ot_hours,
@@ -285,6 +288,27 @@ $employees = $db->prepare(
 );
 $employees->execute([$selDate]);
 $employees = $employees->fetchAll();
+
+/* ── Sandwich leave on the selected date ──────────────────────────────────────
+   Two things can be true of this date: it is a company leave being CHARGED as
+   LOP, or it is a LEAVE that closed a sandwich (what the month grids badge).
+   Resolved for the whole roster in one call rather than per row, and read
+   straight from the payroll engine so the badge can never disagree with the
+   payslip. */
+$selTs         = strtotime($selDate);
+$selMonth      = (int)date('n', $selTs);
+$selYear       = (int)date('Y', $selTs);
+$empIdList     = array_column($employees, 'id');
+$sandwichMap   = attendance_sandwich_map($empIdList, $selMonth, $selYear);
+$sandwichLeave = attendance_sandwich_leave_map($empIdList, $selMonth, $selYear);
+
+$sandwichHere = [];
+foreach ($sandwichMap as $eid => $dates) {
+    if (isset($dates[$selDate])) $sandwichHere[$eid] = 0;              // charged company leave
+}
+foreach ($sandwichLeave as $eid => $dates) {
+    if (isset($dates[$selDate])) $sandwichHere[$eid] = $dates[$selDate]; // leave that closed one
+}
 
 /* ── Misc vars ───────────────────────────────────────────────────────────── */
 $yesterday = date('Y-m-d', strtotime($selDate . ' -1 day'));
@@ -467,6 +491,31 @@ require_once __DIR__ . '/../../includes/header.php';
                     // This row's timing: the employee's shift, else legacy globals
                     $t = _mark_timing((int)$e['id'], $shiftTiming, $lateThreshMins, $halfDayCutoff, $otTriggerMins, $otBaselineMins);
                     $shiftOtOn   = $t['shift_ot_on'];
+
+                    // EO (Early Out) — the same call the Attendance Report badges
+                    // with, so a day docked under "Others" on the payslip reads the
+                    // same on both screens. 'half' is left alone: the saved status
+                    // is already Half Day, which the badge beside it shows.
+                    $isEarlyOut = false; $eoWorkedH = 0.0;
+                    if (!empty($e['in_time']) && !empty($e['out_time'])
+                        && in_array($savedStat, ['On Time', 'Late', 'Half Day'], true)) {
+                        $inM  = time_to_mins((string)$e['in_time']);
+                        $outM = time_to_mins((string)$e['out_time']);
+                        if ($outM <= $inM) $outM += 1440;                  // overnight shift
+                        // Prefer the shift STAMPED on this attendance row, as the
+                        // report does, so an old date is judged by the shift that
+                        // was actually worked and not by today's assignment.
+                        $rowShift = $e['att_shift_id'] !== null ? (int)$e['att_shift_id'] : ($t['shift_id'] ?? null);
+                        $rt  = attendance_row_timing($rowShift, (int)$e['id']);
+                        $net = max(0, ($outM - $inM) - break_minutes_within($inM, $outM, $rt['lunch'], $rt['breaks']));
+                        $cls = attendance_classify(
+                            $net, $inM, $rt['start_mins'], $rt['daily_grace'], $outM, $rt['end_mins'],
+                            $rt['shift_id'] !== null ? $rt['half_cutoff'] : null
+                        );
+                        $isEarlyOut = $cls['status'] !== 'half' && ($cls['ded_days'] ?? 0) > 0;
+                        $eoWorkedH  = $cls['worked_h'] ?? 0;
+                    }
+                    $sandwichOffs = $sandwichHere[(int)$e['id']] ?? null;
                     $isOtEnabled = (bool)$e['ot_enabled'] && $shiftOtOn;   // effective auto-OT
                 ?>
                 <tr class="att-row"
@@ -525,6 +574,22 @@ require_once __DIR__ . '/../../includes/header.php';
                                 <i class="fa fa-lock me-1"></i>Auto-calculated
                             </small>
                         </div>
+
+                        <?php if ($isEarlyOut): ?>
+                        <span class="badge mt-1" style="background:#b45309;color:#fff;font-size:.65rem"
+                              title="Early Out &mdash; <?= number_format($eoWorkedH, 2) ?>h net worked, short of a full day. Deducted under &quot;Others&quot; on the payslip.">EO</span>
+                        <?php endif; ?>
+
+                        <?php if ($sandwichOffs !== null):
+                            $swTip = $sandwichOffs > 0
+                                ? 'Sandwich Leave — this leave closed a sandwich, so ' . $sandwichOffs
+                                  . ' company leave day' . ($sandwichOffs == 1 ? '' : 's') . ' beside it '
+                                  . ($sandwichOffs == 1 ? 'is' : 'are') . ' charged as LOP too.'
+                                : 'Sandwich Leave — this company leave is charged as LOP because leave was taken on the working day before AND after it.';
+                        ?>
+                        <span class="badge mt-1" style="background:#9d174d;color:#fff;font-size:.65rem"
+                              title="<?= h($swTip) ?>">SL</span>
+                        <?php endif; ?>
                     </td>
                     <td>
                         <input type="time"
@@ -685,13 +750,17 @@ $(function () {
         var parts  = checkIn.split(':');
         var inMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
 
+        /* Mirrors attendance_checkin_statuses() on the server: a check-in with no
+           punch-out is Absent whatever time the check-in was (M-18). Before this,
+           the sheet previewed "Half Day" for a late arrival that the server then
+           saved as Absent — the row changed status the moment you pressed Save. */
+        if (!checkOut) return 'Absent';
+
         if (inMins >= halfCutoff) return 'Half Day';
 
-        if (checkOut) {
-            var op   = checkOut.split(':');
-            var outM = parseInt(op[0], 10) * 60 + parseInt(op[1] || '0', 10);
-            if (outM - inMins > 0 && outM - inMins < 240) return 'Half Day';
-        }
+        var op   = checkOut.split(':');
+        var outM = parseInt(op[0], 10) * 60 + parseInt(op[1] || '0', 10);
+        if (outM - inMins > 0 && outM - inMins < 240) return 'Half Day';
 
         return inMins > lateThresh ? 'Late' : 'On Time';
     }

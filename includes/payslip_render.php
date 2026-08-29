@@ -144,8 +144,6 @@ function payslip_html(array $s, bool $forScreen = false): string
     ['earnings' => $earnList, 'deductions' => $dedList] = payslip_lines($s);
 
     $eLabels = array_keys($earnList); $eItems = array_values($earnList);
-    $dLabels = array_keys($dedList);  $dItems = array_values($dedList);
-    $maxRows = max(count($eLabels), count($dLabels), 1);
 
     $totalEarnings   = (float) $s['gross_earnings'];
     $totalDeductions = (float) $s['total_deductions'];
@@ -154,9 +152,27 @@ function payslip_html(array $s, bool $forScreen = false): string
     $nf = fn ($a) => number_format((float) $a, 2);
     $hh = fn ($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
 
-    $lopDays  = (float) ($attSummary['unpaid_days'] ?? $attSummary['absent_days'] ?? 0);
+    // LOP days = absences + sandwich days + half days, exactly as the LOP Amount
+    // line was priced. Short hours carry their own "Others" line.
+    $lopDays  = (float) ($attSummary['lop_days'] ?? $attSummary['absent_days']
+                         ?? $attSummary['unpaid_days'] ?? 0);
     $lateMins = (int) ($attSummary['late_minutes'] ?? 0);
     $fmtDays  = fn (float $d) => rtrim(rtrim(number_format($d, 2), '0'), '.');
+    // Sandwich days sit inside the LOP figure, so say how many there are —
+    // otherwise "4 days" for two days taken off reads as an error.
+    $sandwichDays = (int) ($attSummary['sandwich_days'] ?? 0);
+
+    // Printed deduction rows: [label, already-formatted value]. "LOP Amount" is
+    // followed by a display-only "LOP Days" line holding the day count instead
+    // of a rupee figure; it is not part of Total Deductions.
+    $dRows = [];
+    foreach ($dedList as $dLabel => $dAmt) {
+        $dRows[] = [$dLabel, $nf($dAmt)];
+        if ($dLabel === 'LOP Amount') {
+            $dRows[] = ['LOP Days', $fmtDays($lopDays)];
+        }
+    }
+    $maxRows = max(count($eLabels), count($dRows), 1);
 
     ob_start();
     ?>
@@ -224,7 +240,7 @@ function payslip_html(array $s, bool $forScreen = false): string
         <td><strong>Designation:</strong> <?= $hh($s['desig_name'] ?? '—') ?: '—' ?></td></tr>
     <tr><td><strong>Pay Period:</strong> <?= $hh($monthLabel) ?></td>
         <td><strong>Shift:</strong> <?= $hh($attSummary['shift_name'] ?? '—') ?: '—' ?></td></tr>
-    <tr><td><strong>LOP:</strong> <?= $hh($fmtDays($lopDays)) ?> day<?= $lopDays == 1 ? '' : 's' ?></td>
+    <tr><td><strong>LOP:</strong> <?= $hh($fmtDays($lopDays)) ?> day<?= $lopDays == 1 ? '' : 's' ?><?= $sandwichDays > 0 ? ' (incl. ' . $sandwichDays . ' sandwich)' : '' ?></td>
         <td><strong>Late:</strong> <?= $lateMins > 0 ? $hh(fmt_ot_hours($lateMins / 60)) : '—' ?></td></tr>
     <tr><td><strong>PAN Number:</strong> <?= $hh($s['pan_number'] ?? '—') ?: '—' ?></td>
         <td><strong>ESI Number:</strong> <?= $hh($s['esic_number'] ?? '—') ?: '—' ?></td></tr>
@@ -245,8 +261,8 @@ function payslip_html(array $s, bool $forScreen = false): string
     <tr>
         <td><?= isset($eLabels[$i]) ? $hh($eLabels[$i]) : '' ?></td>
         <td style="text-align:right"><?= isset($eItems[$i]) ? $nf($eItems[$i]) : '' ?></td>
-        <td><?= isset($dLabels[$i]) ? $hh($dLabels[$i]) : '' ?></td>
-        <td style="text-align:right"><?= isset($dItems[$i]) ? $nf($dItems[$i]) : '' ?></td>
+        <td><?= isset($dRows[$i]) ? $hh($dRows[$i][0]) : '' ?></td>
+        <td style="text-align:right"><?= isset($dRows[$i]) ? $hh($dRows[$i][1]) : '' ?></td>
     </tr>
     <?php endfor; ?>
     <tr style="font-weight:bold">

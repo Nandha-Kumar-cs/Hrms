@@ -22,7 +22,7 @@ if ($action === 'stop') {
         $orig = $_SESSION['impersonator'];
         activity_log('impersonate_stop', 'Auth',
             'Stopped impersonating ' . ($me['email'] ?? '') . ' (back to ' . ($orig['email'] ?? '') . ')');
-        $_SESSION['user']    = $orig;
+        $_SESSION['user']    = session_safe_user($orig);
         $_SESSION['user_id'] = $orig['id'] ?? null;
         unset($_SESSION['impersonator']);
         flash('success', 'Returned to your account.');
@@ -52,8 +52,10 @@ if ($action === 'start') {
         flash('error', 'You cannot impersonate a Super Admin account.'); redirect($users);
     }
 
-    $_SESSION['impersonator'] = $me;               // remember who we really are
-    $_SESSION['user']         = $target;           // become the target
+    // SELECT u.* carries password_hash. Both of these land in the session store,
+    // so strip credential material from each (security audit M-16).
+    $_SESSION['impersonator'] = session_safe_user($me);       // remember who we really are
+    $_SESSION['user']         = session_safe_user($target);   // become the target
     $_SESSION['user_id']      = $target['id'];
     activity_log('impersonate_start', 'Auth',
         ($me['email'] ?? '') . ' started impersonating ' . ($target['email'] ?? '') . ' (#' . $targetId . ')');

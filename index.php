@@ -15,8 +15,12 @@ $extra_head = '
   .page-card  { border: none; box-shadow: 0 1px 4px rgba(0,0,0,.08); border-radius: 8px; }
 </style>';
 
-require_once __DIR__ . '/includes/header.php';
+require_once __DIR__ . '/includes/bootstrap.php';
+// Permission BEFORE any output: header.php emits <!DOCTYPE>, after which
+// http_response_code(403) is ignored and 403.php lands mid-page
+// (security audit L-1).
 require_permission('dashboard');
+require_once __DIR__ . '/includes/header.php';
 
 // ── Data queries ──────────────────────────────────────────────────────────────
 $db = db();

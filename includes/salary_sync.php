@@ -37,21 +37,89 @@ function sync_current_salary_from_increments(PDO $db, int $empId): void {
     $rows = $incs->fetchAll(PDO::FETCH_ASSOC);
     if (!$rows) return;   // no increments → leave the salary untouched
 
-    $hasStruct = $db->prepare('SELECT 1 FROM salary_structures WHERE employee_id = ? AND effective_from = ? LIMIT 1');
-    $insStruct = $db->prepare(
-        'INSERT INTO salary_structures (employee_id, basic, hra, conveyance, special_allow, gross, effective_from, is_current, created_at)
-         VALUES (?,?,?,?,?,?,?,0,NOW())'
+    $findStruct = $db->prepare(
+        'SELECT id, basic, hra, conveyance, medical, special_allow, other_allow, gross
+           FROM salary_structures WHERE employee_id = ? AND effective_from = ? LIMIT 1'
     );
-    // Component breakdown mirrors modules/employee/edit.php (50 / 20 / 10 / rest).
-    $ensure = function (float $gross, string $eff) use ($db, $empId, $hasStruct, $insStruct): void {
+    /* salary_structures.gross and .lop_per_day are STORED GENERATED columns
+     * (gross = basic+hra+conveyance+medical+special_allow+other_allow — see
+     * install/schema.sql). They can only be changed by changing the components,
+     * and naming one in an INSERT/UPDATE column list is an ERROR on a strict-mode
+     * server (MySQL 8's default) — silently ignored only because this box runs
+     * without STRICT_TRANS_TABLES. Both statements therefore write components
+     * only, and every component is listed so gross is always fully determined. */
+    $insStruct = $db->prepare(
+        'INSERT INTO salary_structures (employee_id, basic, hra, conveyance, medical, special_allow, other_allow, effective_from, is_current, created_at)
+         VALUES (?,?,?,?,?,?,?,?,0,NOW())'
+    );
+    $updStruct = $db->prepare(
+        'UPDATE salary_structures
+            SET basic = ?, hra = ?, conveyance = ?, medical = ?, special_allow = ?, other_allow = ?
+          WHERE id = ?'
+    );
+
+    /**
+     * Make the structure at $eff say $gross — inserting it when missing, and
+     * CORRECTING it when it is there but stale.
+     *
+     * This used to `return` the moment a row existed at that date, so editing an
+     * increment's amount without moving its date left the old gross in place.
+     * Everything that reads the is_current row then showed the superseded figure:
+     * the employee profile panel, the Salary Structure editor, the salary printed
+     * on Increment/Promotion letters, and the payroll employee list
+     * (security audit M-10).
+     *
+     * A gross change rescales whatever component split is already on the row, so
+     * a breakdown an admin entered by hand in payroll/salary_structure.php keeps
+     * its proportions instead of being flattened back to the default formula.
+     * Only when the existing components do not reconcile with the old gross does
+     * it fall back to the 50 / 20 / 10 / rest split used on insert.
+     */
+    $ensure = function (float $gross, string $eff) use ($empId, $findStruct, $insStruct, $updStruct): void {
         if ($gross <= 0) return;
-        $hasStruct->execute([$empId, $eff]);
-        if ($hasStruct->fetchColumn()) return;       // already present → keep as-is
-        $basic = round($gross * 0.50, 2);
-        $hra   = round($gross * 0.20, 2);
-        $conv  = round($gross * 0.10, 2);
-        $spec  = round($gross - $basic - $hra - $conv, 2);
-        $insStruct->execute([$empId, $basic, $hra, $conv, $spec, $gross, $eff]);
+
+        $standard = function (float $g): array {
+            $basic = round($g * 0.50, 2);
+            $hra   = round($g * 0.20, 2);
+            $conv  = round($g * 0.10, 2);
+            return ['basic' => $basic, 'hra' => $hra, 'conveyance' => $conv, 'medical' => 0.0,
+                    'special_allow' => round($g - $basic - $hra - $conv, 2), 'other_allow' => 0.0];
+        };
+
+        $findStruct->execute([$empId, $eff]);
+        $row = $findStruct->fetch(PDO::FETCH_ASSOC);
+
+        if (!$row) {                                  // no row yet → create it
+            $c = $standard($gross);
+            $insStruct->execute([$empId, $c['basic'], $c['hra'], $c['conveyance'],
+                                 $c['medical'], $c['special_allow'], $c['other_allow'], $eff]);
+            return;
+        }
+
+        $old = (float) $row['gross'];
+        if (abs($old - $gross) < 0.005) return;       // already correct → nothing to do
+
+        $parts = ['basic', 'hra', 'conveyance', 'medical', 'special_allow', 'other_allow'];
+        $sum   = 0.0;
+        foreach ($parts as $k) $sum += (float) $row[$k];
+
+        // Where gross is generated the sum always reconciles, so this normally
+        // takes the rescale path; the guard still matters for a zeroed row, and
+        // for older installs where gross is a plain stored column.
+        if ($old > 0 && abs($sum - $old) < 0.05) {    // components reconcile → keep their shape
+            $factor = $gross / $old;
+            $c = [];
+            foreach ($parts as $k) $c[$k] = round((float) $row[$k] * $factor, 2);
+            // Absorb rounding drift so the parts still add up to gross exactly.
+            $c['special_allow'] = round($c['special_allow'] + ($gross - array_sum($c)), 2);
+        } else {
+            $c = $standard($gross);
+        }
+
+        $updStruct->execute([
+            $c['basic'], $c['hra'], $c['conveyance'], $c['medical'],
+            $c['special_allow'], $c['other_allow'], (int) $row['id'],
+        ]);
     };
 
     // 1a) Original (pre-increment) salary, dated at/just before the first increment.

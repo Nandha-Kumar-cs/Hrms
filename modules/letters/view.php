@@ -41,10 +41,10 @@ $co_addr  = $letter['entity_name']
 $co_email = $letter['entity_name'] ? ($letter['entity_email'] ?: '') : COMPANY_EMAIL;
 $co_phone = $letter['entity_name'] ? ($letter['entity_phone'] ?: '') : COMPANY_PHONE;
 $co_logo  = (!empty($letter['entity_logo']) && file_exists(BASE_PATH . '/storage/entities/' . $letter['entity_logo']))
-    ? BASE_URL . '/storage/entities/' . $letter['entity_logo']
+    ? file_url('storage/entities/' . $letter['entity_logo'])
     : null;
 $co_signature = (!empty($letter['entity_signature']) && file_exists(BASE_PATH . '/storage/entities/' . $letter['entity_signature']))
-    ? BASE_URL . '/storage/entities/' . $letter['entity_signature']
+    ? file_url('storage/entities/' . $letter['entity_signature'])
     : null;
 
 $page_title = letter_type_label($letter['type']);
@@ -56,7 +56,9 @@ include '../../includes/header.php';
         <p class="page-subtitle">Ref: <?= h($letter['reference']) ?> &mdash; <?= h($letter['emp_name']) ?></p>
     </div>
     <div class="page-actions">
-        <?php if (can('letters', 'edit') && $letter['status'] === 'Draft'): ?>
+        <?php /* letters.edit is not a seeded permission — this hid the button from
+               everyone but Super Admin. Match the gate on issue.php's own check. */ ?>
+        <?php if (can('letters', 'create') && $letter['status'] === 'Draft'): ?>
             <a href="issue.php?id=<?= $id ?>" class="btn btn-success" data-key="I"><u>I</u>ssue Letter</a>
         <?php endif; ?>
         <?php if (in_array($letter['status'], ['Issued', 'Acknowledged'], true)): ?>

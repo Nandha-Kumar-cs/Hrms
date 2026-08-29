@@ -3,7 +3,7 @@ require_once '../../includes/bootstrap.php';
 require_login();
 // Salary structure exposes full pay breakup — require the payroll-edit permission
 // (not the generic Salary-Slips "view").
-require_permission('payroll', 'edit');
+require_permission('payroll', 'process');
 block_cross_employee();
 
 $user = current_user();
@@ -11,7 +11,7 @@ $user = current_user();
 // Handle save
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
-    require_permission('payroll', 'edit');
+    require_permission('payroll', 'process');
 
     $empId      = (int)$_POST['employee_id'];
     $basic      = (float)$_POST['basic'];
@@ -136,7 +136,7 @@ include '../../includes/header.php';
                         </div>
                     </div>
                 </div>
-                <?php if (can('payroll', 'edit')): ?>
+                <?php if (can('payroll', 'process')): ?>
                 <div class="card-footer">
                     <button type="submit" class="btn btn-primary" data-key="S"><u>S</u>ave Structure</button>
                 </div>

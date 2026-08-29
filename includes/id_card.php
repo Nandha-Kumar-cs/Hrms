@@ -85,9 +85,11 @@ function id_card_token_for(int $empId, bool $regenerate = false): ?array
         $row = $sel->fetch();
     }
 
-    // Keep the stored hash in step with the employee's current name / DOB — an
-    // HR edit to either would otherwise silently break the employee's password.
-    id_card_sync_password($row, $employee);
+    // Issue a strong random password on first use, and rotate any card still
+    // carrying the old name+DOB derived one. Deliberately NOT re-synced to the
+    // employee's name/DOB — that is precisely what made the secret guessable
+    // from the printed card (security audit M-4).
+    id_card_ensure_password($row, $employee);
 
     $sel->execute([$empId]);
     return $sel->fetch() ?: null;
@@ -115,22 +117,43 @@ function id_card_find_by_token(string $token): ?array
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   PASSWORD DERIVATION
+   PORTAL PASSWORD
+
+   The password is a RANDOM secret, generated once and stored only as a hash.
+   It used to be DERIVED as "first 4 letters of the name" + "DOB as DDMM" — but
+   the name is printed on the card and the QR code is on the card, so the whole
+   secret reduced to the birthday: 366 guesses against a 5-try / 15-minute
+   lockout, and a single guess for a colleague who knows it. Behind that door sit
+   the bank account, IFSC, PAN, UAN, ESIC number and every payslip
+   (security audit M-4).
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * Derive the portal password: first 4 LETTERS of the employee name + DOB as DDMM.
+ * A random, readable portal password.
  *
- *   "Arun Kumar" + 1998-08-15  →  "arun1508"
+ * 10 characters from a 31-symbol alphabet ≈ 49 bits of entropy — against the
+ * portal's 5-try / 15-minute lockout that is unguessable, versus the 366
+ * possibilities the derived scheme actually had.
  *
- * Everything is normalised to lower case so the employee never has to guess the
- * capitalisation; verification lower-cases the submitted value the same way.
- * Names shorter than 4 letters are padded so the format stays fixed-width.
- *
- * Returns null when the employee has no usable DOB — the portal is then closed
- * for that employee (fails closed rather than falling back to a weaker rule).
+ * The alphabet deliberately omits 0/O/1/l/I: employees type this on a phone
+ * from something written down, and an ambiguous character costs a lockout.
  */
-function id_card_derive_password(?string $name, ?string $dob): ?string
+function id_card_generate_password(): string
+{
+    $alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';   // no 0 O 1 l I
+    $max      = strlen($alphabet) - 1;
+    $out      = '';
+    for ($i = 0; $i < 10; $i++) $out .= $alphabet[random_int(0, $max)];
+    return $out;
+}
+
+/**
+ * LEGACY ONLY — reproduces the old derived password so an existing stored hash
+ * can be RECOGNISED as insecure and replaced. Never call this to set or verify
+ * a password; it exists solely so id_card_ensure_password() can spot the weak
+ * scheme still in place on cards issued before the M-4 fix.
+ */
+function id_card_legacy_derived_password(?string $name, ?string $dob): ?string
 {
     $dob = trim((string) $dob);
     if ($dob === '' || $dob === '0000-00-00') return null;
@@ -138,7 +161,6 @@ function id_card_derive_password(?string $name, ?string $dob): ?string
     $ts = strtotime($dob);
     if ($ts === false) return null;
 
-    // Letters only, so spaces / dots / initials never shift the 4-character slice.
     $letters = preg_replace('/[^a-z]/', '', strtolower((string) $name));
     if ($letters === '') return null;
     $letters = str_pad(substr($letters, 0, 4), 4, 'x');
@@ -147,28 +169,66 @@ function id_card_derive_password(?string $name, ?string $dob): ?string
 }
 
 /**
- * Re-hash the derived password when the stored hash no longer matches it (first
- * issue, or after the employee's name/DOB was corrected). The plain text is
- * built in memory and discarded — only the bcrypt digest is persisted.
+ * Make sure the token has a strong password, and reveal it exactly once.
+ *
+ * A new password is issued when either:
+ *   • there is no hash yet (a freshly issued card), or
+ *   • the stored hash still matches the old DERIVED value — i.e. this card is
+ *     carrying the insecure scheme and must be rotated off it.
+ *
+ * The plaintext is stashed in the session for a single read by the admin page
+ * (id_card_take_revealed_password), because it can never be recovered from the
+ * hash afterwards. An already-strong password is left completely alone — this
+ * is NOT re-run on every page view, unlike the old sync-on-every-load behaviour
+ * that kept forcing the password back to name+DOB.
  */
-function id_card_sync_password(array $tokenRow, array $employee): void
+function id_card_ensure_password(array $tokenRow, array $employee): void
 {
-    $plain = id_card_derive_password($employee['name'] ?? null, $employee['dob'] ?? null);
-
-    if ($plain === null) {
-        // No DOB → clear any stale hash so the portal cannot be entered at all.
-        if (!empty($tokenRow['password_hash'])) {
-            db()->prepare('UPDATE employee_qr_tokens SET password_hash = NULL WHERE id = ?')
-                ->execute([(int) $tokenRow['id']]);
-        }
-        return;
-    }
-
     $stored = (string) ($tokenRow['password_hash'] ?? '');
-    if ($stored !== '' && password_verify($plain, $stored)) return;   // already current
+    $reason = '';
 
-    db()->prepare('UPDATE employee_qr_tokens SET password_hash = ? WHERE id = ?')
-        ->execute([password_hash($plain, PASSWORD_DEFAULT), (int) $tokenRow['id']]);
+    if ($stored === '') {
+        $reason = 'new';
+    } else {
+        $legacy = id_card_legacy_derived_password($employee['name'] ?? null, $employee['dob'] ?? null);
+        if ($legacy !== null && password_verify($legacy, $stored)) {
+            $reason = 'legacy';   // still on the derivable scheme — rotate it off
+        }
+    }
+    if ($reason === '') return;   // already a strong, admin-issued password
+
+    id_card_set_password((int) $tokenRow['id'], (int) $tokenRow['employee_id'], $reason);
+}
+
+/**
+ * Issue a fresh random password for a token, clear any lockout, and stash the
+ * plaintext for one-time display. Returns the plaintext.
+ */
+function id_card_set_password(int $tokenId, int $employeeId, string $reason = 'reset'): string
+{
+    $plain = id_card_generate_password();
+    db()->prepare(
+        'UPDATE employee_qr_tokens
+            SET password_hash = ?, failed_attempts = 0, locked_until = NULL
+          WHERE id = ?'
+    )->execute([password_hash($plain, PASSWORD_DEFAULT), $tokenId]);
+
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $_SESSION['idcard_revealed'][$employeeId] = ['password' => $plain, 'reason' => $reason];
+    }
+    return $plain;
+}
+
+/**
+ * Read and clear the one-time plaintext for an employee, or null if there is
+ * none pending. Reading it removes it — it is never shown twice.
+ */
+function id_card_take_revealed_password(int $employeeId): ?array
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) return null;
+    $v = $_SESSION['idcard_revealed'][$employeeId] ?? null;
+    unset($_SESSION['idcard_revealed'][$employeeId]);
+    return is_array($v) ? $v : null;
 }
 
 /** Constant-time password check against the stored bcrypt hash. */

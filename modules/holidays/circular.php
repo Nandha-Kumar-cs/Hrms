@@ -60,7 +60,8 @@ $logoSrc = null;
 if ($holiday['entity_logo']) {
     foreach ([__DIR__ . '/../../' . ltrim($holiday['entity_logo'], '/'),
               __DIR__ . '/../../uploads/' . ltrim($holiday['entity_logo'], '/')] as $p) {
-        if (is_file($p)) { $logoSrc = BASE_URL . '/' . ltrim(str_replace(__DIR__ . '/../../', '', $p), '/'); break; }
+        // uploads/ and storage/ deny direct access — route through the gateway.
+        if (is_file($p)) { $logoSrc = file_url(str_replace(__DIR__ . '/../../', '', $p)); break; }
     }
 }
 

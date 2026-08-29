@@ -21,19 +21,101 @@ function require_login(): void {
         redirect(BASE_URL . '/login.php?timeout=1');
     }
     $_SESSION['last_active'] = time();
+
+    // Forced password change. An account whose password was set by somebody
+    // else — an admin reset, or the temporary one the bulk importer generates
+    // (security audit H-3) — cannot reach any other page until its owner picks
+    // their own. Without this, a temporary password is a permanent one.
+    if (!empty($_SESSION['user']['must_change_password']) && !password_change_page()) {
+        redirect(BASE_URL . '/change_password.php');
+    }
+}
+
+/** True when the current request IS the forced-change page (avoids a redirect loop). */
+function password_change_page(): bool {
+    return basename(parse_url((string)($_SERVER['SCRIPT_NAME'] ?? ''), PHP_URL_PATH) ?: '') === 'change_password.php';
+}
+
+/**
+ * Clear the forced-change flag for a user and mirror it into the live session,
+ * so the very next request stops redirecting.
+ */
+/**
+ * Step-up re-authentication: prove the person at the keyboard is the account
+ * holder, not just someone holding a live session (security audit M-13).
+ *
+ * A session cookie says "somebody logged in as this account at some point". That
+ * is not enough authority to mint a NEW credential — with it, a stolen session
+ * or an unattended desk becomes permanent access. Setting a password therefore
+ * asks for the actor's own current password again.
+ *
+ * Constant-ish timing: always runs password_verify() against a real-looking hash
+ * so a missing user cannot be told apart from a wrong password by response time.
+ */
+function verify_actor_password(string $password): bool {
+    static $dummy = '$2y$12$usesomesillystringfeuFHUFHUFHUFHUFHUFHUFHUFHUFHUFHUFHUFH';
+    $user = current_user();
+    if (!$user || $password === '') { password_verify($password, $dummy); return false; }
+
+    $st = db()->prepare('SELECT password_hash FROM users WHERE id = ? LIMIT 1');
+    $st->execute([(int)$user['id']]);
+    $hash = (string)$st->fetchColumn();
+    if ($hash === '') { password_verify($password, $dummy); return false; }
+
+    $ok = password_verify($password, $hash);
+    if (!$ok) usleep(300000);   // blunt the rate at which this can be ground down
+    return $ok;
+}
+
+function clear_must_change_password(int $userId): void {
+    db()->prepare('UPDATE users SET must_change_password = 0 WHERE id = ?')->execute([$userId]);
+    if ((int)($_SESSION['user']['id'] ?? 0) === $userId) {
+        $_SESSION['user']['must_change_password'] = 0;
+    }
 }
 
 function require_permission(string $module, string $action = 'view'): void {
     require_login();
-    if (!has_permission($module, $action)) {
-        http_response_code(403);
-        include BASE_PATH . '/includes/403.php';
-        exit;
-    }
+    if (has_permission($module, $action)) return;
+
+    /* Throw away anything already drawn (security audit L-1).
+     *
+     * Pages that include header.php before checking their permission have
+     * already produced a full layout by the time we get here. header.php buffers
+     * it, so discarding those buffers un-sends the page: the status line has not
+     * gone out yet, 403 still applies, and 403.php — which emits its own
+     * complete HTML document — arrives as the only document in the response
+     * instead of being spliced into the middle of another one. */
+    while (ob_get_level() > 0) ob_end_clean();
+
+    http_response_code(403);
+    include BASE_PATH . '/includes/403.php';
+    exit;
+}
+
+/**
+ * Strip credential material from a users row before it is put in the session
+ * (security audit M-16).
+ *
+ * attempt_login() unset password_hash by hand, so the ordinary login path was
+ * fine — but that made it a convention rather than a rule, and
+ * settings/impersonate.php did `SELECT u.*` straight into $_SESSION['user'],
+ * parking the target's bcrypt hash in the session store. Session files sit on
+ * disk in the open on a default XAMPP install, get copied into backups, and are
+ * dumped wholesale by any var_dump of the session — none of which should ever
+ * be able to yield a password hash to crack offline.
+ *
+ * Every path into the session now goes through here, so this cannot be
+ * forgotten by the next caller.
+ */
+function session_safe_user(array $user): array {
+    unset($user['password_hash']);
+    return $user;
 }
 
 function login_user(array $user): void {
     session_regenerate_id(true);
+    $user                    = session_safe_user($user);
     $_SESSION['user_id']     = $user['id'];
     $_SESSION['user']        = $user;
     $_SESSION['last_active'] = time();
@@ -57,6 +139,9 @@ function attempt_login(string $email, string $password): ?array {
         $role = $pdo->prepare('SELECT name FROM roles WHERE id = ?');
         $role->execute([$user['role_id']]);
         $user['role_name'] = $role->fetchColumn();
+        // Absent on installs that predate the column — treat "unknown" as "no
+        // forced change" rather than locking everyone out of every page.
+        $user['must_change_password'] = (int)($user['must_change_password'] ?? 0);
         unset($user['password_hash']);
         return $user;
     }

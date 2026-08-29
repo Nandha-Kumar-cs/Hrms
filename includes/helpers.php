@@ -4,8 +4,154 @@
  */
 
 function redirect(string $url): void {
-    header('Location: ' . $url);
+    // Several pages include header.php BEFORE their require_permission() call
+    // (dashboard index.php:18-19 among them). header.php emits ~43KB, which
+    // overruns output_buffering, so the headers are already on the wire by the
+    // time a guard fires — header('Location:') is then a no-op and the visitor
+    // simply keeps the page they should have been redirected away from.
+    //
+    // This silently defeated BOTH the forced password change (audit H-3) and
+    // the session-timeout redirect. Falling back to a client-side redirect
+    // makes the navigation happen either way.
+    if (!headers_sent()) {
+        header('Location: ' . $url);
+    } else {
+        echo '<meta http-equiv="refresh" content="0;url=' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '">';
+        echo '<script>location.replace(' . json_encode($url) . ');</script>';
+    }
     exit;
+}
+
+/**
+ * Add a column to a table if it is not there yet, and report whether the table
+ * now has it. Idempotent and safe to call on every relevant request.
+ *
+ * The project has no migration runner — schema changes ship as lazy DDL at the
+ * point of use (see the login_attempts table in login.php). This helper gives
+ * the same treatment to added COLUMNS, so a change like users.must_change_password
+ * (security audit H-3) reaches existing installs instead of only fresh ones.
+ *
+ * Result is cached per request; a failed ALTER (e.g. a read-only DB user) returns
+ * false so callers can degrade instead of fataling.
+ */
+/**
+ * Statuses that mean the employee actually PUNCHED IN, and therefore need a
+ * punch-out before the day counts as worked (security audit M-18).
+ *
+ * The no-checkout rule listed only On Time and Late, so it converted those to
+ * Absent while leaving Half Day alone. Because status is classified by check-in
+ * time FIRST, that inverted pay fairness: a 09:00 arrival with no punch-out was
+ * On Time -> Absent and paid nothing, while an 11:30 arrival with no punch-out
+ * stayed Half Day and was paid half. The later you turned up, the more you got.
+ *
+ * All three are check-in-derived and are treated identically. OD, Comp Off,
+ * On Leave and Holiday are deliberately excluded: no punch is expected on those.
+ *
+ * Single source of truth — the write paths (attendance/mark.php,
+ * includes/attendance_resync.php) and the counting paths (attendance/index.php,
+ * attendance/report.php) all read this, so the rule cannot drift between the
+ * status that is stored and the status that is displayed.
+ */
+function attendance_checkin_statuses(): array {
+    return ['On Time', 'Late', 'Half Day'];
+}
+
+function db_ensure_column(string $table, string $column, string $definition): bool {
+    static $cache = [];
+    $key = $table . '.' . $column;
+    if (isset($cache[$key])) return $cache[$key];
+    try {
+        $s = db()->prepare(
+            'SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?'
+        );
+        $s->execute([$table, $column]);
+        if ((int)$s->fetchColumn() > 0) return $cache[$key] = true;
+        // Identifiers cannot be bound — they are caller-supplied literals, never
+        // request input, but validate anyway so this can never become an injection.
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $table) || !preg_match('/^[A-Za-z0-9_]+$/', $column)) {
+            return $cache[$key] = false;
+        }
+        db()->exec("ALTER TABLE `$table` ADD COLUMN `$column` $definition");
+        return $cache[$key] = true;
+    } catch (Throwable $e) {
+        return $cache[$key] = false;
+    }
+}
+
+/**
+ * URL for a file under uploads/ or storage/, routed through the authenticated
+ * gateway (file.php). Those directories deny direct web access, so this is the
+ * only way to link one — see the header of file.php (security audit H-2).
+ *
+ * $relPath is project-relative, exactly as stored in the DB, e.g.
+ *   uploads/employee_docs/12/doc_abc.pdf   |   storage/entities/sign_x.jpeg
+ *
+ * The result is already URL-encoded; do NOT wrap it in h() inside an attribute
+ * beyond normal escaping of the surrounding markup.
+ */
+function file_url(string $relPath, bool $download = false): string {
+    $rel = ltrim(str_replace(chr(92), '/', $relPath), '/');
+    return BASE_URL . '/file.php?p=' . rawurlencode($rel) . ($download ? '&dl=1' : '');
+}
+
+/**
+ * Keep uploads/ and storage/ closed to direct web access.
+ *
+ * Both directories hold employee PII (documents, photos, leave attachments) and
+ * the authorised-signatory signature images. They are served ONLY through
+ * file.php, which applies the owning module's permission plus
+ * require_own_employee() — see the header of file.php (security audit H-2).
+ *
+ * This is written at runtime rather than shipped as a file because the
+ * deployment module cannot install it: uploads/ and storage/ are on
+ * deploy_protected_paths(), so a delta package silently skips them and the fix
+ * would arrive half-applied on every deployed server. The deployer hardens its
+ * own storage area the same way — see deploy_harden_dir().
+ *
+ * Self-healing: the marker line is what is checked, so a file that is missing,
+ * truncated, or reverted to the old execute-only rules is rewritten.
+ */
+function hrms_harden_data_dirs(): void
+{
+    static $done = false;
+    if ($done) return;
+    $done = true;
+
+    $marker = '# hrms-data-dir-hardening v1';
+    $body = $marker . "\n"
+        . "# Direct web access is DENIED. These files are employee PII and signature\n"
+        . "# images; every read goes through /file.php, which checks the permission and\n"
+        . "# the record's owner (security audit H-2).\n"
+        . "# Managed by hrms_harden_data_dirs() in includes/helpers.php — edits are\n"
+        . "# overwritten on the next request.\n"
+        . "<IfModule mod_authz_core.c>\n"
+        . "    Require all denied\n"
+        . "</IfModule>\n"
+        . "<IfModule !mod_authz_core.c>\n"
+        . "    Order allow,deny\n"
+        . "    Deny from all\n"
+        . "</IfModule>\n"
+        . "Options -Indexes\n"
+        . "# Belt and braces: never executable, even if the deny above is overridden.\n"
+        . "php_flag engine off\n"
+        . "RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .phar\n"
+        . "RemoveType .php .phtml .php3 .php4 .php5 .php7 .phar\n";
+
+    foreach (['uploads', 'storage'] as $dir) {
+        $path = BASE_PATH . '/' . $dir;
+        if (!is_dir($path)) continue;
+        $ht = $path . '/.htaccess';
+        if (is_file($ht) && strpos((string) @file_get_contents($ht), $marker) !== false) continue;
+        @file_put_contents($ht, $body);
+        // For servers that ignore .htaccess entirely (IIS, or AllowOverride None).
+        if (!is_file($path . '/web.config')) {
+            @file_put_contents($path . '/web.config',
+                "<?xml version=\"1.0\"?>\n<configuration><system.webServer><security>"
+              . "<authorization><deny users=\"*\" /></authorization></security>"
+              . "</system.webServer></configuration>\n");
+        }
+    }
 }
 
 function h(?string $str): string {
@@ -53,10 +199,175 @@ function tenure(string $joinDate): string {
     return implode(' ', $parts) ?: 'New';
 }
 
+/**
+ * Hand out the next value of a named counter — atomically (security audit L-5).
+ *
+ * Reference numbers were minted with COUNT(*)+1 (letters) and MAX(...)+1
+ * (employee codes). Both are read-then-write races: two saves that overlap read
+ * the same figure and produce the same reference. COUNT(*) is worse still —
+ * deleting any row lowers the count, so the next reference DUPLICATES one that
+ * already exists, with no concurrency needed at all.
+ *
+ * A counter row fixes both. The INSERT ... ON DUPLICATE KEY UPDATE below is a
+ * single statement, so MySQL serialises it; LAST_INSERT_ID(expr) both stores and
+ * returns the new value, so the number this connection gets is its own and no
+ * other request can be handed the same one. The counter only ever goes up, so
+ * deleting rows can never rewind it.
+ *
+ * $seed supplies the starting point the first time a counter is used, so
+ * numbering continues from the existing data rather than restarting at 1.
+ */
+function next_sequence(string $name, ?callable $seed = null): int {
+    $db = db();
+
+    // DDL implicitly COMMITs, so never create the table mid-transaction (M-5).
+    static $ready = false;
+    if (!$ready && !$db->inTransaction()) {
+        $db->exec('CREATE TABLE IF NOT EXISTS app_sequences (
+            seq_name VARCHAR(64) NOT NULL PRIMARY KEY,
+            next_val BIGINT UNSIGNED NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+        $ready = true;
+    }
+
+    $start = $seed ? (int) $seed() : 0;
+    $st = $db->prepare(
+        'INSERT INTO app_sequences (seq_name, next_val) VALUES (:n, LAST_INSERT_ID(:s + 1))
+         ON DUPLICATE KEY UPDATE next_val = LAST_INSERT_ID(next_val + 1)'
+    );
+    $st->execute([':n' => $name, ':s' => $start]);
+    return (int) $db->lastInsertId();
+}
+
+/**
+ * The next letter reference, e.g. HR/I/2026/0014 (security audit L-5).
+ *
+ * Both modules/letters/create.php and modules/increments/save.php minted these
+ * with COUNT(*)+1 against the same table, so they could collide with each other
+ * as well as with themselves. The numeric part is a single company-wide series,
+ * matching how the existing references read.
+ */
+/**
+ * Add a UNIQUE index if it is missing (security audit L-5).
+ *
+ * Same lazy pattern as db_ensure_column(): this project has no migration runner,
+ * so schema catches up on first use. Fails quietly — on a database that already
+ * holds duplicates the ALTER cannot succeed, and refusing to load the page over
+ * it would be worse than running without the index. The generator no longer
+ * produces duplicates either way; this is the backstop for anything that
+ * bypasses it.
+ */
+/**
+ * The one definition of employee_benefits (security audit L-7 follow-up).
+ *
+ * modules/benefits/index.php and modules/benefits/save.php each carried their own
+ * CREATE TABLE IF NOT EXISTS, and they DISAGREED — 8 columns versus 16. Whichever
+ * page a user opened first on a fresh install won permanently, because the second
+ * CREATE is then a no-op. When the list page won, the table had no start_date,
+ * end_date, frequency or payment_mode, so payroll's benefits query failed with
+ * "Unknown column" inside a catch-all and NO benefit was ever paid, on any slip,
+ * with nothing on screen to say so.
+ *
+ * One definition now, plus a column backfill so an install that already got the
+ * stunted table repairs itself rather than staying broken for ever.
+ */
+function benefits_table_ready(): void
+{
+    static $done = false;
+    if ($done) return;
+    // DDL implicitly COMMITs — never run it inside someone's transaction (M-5).
+    if (db()->inTransaction()) return;
+    $done = true;
+
+    // Heredoc: the ENUM lists are full of quotes, and escaping them inside a
+    // PHP string literal is exactly how the two definitions drifted apart.
+    $sql = <<<SQL
+CREATE TABLE IF NOT EXISTS employee_benefits (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    benefit_fund_type_id INT NULL,
+    frequency ENUM('weekly','fortnightly','monthly','quarterly','half_yearly','annual') NOT NULL DEFAULT 'monthly',
+    start_date DATE NULL,
+    end_date DATE NULL,
+    benefit_name VARCHAR(255) NULL,
+    fund_type VARCHAR(100) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+    effective_month DATE NOT NULL,
+    status ENUM('active','inactive') DEFAULT 'active',
+    payment_mode ENUM('cash','cashless') NOT NULL DEFAULT 'cash',
+    added_by INT NULL,
+    description TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (employee_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL;
+    db()->exec($sql);
+
+    // Repair a table created by the old 8-column definition in benefits/index.php.
+    db_ensure_column('employee_benefits', 'benefit_fund_type_id', 'INT NULL');
+    db_ensure_column('employee_benefits', 'frequency',
+        "ENUM('weekly','fortnightly','monthly','quarterly','half_yearly','annual') NOT NULL DEFAULT 'monthly'");
+    db_ensure_column('employee_benefits', 'start_date',   'DATE NULL');
+    db_ensure_column('employee_benefits', 'end_date',     'DATE NULL');
+    db_ensure_column('employee_benefits', 'benefit_name', 'VARCHAR(255) NULL');
+    db_ensure_column('employee_benefits', 'payment_mode', "ENUM('cash','cashless') NOT NULL DEFAULT 'cash'");
+    db_ensure_column('employee_benefits', 'added_by',     'INT NULL');
+}
+
+function db_ensure_unique_index(string $table, string $index, string $columns): bool {
+    static $done = [];
+    $key = $table . '.' . $index;
+    if (isset($done[$key])) return $done[$key];
+    try {
+        $db = db();
+        if ($db->inTransaction()) return false;          // DDL implicitly COMMITs (M-5)
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $table) || !preg_match('/^[A-Za-z0-9_]+$/', $index)) {
+            return $done[$key] = false;
+        }
+        $s = $db->prepare(
+            'SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?'
+        );
+        $s->execute([$table, $index]);
+        if ((int) $s->fetchColumn() > 0) return $done[$key] = true;
+        $db->exec("ALTER TABLE `$table` ADD UNIQUE KEY `$index` ($columns)");
+        return $done[$key] = true;
+    } catch (Throwable $e) {
+        error_log("db_ensure_unique_index($key) skipped: " . $e->getMessage());
+        return $done[$key] = false;
+    }
+}
+
+function next_letter_reference(string $typeCode): string {
+    db_ensure_unique_index('letters', 'uk_letters_reference', '`reference`');
+    $n = next_sequence('letter_reference', static function (): int {
+        // Continue from the highest number already issued, whatever its prefix.
+        return (int) db()->query(
+            'SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(reference, "/", -1) AS UNSIGNED)), 0) FROM letters'
+        )->fetchColumn();
+    });
+    return 'HR/' . $typeCode . '/' . date('Y') . '/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+}
+
+/**
+ * Auto-generated employee code (security audit L-5).
+ *
+ * MAX(...)+1 was a read-then-write race, and deleting the highest-numbered
+ * employee made the next code REUSE a retired one — which then attaches new
+ * records to an identifier a former employee's history already used. The counter
+ * is seeded from the same MAX so the first code issued is unchanged, and only
+ * ever climbs from there.
+ *
+ * employees.employee_id is UNIQUE, so a collision would have failed loudly
+ * rather than silently duplicated — but it would still have failed the save.
+ */
 function generate_employee_id(): string {
-    $stmt = db()->query('SELECT MAX(CAST(SUBSTRING(employee_id, 4) AS UNSIGNED)) as max_id FROM employees');
-    $max = (int) $stmt->fetchColumn();
-    return 'EMP' . str_pad($max + 1, 4, '0', STR_PAD_LEFT);
+    $n = next_sequence('employee_code', static function (): int {
+        return (int) db()->query(
+            'SELECT COALESCE(MAX(CAST(SUBSTRING(employee_id, 4) AS UNSIGNED)), 0) FROM employees'
+        )->fetchColumn();
+    });
+    return 'EMP' . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
 }
 
 function sanitize(mixed $input): string {
@@ -84,23 +395,64 @@ function paginate(int $total, int $perPage, int $current): array {
             'offset' => ($current - 1) * $perPage];
 }
 
-function upload_file(array $file, string $dest, string $prefix = ''): ?string {
-    if ($file['error'] !== UPLOAD_ERR_OK) return null;
-    if ($file['size'] > UPLOAD_MAX_MB * 1024 * 1024) return null;
-    $finfo = new finfo(FILEINFO_MIME_TYPE);
-    $mime  = $finfo->file($file['tmp_name']);
-    if (!in_array($mime, ALLOWED_DOC_TYPES, true)) return null;
-    // SECURITY: derive the extension from the VERIFIED MIME type, never from the
-    // user-supplied filename — prevents an image-polyglot being saved as .php.
-    $extByMime = [
+/** MIME → extension for ordinary uploads (photos, logos, scans). */
+function upload_safe_ext_map(): array {
+    return [
         'application/pdf' => 'pdf',
         'image/jpeg'      => 'jpg',
         'image/png'       => 'png',
         'image/gif'       => 'gif',
         'image/webp'      => 'webp',
     ];
+}
+
+/**
+ * MIME → extension for EMPLOYEE DOCUMENTS, which legitimately include Word files
+ * (security audit L-2).
+ *
+ * finfo reports a modern .docx by its real Open-XML type. A legacy .doc is an
+ * OLE2 compound file, which most magic databases report as application/CDFV2 — a
+ * container shared with .xls and .ppt, so accepting it means accepting any OLE2
+ * document rather than specifically a Word one. That is still far stronger than
+ * trusting the filename, but it is the loosest entry here: delete the two legacy
+ * rows to refuse .doc outright.
+ */
+function upload_document_ext_map(): array {
+    return upload_safe_ext_map() + [
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+        'application/msword' => 'doc',
+        'application/CDFV2'  => 'doc',
+    ];
+}
+
+/**
+ * Store an uploaded file safely.
+ *
+ * $extMap   — MIME → extension allowlist; defaults to upload_safe_ext_map().
+ * $maxBytes — size cap; defaults to UPLOAD_MAX_MB.
+ * Both are optional, so existing callers are unaffected (security audit L-2).
+ */
+function upload_file(array $file, string $dest, string $prefix = '',
+                     ?array $extMap = null, ?int $maxBytes = null): ?string {
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) return null;
+
+    // The temp path must be one PHP itself received. move_uploaded_file() checks
+    // this too, but doing it up front means nothing in between can be pointed at
+    // an arbitrary server path by a forged $_FILES array.
+    if (empty($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) return null;
+
+    $cap = $maxBytes ?? (UPLOAD_MAX_MB * 1024 * 1024);
+    if (($file['size'] ?? 0) > $cap) return null;
+
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime  = $finfo->file($file['tmp_name']);
+
+    // SECURITY: derive the extension from the VERIFIED MIME type, never from the
+    // user-supplied filename — prevents an image-polyglot being saved as .php.
+    $extByMime = $extMap ?? upload_safe_ext_map();
     $ext = $extByMime[$mime] ?? null;
-    if ($ext === null) return null;                       // MIME not in safe map
+    if ($ext === null) return null;                       // MIME not in the safe map
+
     $name = $prefix . uniqid() . '.' . $ext;
     $path = rtrim($dest, '/') . '/' . $name;
     if (!is_dir($dest)) mkdir($dest, 0755, true);
@@ -621,6 +973,117 @@ function attendance_day_calc(int $netMin, float $perDay): array {
     return ['worked_h' => $workedH, 'status' => 'short', 'non_working_h' => $nonWorking, 'deduction' => round($nonWorking * $perHour, 2)];
 }
 
+/**
+ * SANDWICH LEAVE lookups for the attendance screens.
+ *
+ * Delegates to PayrollCalculator so there is exactly ONE definition of the rule —
+ * a second copy here would drift from the slip the first time either changed.
+ * Results are memoised per request: a month grid asks once per employee row and
+ * would otherwise re-run the whole scan every time.
+ *
+ * @param  int[] $empIds
+ * @return array<int, array<int, array{before:string,after:string,dates:string[]}>>
+ */
+function attendance_sandwich_spans(array $empIds, int $month, int $year): array {
+    static $cache = [];
+
+    $empIds = array_values(array_unique(array_map('intval', $empIds)));
+    if (!$empIds) return [];
+
+    $key     = $year . '-' . $month;
+    $missing = array_values(array_filter($empIds, fn($id) => !isset($cache[$key][$id])));
+    if ($missing) {
+        require_once __DIR__ . '/PayrollCalculator.php';
+        try {
+            $bulk = (new PayrollCalculator(db()))->sandwichSpansBulk($missing, $month, $year);
+        } catch (Throwable $e) {
+            $bulk = [];   // never let a badge break the attendance page
+        }
+        foreach ($missing as $id) $cache[$key][$id] = $bulk[$id] ?? [];
+    }
+
+    $out = [];
+    foreach ($empIds as $id) $out[$id] = $cache[$key][$id] ?? [];
+    return $out;
+}
+
+/**
+ * The company-leave days CHARGED as LOP by a sandwich.
+ *
+ * @return array<int, array<string,bool>> employee id => ['Y-m-d' => true]
+ */
+function attendance_sandwich_map(array $empIds, int $month, int $year): array {
+    $out = [];
+    foreach (attendance_sandwich_spans($empIds, $month, $year) as $id => $spans) {
+        $out[$id] = [];
+        foreach ($spans as $span) {
+            foreach ($span['dates'] as $ds) $out[$id][$ds] = true;
+        }
+    }
+    return $out;
+}
+
+/**
+ * The LEAVE days that CLOSED a sandwich — the working day before and after the
+ * offs. This is what the month grids badge: a non-working day is drawn as one
+ * cell spanning every employee row, so the charged offs have nowhere to carry a
+ * per-employee marker, while the leave days on either side do.
+ *
+ * Each date maps to the number of company-leave days that leave helped charge,
+ * so a tooltip can say how long the sandwich ran.
+ *
+ * @return array<int, array<string,int>> employee id => ['Y-m-d' => offs charged]
+ */
+function attendance_sandwich_leave_map(array $empIds, int $month, int $year): array {
+    $out = [];
+    foreach (attendance_sandwich_spans($empIds, $month, $year) as $id => $spans) {
+        $out[$id] = [];
+        foreach ($spans as $span) {
+            $n = count($span['dates']);
+            foreach (['before', 'after'] as $edge) {
+                $ds = $span[$edge];
+                $out[$id][$ds] = max($out[$id][$ds] ?? 0, $n);
+            }
+        }
+    }
+    return $out;
+}
+
+/**
+ * EVERY date a sandwich occupies — the two leave days that closed it AND the
+ * company leaves in between. This is what the attendance report's SL column
+ * counts: "leave Sat + off Sun + leave Mon" reads as 3 days, not 1.
+ *
+ * Deduped, so a leave day that closes two sandwiches at once (absent Fri, off
+ * Sat/Sun, absent Mon, holiday Tue, absent Wed) is counted once, not twice.
+ *
+ * Absences listed here are excluded from the report's A column — a day shown as
+ * SL must not also be counted as a plain absence, or the two columns double-count
+ * it. A + SL then reconciles exactly with the slip's LOP Days.
+ *
+ * @return array<int, array<string,bool>> employee id => ['Y-m-d' => true]
+ */
+function attendance_sandwich_all_dates(array $empIds, int $month, int $year): array {
+    $out = [];
+    foreach (attendance_sandwich_spans($empIds, $month, $year) as $id => $spans) {
+        $out[$id] = [];
+        foreach ($spans as $span) {
+            $out[$id][$span['before']] = true;
+            $out[$id][$span['after']]  = true;
+            foreach ($span['dates'] as $ds) $out[$id][$ds] = true;
+        }
+    }
+    return $out;
+}
+
+/** True when $date is a company-leave day charged as LOP by a sandwich. */
+function attendance_is_sandwich(int $empId, string $date): bool {
+    $ts = strtotime($date);
+    if (!$ts) return false;
+    $map = attendance_sandwich_map([$empId], (int)date('n', $ts), (int)date('Y', $ts));
+    return isset($map[$empId][date('Y-m-d', $ts)]);
+}
+
 /** Half-day check-in cutoff (minutes since midnight): office start + 2 hours (e.g. 09:00 → 11:00). */
 function half_day_checkin_mins(): int {
     $osM = function_exists('setting_office_start_mins') ? (int) setting_office_start_mins() : 9 * 60;
@@ -641,7 +1104,8 @@ function half_day_checkin_mins(): int {
  * due to a LATE check-in (already covered by the late penalty) or breaks — so charging
  * short hours too would double-count the lateness. Such days get full credit + late only.
  *
- * In the attendance report, 'half' and 'short' show as "H"; 'present'/'full' show normally.
+ * In the attendance report 'half' shows as "H"; 'short' and a deducted 'present'
+ * show as "EO" (Early Out); 'full' shows normally.
  * $inMin / $outMin / $officeEndMin may be null (then the early-leave test is skipped).
  *
  * @return array{status:string,worked_h:float,ded_days:float,late:bool}
@@ -657,27 +1121,30 @@ function attendance_classify(int $netMin, ?int $inMin, int $officeStartMin, int 
     // the legacy start+2h rule (~11:00 when start = 09:00).
     $cutoff        = $halfCutoffMin ?? ($officeStartMin + 120);
 
-    // Rule (highest precedence): net < 4h → "short hours" (no late). They could not
-    // complete even a half day, so salary is pro-rated on the hours actually worked —
-    // regardless of check-in time.
-    if ($netMin < $HALF_MIN) {
-        return ['status' => 'short', 'worked_h' => round($workedH, 2),
-                'ded_days' => $shortfallDays, 'late' => false];
-    }
-    // Rule: check-in at/after the cutoff (~11:00) with ≥ 4h worked → half day
-    // (no late), ≥ ½ day off. 'reason' => late_arrival: the employee turned up
-    // too late to be credited a full day. Payroll prices THIS case off BASIC.
-    if ($inMin !== null && $inMin >= $cutoff) {
-        return ['status' => 'half', 'worked_h' => round($workedH, 2),
-                'ded_days' => max(0.5, $shortfallDays), 'late' => false,
-                'reason' => 'late_arrival'];
-    }
-    // Rule: net = 4h exactly → half day (no late), ½-day deduction. This is a
-    // genuine half day worked/availed, so payroll prices it off CTC as usual.
+    // Rule (highest precedence): net = 4h EXACTLY → the half day. Tested before
+    // everything else so it holds even for a late arrival: 4 hours worked is half
+    // a day however it came about. ded_days = (8−4)/8 = 0.5 exactly.
     if ($netMin === $HALF_MIN) {
         return ['status' => 'half', 'worked_h' => round($workedH, 2),
                 'ded_days' => $shortfallDays, 'late' => false,
                 'reason' => 'half_worked'];
+    }
+    // Rule: net < 4h → "short hours" (no late). They could not complete even a
+    // half day, so salary is pro-rated on the hours actually worked — regardless
+    // of check-in time.
+    if ($netMin < $HALF_MIN) {
+        return ['status' => 'short', 'worked_h' => round($workedH, 2),
+                'ded_days' => $shortfallDays, 'late' => false];
+    }
+    // Rule: check-in at/after the cutoff (~11:00) → HALF DAY (no late), with a
+    // ½-day floor on the deduction. Turning up that late cannot earn a full day
+    // however long the employee then stays, so this sits above the "stayed till
+    // office end" rule below — an 11:07 arrival leaving at 18:15 is half a day,
+    // not a full day docked for the hours missed.
+    if ($inMin !== null && $inMin >= $cutoff) {
+        return ['status' => 'half', 'worked_h' => round($workedH, 2),
+                'ded_days' => max(0.5, $shortfallDays), 'late' => false,
+                'reason' => 'late_arrival'];
     }
     // net > 4h, on-time-ish.
     $lateElig  = ($inMin  !== null && $inMin  > $officeStartMin + $graceMin);

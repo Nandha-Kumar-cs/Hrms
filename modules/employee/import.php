@@ -38,6 +38,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     redirect(BASE_URL . '/modules/employee/index.php');
 }
 
+// Imported accounts are created with a random password the holder cannot know,
+// so they must be reset before use (security audit H-3). Make sure the column
+// that enforces that exists on installs predating it.
+db_ensure_column('users', 'must_change_password', 'TINYINT(1) NOT NULL DEFAULT 0');
+$accountsCreated = 0;
+
 $file = $_FILES['import_file'] ?? null;
 if (!$file || $file['error'] !== UPLOAD_ERR_OK || empty($file['name'])) {
     flash('error', 'No file uploaded or upload failed. Please try again.');
@@ -232,10 +238,15 @@ foreach ($rows as $i => $row) {
         $uChk = $db->prepare('SELECT 1 FROM users WHERE email = ? LIMIT 1');
         $uChk->execute([$email]);
         if ($emailProvided && !$uChk->fetchColumn()) {
-            $tmpPass = password_hash('Hrms@' . substr($newCode, -4), PASSWORD_BCRYPT);
+            // The password must NOT be derivable from anything printed on an ID
+            // card or shown in the UI. It used to be 'Hrms@' . last-4-of-code, so
+            // importing 200 staff created 200 guessable live accounts (security
+            // audit H-3). A random secret nobody knows, plus must_change_password,
+            // means the account can only be entered via a deliberate reset.
+            $tmpPass = password_hash(bin2hex(random_bytes(18)), PASSWORD_BCRYPT);
             $db->prepare(
-                'INSERT INTO users (email, name, password_hash, role_id, employee_id, is_active)
-                 VALUES (:email, :name, :pass, :role, :emp_id, 1)'
+                'INSERT INTO users (email, name, password_hash, role_id, employee_id, is_active, must_change_password)
+                 VALUES (:email, :name, :pass, :role, :emp_id, 1, 1)'
             )->execute([
                 ':email'  => $email,
                 ':name'   => $name,
@@ -243,6 +254,7 @@ foreach ($rows as $i => $row) {
                 ':role'   => $empRoleId,
                 ':emp_id' => $newId,
             ]);
+            $accountsCreated++;
         }
         $inserted++;
     }
@@ -250,6 +262,10 @@ foreach ($rows as $i => $row) {
 
 // ── Flash result ──────────────────────────────────────────────────────────────
 $summary = "Import complete: $inserted inserted, $updated updated, $skipped skipped.";
+if ($accountsCreated) {
+    $summary .= " $accountsCreated login account(s) created with a random password —"
+              . ' each one must be given a password via Settings → Users before it can be used.';
+}
 if ($issues) {
     $summary .= ' Issues: ' . implode(' | ', array_slice($issues, 0, 5));
     if (count($issues) > 5) $summary .= ' (and ' . (count($issues) - 5) . ' more)';

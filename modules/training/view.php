@@ -35,7 +35,7 @@ include '../../includes/header.php';
         <p class="page-subtitle"><?= h($course['training_type']) ?> &mdash; <?= $course['is_mandatory'] ? '<span class="pill pill-danger">Mandatory</span>' : 'Optional' ?></p>
     </div>
     <div class="page-actions">
-        <?php if (can('training', 'edit')): ?>
+        <?php if (can('training', 'manage')): ?>
             <a href="enroll.php?course_id=<?= $id ?>" class="btn btn-primary" data-key="E"><u>E</u>nroll</a>
         <?php endif; ?>
         <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>
@@ -101,7 +101,7 @@ include '../../includes/header.php';
                 <table class="table datatable">
                     <thead>
                         <tr><th>Employee</th><th>Department</th><th>Role</th><th>Status</th><th>Score</th><th>Completed</th>
-                        <?php if (can('training', 'edit')): ?><th>Action</th><?php endif; ?></tr>
+                        <?php if (can('training', 'manage')): ?><th>Action</th><?php endif; ?></tr>
                     </thead>
                     <tbody>
                         <?php foreach ($enrollments as $en):
@@ -114,7 +114,7 @@ include '../../includes/header.php';
                             <td><span class="pill <?= $sc[$en['status']]??'' ?>"><?= $en['status'] ?></span></td>
                             <td><?= $en['score'] !== null ? $en['score'].'%' : '—' ?></td>
                             <td><?= $en['completion_date'] ? date_fmt($en['completion_date']) : '—' ?></td>
-                            <?php if (can('training', 'edit')): ?>
+                            <?php if (can('training', 'manage')): ?>
                             <td>
                                 <button onclick="updateStatus(<?= $en['id'] ?>)" class="btn btn-xs btn-primary">Update</button>
                             </td>

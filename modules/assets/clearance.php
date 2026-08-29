@@ -14,7 +14,11 @@ $selfUrl = BASE_URL . '/modules/assets/clearance.php' . ($emp_id ? '?emp_id=' . 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['return_asset'])) {
     if (!csrf_verify()) { flash('error', 'Invalid request'); redirect($selfUrl); }
     // Re-check the action permission server-side (the UI only hides the button).
-    if (!can('assets', 'return') && !can('assets', 'edit')) {
+    // 'assets.edit' is not a seeded permission, so the second clause was always
+    // false and the check already reduced to assets.return (security audit H-5).
+    // Removed rather than remapped: substituting a real action here would WIDEN
+    // who may return assets, which is a policy decision, not a bug fix.
+    if (!can('assets', 'return')) {
         flash('error', 'You are not allowed to return assets.'); redirect($selfUrl);
     }
     $asgn_id = (int)$_POST['assignment_id'];

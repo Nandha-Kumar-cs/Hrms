@@ -1,7 +1,11 @@
 <?php
 $page_title = 'Promotion History';
-require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+// Permission BEFORE any output: header.php emits <!DOCTYPE>, after which
+// http_response_code(403) is ignored and 403.php lands mid-page
+// (security audit L-1).
 require_permission('promotions', 'view');
+require_once __DIR__ . '/../../includes/header.php';
 
 $db = db();
 

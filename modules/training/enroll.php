@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('training', 'edit');
+require_permission('training', 'enroll');
 
 // Handle enrollment status update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_enrollment'])) {

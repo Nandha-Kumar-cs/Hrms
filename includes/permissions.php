@@ -88,18 +88,120 @@ function can_any(string $module): bool {
     return $cache[$key] = $ok;
 }
 
+/**
+ * Role names that confer ADMINISTRATOR powers — impersonating other users
+ * (modules/settings/impersonate.php) and deleting issued letters
+ * (modules/letters/delete.php).
+ *
+ * Single source of truth. is_admin(), can_assign_role() and the role
+ * create/rename guards all read this one list, so a name added here is
+ * privileged AND protected everywhere at once. They used to test the literal
+ * string 'Super Admin' independently, which let anyone holding users.create or
+ * roles.edit mint an account with the "Admin" role and gain impersonation
+ * (security audit H-4).
+ */
+function admin_role_names(): array {
+    return ['super admin', 'admin'];
+}
+
+/** Whether a ROLE NAME grants administrator powers. */
+function is_admin_role_name(string $roleName): bool {
+    return in_array(strtolower(trim($roleName)), admin_role_names(), true);
+}
+
 // True for Super Admin / Admin roles (privileged override).
 function is_admin(): bool {
     $user = current_user();
     if (!$user) return false;
-    $role = strtolower($user['role_name'] ?? '');
-    return $role === 'super admin' || $role === 'admin';
+    return is_admin_role_name((string)($user['role_name'] ?? ''));
 }
 
 /** True only for the Super Admin role (strict). */
 function is_super_admin(): bool {
     $user = current_user();
     return $user && ($user['role_name'] ?? '') === 'Super Admin';
+}
+
+/**
+ * Guard the roles.self_scope flag (security audit M-17).
+ *
+ * self_scope is what confines a user to their OWN employee record — it drives
+ * roughly two dozen visibility checks: the employee list and profiles, payroll
+ * slips and PDFs, attendance, leaves, documents, assets, ID cards, and the
+ * file.php download gateway. Losing it means seeing everyone's salary.
+ *
+ * Permissions on the role screens are filtered through
+ * filter_assignable_permission_ids(), so nobody can grant reach they do not have.
+ * self_scope was a plain checkbox with no such filter, which left the whole
+ * boundary one POST away: a self-scoped user holding roles.manage could open
+ * their OWN role, untick the box, and immediately see the entire company.
+ *
+ * Same rule as permissions, applied to scoping: you cannot give a role more
+ * reach than you have yourself. A self-scoped actor may therefore never clear
+ * the flag — on their own role or anyone else's. Tightening it (0 → 1) is still
+ * allowed, mirroring the fact that they may also REMOVE permissions.
+ *
+ * Returns an error message, or null when the change is permitted.
+ */
+function self_scope_change_error(int $requested, int $current): ?string {
+    if ($requested === $current) return null;   // nothing is changing
+    if ($requested === 1)        return null;   // tightening reduces access
+    if (!is_self_scoped())       return null;   // actor already sees everything
+    return 'You are not allowed to switch off data scoping — your own access is '
+         . 'limited to your employee record, so you cannot grant a role wider access than you hold.';
+}
+
+/**
+ * Guard a Super Admin account against being locked out (security audit M-12).
+ *
+ * settings/users.php refused to DELETE a Super Admin but left the two other ways
+ * of stripping one unguarded:
+ *   • the status toggle, which only ever checked "is this me?"; and
+ *   • the edit form, which could clear is_active, or move the account to an
+ *     ordinary role — can_assign_role() vets the role being GRANTED and never
+ *     the one being taken away, so demotion sailed through.
+ * Any account holding users.edit could therefore switch off every Super Admin.
+ * On an install with a single Super Admin that is a one-click total lockout,
+ * recoverable only by direct database access.
+ *
+ * Two rules:
+ *   1. Only a Super Admin may deactivate or re-role another Super Admin.
+ *   2. Nobody — Super Admin included — may remove the LAST ACTIVE Super Admin.
+ *
+ * $newRoleId / $newActive are the values about to be written; pass null for
+ * "unchanged". Returns an error message, or null when the change is allowed.
+ */
+function super_admin_lockout_error(PDO $db, int $targetId, ?int $newRoleId, ?int $newActive): ?string {
+    $t = $db->prepare('SELECT r.name AS role_name FROM users u LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?');
+    $t->execute([$targetId]);
+    $row = $t->fetch(PDO::FETCH_ASSOC);
+    if (!$row || (string)($row['role_name'] ?? '') !== 'Super Admin') return null;  // not a Super Admin
+
+    // Does the pending change actually take Super Admin away?
+    $losesActive = $newActive !== null && (int)$newActive === 0;
+    $losesRole   = false;
+    if ($newRoleId !== null) {
+        $r = $db->prepare('SELECT name FROM roles WHERE id = ?');
+        $r->execute([$newRoleId]);
+        $newName = $r->fetchColumn();
+        // Unknown role id → treat as a demotion and refuse; fail closed.
+        $losesRole = ($newName === false) || (string)$newName !== 'Super Admin';
+    }
+    if (!$losesActive && !$losesRole) return null;
+
+    if (!is_super_admin()) {
+        return 'Only a Super Admin can deactivate or change the role of a Super Admin account.';
+    }
+
+    $c = $db->prepare(
+        'SELECT COUNT(*) FROM users u JOIN roles r ON r.id = u.role_id
+          WHERE r.name = "Super Admin" AND u.is_active = 1 AND u.id <> ?'
+    );
+    $c->execute([$targetId]);
+    if ((int)$c->fetchColumn() === 0) {
+        return 'This is the last active Super Admin. Activate or promote another Super Admin first.';
+    }
+    return null;
 }
 
 /**
@@ -135,17 +237,24 @@ function filter_assignable_permission_ids(array $requested): array {
 }
 
 /**
- * Whether the actor may assign the given role to a user. Only a Super Admin may
- * assign the Super Admin role (prevents non-admins minting admin accounts).
+ * Whether the actor may assign the given role to a user.
+ *
+ * Only a Super Admin may hand out ANY administrator role — not merely the one
+ * literally named "Super Admin". Testing that single name let a user with
+ * users.create assign the "Admin" role, whose holder is_admin() then accepts
+ * for impersonation and letter deletion (security audit H-4).
  */
 function can_assign_role(int $roleId): bool {
     if (is_super_admin()) return true;
     try {
         $s = db()->prepare('SELECT name FROM roles WHERE id = ?');
         $s->execute([$roleId]);
-        $name = strtolower((string)$s->fetchColumn());
-    } catch (Throwable $e) { $name = ''; }
-    return $name !== 'super admin';
+        $name = (string)$s->fetchColumn();
+    } catch (Throwable $e) {
+        return false;      // cannot verify the role — refuse rather than guess
+    }
+    if ($name === '') return false;          // unknown role id — fail closed
+    return !is_admin_role_name($name);
 }
 
 /**

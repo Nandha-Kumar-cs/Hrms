@@ -60,6 +60,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
 
     // ── Personal ──────────────────────────────────────────────────────────────
+    // The employee CODE is editable here. It is a label, not a key: every other
+    // table joins employees on the numeric id, so renaming the code re-labels the
+    // employee everywhere (including past payslips) without moving any record.
+    // Uppercased to match how create.php stores it, so 'emp001' and 'EMP001'
+    // cannot both exist.
+    $employee_code = strtoupper(sanitize($_POST['employee_code'] ?? ''));
     $full_name = sanitize($_POST['full_name'] ?? '');
     $email     = sanitize($_POST['email']     ?? '');
     $phone     = sanitize($_POST['phone']     ?? '');
@@ -119,6 +125,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── Validation ────────────────────────────────────────────────────────────
     if ($full_name === '') $errors[] = 'Full name is required.';
+
+    if ($employee_code === '') {
+        $errors[] = 'Employee code is required.';
+    } else {
+        // employees.employee_id carries a UNIQUE index, so a clash would surface
+        // as a raw SQL error. Check first and report it in the form instead.
+        $dupCode = $db->prepare('SELECT name FROM employees WHERE employee_id = ? AND id != ? LIMIT 1');
+        $dupCode->execute([$employee_code, $id]);
+        if ($clashName = $dupCode->fetchColumn()) {
+            $errors[] = "Employee code '$employee_code' is already used by " . $clashName . '.';
+        }
+    }
 
     if ($email === '') {
         $errors[] = 'Email address is required.';
@@ -184,6 +202,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // ── UPDATE employees ──────────────────────────────────────────────────
         $stmt = $db->prepare(
             "UPDATE employees SET
+                employee_id=:employee_code,
                 entity_id=:entity_id, lunch_batch_id=:lunch_batch_id, shift_id=:shift_id,
                 name=:name, email=:email, phone=:phone, gender=:gender, dob=:dob,
                 blood_group=:blood_group,
@@ -198,6 +217,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              WHERE id=:id"
         );
         $stmt->execute([
+            ':employee_code' => $employee_code,
             ':entity_id'    => $entity_id,
             ':lunch_batch_id' => $lunch_batch_id,
             ':shift_id'       => $shift_id,
@@ -258,6 +278,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $changes = array_values(array_filter([
+            activity_change('Employee Code', $emp['employee_id'] ?? '', $employee_code),
             activity_change('Name',   $emp['name'] ?? '',  $full_name),
             activity_change('Email',  $emp['email'] ?? '', $email),
             activity_change('Status', $emp['status'] ?? '', $status),
@@ -268,13 +289,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 !empty($emp['pf_enabled']) ? 'Enabled' : 'Disabled',
                 $pf_enabled ? 'Enabled' : 'Disabled'),
         ]));
-        activity_log('updated', 'Employee', 'Updated employee: ' . $full_name . ' (' . ($emp['employee_id'] ?? '') . ')', $changes);
+        activity_log('updated', 'Employee', 'Updated employee: ' . $full_name . ' (' . $employee_code . ')', $changes);
         flash('success', 'Employee updated successfully.');
         redirect(BASE_URL . "/modules/employee/view.php?id=$id");
     }
 
     // ── Repopulate $emp on validation failure ─────────────────────────────────
     $emp = array_merge($emp, [
+        'employee_id'    => $employee_code,
         'entity_id'      => $entity_id,
         'name'           => $full_name,
         'email'          => $email,
@@ -345,10 +367,12 @@ $v   = fn($field)       => h($emp[$field] ?? '');
             <div class="row g-3 mb-4">
 
                 <div class="col-md-4">
-                    <label class="form-label">Employee Code</label>
-                    <input type="text" class="form-control bg-light"
-                           value="<?= $v('employee_id') ?>" disabled>
-                    <div class="form-text">Employee code cannot be changed after creation.</div>
+                    <label class="form-label">Employee Code <span class="text-danger">*</span></label>
+                    <input type="text" name="employee_code" class="form-control"
+                           value="<?= $v('employee_id') ?>"
+                           placeholder="e.g. EMP0001" required>
+                    <div class="form-text">Must be unique. Changing it re-labels the employee
+                        everywhere, including payslips already issued.</div>
                 </div>
 
                 <div class="col-md-4">
@@ -568,7 +592,7 @@ $v   = fn($field)       => h($emp[$field] ?? '');
                     <div class="form-text">JPG / PNG / WebP — max 2 MB</div>
                     <div id="photoPreviewWrap" class="mt-2 d-flex align-items-center gap-2 <?= empty($emp['photo']) ? 'd-none' : '' ?>">
                         <img id="photoPreview"
-                             src="<?= !empty($emp['photo']) ? BASE_URL . '/uploads/photos/' . h($emp['photo']) : '' ?>"
+                             src="<?= !empty($emp['photo']) ? h(file_url('uploads/photos/' . $emp['photo'])) : '' ?>"
                              alt="Preview" class="rounded"
                              style="width:80px;height:80px;object-fit:cover;border:2px solid #e2e8f0">
                         <button type="button" class="btn btn-sm btn-outline-danger" onclick="removePhoto()">

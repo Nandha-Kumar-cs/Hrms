@@ -163,6 +163,42 @@ require_once __DIR__ . '/../../includes/header.php';
             </div>
         </div>
 
+        <?php
+        /* Deployment health (security audit L-3).
+         *
+         * config/ is a PROTECTED path, so no update package can ever correct a
+         * server whose config was copied from a developer's machine. The next
+         * best thing is to make a wrong one impossible to miss: these checks run
+         * on every server and say plainly what is still set to a dev value.
+         * Shown to Super Admins only — it names database credentials. */
+        if (is_super_admin()):
+            $l3 = [];
+            if (defined('APP_ENV')   && APP_ENV !== 'production') $l3[] = "APP_ENV is '" . APP_ENV . "', not 'production'";
+            if (defined('APP_DEBUG') && APP_DEBUG)                $l3[] = 'APP_DEBUG is on';
+            if (defined('DB_USER')   && DB_USER === 'root')       $l3[] = 'the database user is root';
+            if (defined('DB_PASS')   && DB_PASS === '')           $l3[] = 'the database password is empty';
+            $l3host   = parse_url(defined('BASE_URL') ? BASE_URL : '', PHP_URL_HOST) ?: '';
+            $l3served = (string) ($_SERVER['HTTP_HOST'] ?? '');
+            if ($l3host !== '' && $l3served !== '' && stripos($l3served, $l3host) !== 0)
+                $l3[] = 'BASE_URL points at ' . $l3host . ' but this page was served from ' . $l3served;
+        ?>
+        <?php if ($l3): ?>
+        <div class="card">
+            <div class="card-header"><h3 class="card-title">Deployment Health</h3></div>
+            <div class="card-body">
+                <div class="alert alert-warn mb-2">
+                    This server is running with development settings. Fix these in
+                    <code>config/app.php</code> and <code>config/database.php</code> —
+                    they are protected files, so an update package cannot change them for you.
+                </div>
+                <ul class="mb-0" style="padding-left:18px">
+                    <?php foreach ($l3 as $l3item): ?><li><?= h($l3item) ?></li><?php endforeach; ?>
+                </ul>
+            </div>
+        </div>
+        <?php endif; ?>
+        <?php endif; ?>
+
         <div class="card">
             <div class="card-header"><h3 class="card-title">SSO Configuration</h3></div>
             <div class="card-body">

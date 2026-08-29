@@ -104,7 +104,7 @@ if (!$logoFile) {
     } catch (Exception $_e) {}
 }
 if ($logoFile && file_exists(BASE_PATH . '/storage/entities/' . $logoFile)) {
-    $logoUrl = BASE_URL . '/storage/entities/' . h($logoFile);
+    $logoUrl = file_url('storage/entities/' . $logoFile);
 }
 
 $extra_head = '<style>
@@ -212,12 +212,19 @@ if (!function_exists('_inr_words')) {
         // LOP / Late — the earnings above are already net of these (components are
         // prorated to paid days), so these lines are informational: they say WHY
         // the earnings are lower, without deducting anything a second time.
-        $lopDays   = (float)($attSummary['unpaid_days'] ?? $attSummary['absent_days'] ?? 0);
+        // LOP days = absences + sandwich days + half days, exactly as the LOP
+        // Amount line was priced. Short hours carry their own "Others" line.
+        $lopDays   = (float)($attSummary['lop_days'] ?? $attSummary['absent_days']
+                             ?? $attSummary['unpaid_days'] ?? 0);
         $paidDays  = $attSummary['paid_days']     ?? null;
         $calDays   = $attSummary['calendar_days'] ?? null;
         $lateMins  = (int)($attSummary['late_minutes'] ?? 0);
         $fmtDays   = fn(float $d) => rtrim(rtrim(number_format($d, 2), '0'), '.');
-        $lopText   = $fmtDays($lopDays) . ' day' . ($lopDays == 1 ? '' : 's');
+        // Sandwich days sit inside the LOP figure, so say how many there are —
+        // otherwise "4 days" for two days taken off reads as an error.
+        $sandwichDays = (int)($attSummary['sandwich_days'] ?? 0);
+        $lopText   = $fmtDays($lopDays) . ' day' . ($lopDays == 1 ? '' : 's')
+                   . ($sandwichDays > 0 ? ' (incl. ' . $sandwichDays . ' sandwich)' : '');
         $lateText  = $lateMins > 0 ? fmt_ot_hours($lateMins / 60) : '—';
 
         $infoRows = [
@@ -245,6 +252,44 @@ if (!function_exists('_inr_words')) {
         <?php endforeach; ?>
     </div>
 
+    <?php
+    // Deductions could not fully collect this month — surfaced instead of being
+    // silently absorbed by the net-pay clamp (security audit H-7). A capped loan
+    // EMI is NOT recorded as repaid (see includes/payroll_extras.php), so this is
+    // purely informational — nothing below is short-changed by hiding a number.
+    $loanShortfall = (float)($attSummary['loan_shortfall'] ?? 0);
+    $overDeduction = (float)($attSummary['over_deduction'] ?? 0);
+    if ($loanShortfall > 0.01 || $overDeduction > 0.01):
+    ?>
+    <div style="margin:0 24px 14px;padding:10px 14px;border:1px solid #b91c1c;border-radius:var(--radius);background:#fef2f2;color:#7f1d1d;font-size:12px;line-height:1.6">
+        <strong>⚠ Deductions exceeded this month's earnings.</strong>
+        <?php if ($overDeduction > 0.01): ?>
+            <div>Total deductions were <?= money($overDeduction) ?> more than gross earnings; net pay is shown as ₹0 rather than negative.</div>
+        <?php endif; ?>
+        <?php if ($loanShortfall > 0.01): ?>
+            <div>Loan/advance EMI(s) totalling <?= money($loanShortfall) ?> could not be collected this month and remain outstanding — not recorded as repaid.</div>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php
+    /* Salary components configured above 100% of the CTC (security audit L-8).
+     * Special Allowance is CTC minus the components; when that went negative the
+     * old code dropped it, so gross quietly exceeded the salary the employee is
+     * actually on. The figure is not clamped here — the CONFIGURATION is what is
+     * wrong — but it must not be invisible. */
+    $componentOverrun = (float)($attSummary['component_overrun'] ?? 0);
+    if ($componentOverrun > 0.01):
+    ?>
+    <div style="margin:0 24px 14px;padding:10px 14px;border:1px solid #b45309;border-radius:var(--radius);background:#fffbeb;color:#78350f;font-size:12px;line-height:1.6">
+        <strong>&#9888; Salary components exceed the CTC.</strong>
+        <div>The configured earnings add up to <?= money($componentOverrun) ?> MORE than this
+            employee&rsquo;s monthly CTC, so the gross below is higher than their salary and no
+            Special Allowance could be applied. Review <em>Settings &rarr; Salary Components</em>
+            &mdash; the percentages likely total more than 100%.</div>
+    </div>
+    <?php endif; ?>
+
     <!-- ── Earnings & Deductions (single combined table) ───────────────────── -->
     <?php
         // Earnings: base + benefits + bonuses flattened into one column.
@@ -271,9 +316,20 @@ if (!function_exists('_inr_words')) {
             $dedList[$clean] = ($dedList[$clean] ?? 0) + (float)$amount;
         }
 
+        // Printed deduction rows: [label, already-formatted value]. "LOP Amount"
+        // is followed by a "LOP Days" line carrying the day count rather than a
+        // rupee figure, so the slip says what the amount covers. That row is
+        // display-only — it is not part of Total Deductions.
+        $dRows = [];
+        foreach ($dedList as $label => $amount) {
+            $dRows[] = [$label, money($amount)];
+            if ($label === 'LOP Amount') {
+                $dRows[] = ['LOP Days', $fmtDays($lopDays)];
+            }
+        }
+
         $eLabels = array_keys($earnList); $eItems = array_values($earnList);
-        $dLabels = array_keys($dedList);  $dItems = array_values($dedList);
-        $rowCount = max(count($eLabels), count($dLabels), 1);
+        $rowCount = max(count($eLabels), count($dRows), 1);
         $tdC = 'border:1px solid #000;padding:6px 10px';
     ?>
     <table style="width:calc(100% - 48px);margin:18px 24px;border-collapse:collapse;font-size:13px;color:#000">
@@ -290,8 +346,8 @@ if (!function_exists('_inr_words')) {
             <tr>
                 <td style="<?= $tdC ?>"><?= isset($eLabels[$i]) ? h($eLabels[$i]) : '' ?></td>
                 <td style="<?= $tdC ?>;text-align:right"><?= isset($eItems[$i]) ? money($eItems[$i]) : '' ?></td>
-                <td style="<?= $tdC ?>"><?= isset($dLabels[$i]) ? h($dLabels[$i]) : '' ?></td>
-                <td style="<?= $tdC ?>;text-align:right"><?= isset($dItems[$i]) ? money($dItems[$i]) : '' ?></td>
+                <td style="<?= $tdC ?>"><?= isset($dRows[$i]) ? h($dRows[$i][0]) : '' ?></td>
+                <td style="<?= $tdC ?>;text-align:right"><?= isset($dRows[$i]) ? $dRows[$i][1] : '' ?></td>
             </tr>
             <?php endfor; ?>
             <tr style="font-weight:700">

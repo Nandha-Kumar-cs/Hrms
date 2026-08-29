@@ -108,8 +108,9 @@ function attendance_resync_shifts(string $from, string $to, ?int $empId = null):
             elseif ($inMins > $t['late_thresh'])   $status = 'Late';
             else                                   $status = 'On Time';
 
-            // No checkout on a present day → Absent (mark.php's no-checkout rule)
-            if (in_array($status, ['On Time', 'Late'], true) && empty($r['out_time'])) {
+            // No checkout on a present day → Absent (mark.php's no-checkout rule).
+            // Includes Half Day since M-18 — see attendance_checkin_statuses().
+            if (in_array($status, attendance_checkin_statuses(), true) && empty($r['out_time'])) {
                 $status = 'Absent';
             }
         }

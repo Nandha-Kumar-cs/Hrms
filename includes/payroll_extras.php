@@ -35,10 +35,39 @@ function benefit_eligible_in_month(array $b, int $month, int $year): bool
     // is what stops an upcoming-month slip from reflecting an ended benefit.
     if (!empty($b['end_date']) && $b['end_date'] < $first) return false;
 
-    if (!$start) {                                   // legacy: match effective_month
-        if (empty($b['effective_month'])) return true;
-        return (int) date('n', strtotime($b['effective_month'])) === $month
-            && (int) date('Y', strtotime($b['effective_month'])) === $year;
+    if (!$start) {
+        /* Legacy mode: the benefit is anchored to a single effective_month.
+         *
+         * This used to `return true` whenever effective_month was empty — with no
+         * date compared at all, so the benefit was paid on EVERY slip, every
+         * month, for ever (security audit L-7). A function asked "does this apply
+         * in this month?" must not answer yes when it has nothing to answer with.
+         *
+         * '0000-00-00' has to be caught too. It is not empty(), so it slipped past
+         * the old guard into the comparison below — and strtotime('0000-00-00') does
+         * NOT fail: it returns -62169984000, i.e. 30 November of year -1. The
+         * comparison then matched no real month, so the benefit was silently never
+         * paid, on any slip, ever — the opposite failure to the one above. Hence
+         * the year guard below rather than a bare === false check.
+         *
+         * Both now fail CLOSED and are logged. Not paying is recoverable — an
+         * admin sets the date and it pays correctly next run. Paying a row whose
+         * date is unreadable is money out of the door that nobody asked for.
+         */
+        $eff = (string) ($b['effective_month'] ?? '');
+        $ts  = $eff !== '' ? strtotime($eff) : false;
+        if ($ts === false || (int) date('Y', $ts) < 1970) {
+            error_log(sprintf(
+                'Benefit "%s" (employee %s) has no usable date anchor '
+                . '(start_date empty, effective_month %s) — not paid. Set a Start Date '
+                . 'or an Effective Month on it.',
+                (string) ($b['fund_type'] ?? '?'),
+                (string) ($b['employee_id'] ?? '?'),
+                $eff === '' ? 'empty' : '"' . $eff . '"'
+            ));
+            return false;
+        }
+        return (int) date('n', $ts) === $month && (int) date('Y', $ts) === $year;
     }
     if ($start > $last) return false;                // not started yet
 
@@ -79,7 +108,7 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
     // ── Benefit Funds → earnings (recurring-aware, mirrors EmployeeBenefit) ──
     try {
         $bs = $db->prepare(
-            "SELECT fund_type, amount, frequency, start_date, end_date, effective_month, payment_mode
+            "SELECT employee_id, fund_type, amount, frequency, start_date, end_date, effective_month, payment_mode
                FROM employee_benefits
               WHERE employee_id = ? AND status = 'active'
               ORDER BY id"
@@ -105,7 +134,13 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
                 $deductions[$dkey] = $amt;
             }
         }
-    } catch (Throwable $e) { /* benefits columns absent — no effect */ }
+    } catch (Throwable $e) {
+        /* Do NOT swallow this silently. The two CREATE TABLE statements used to
+         * disagree, so on some installs this query failed with "Unknown column"
+         * and every benefit vanished from every slip with nothing to show for it.
+         * The slip must still be produced, but the reason has to be recorded. */
+        error_log('Benefits skipped for employee ' . $empId . ': ' . $e->getMessage());
+    }
 
     // ── Bonuses & Incentives (approved for this month) → earnings ────────────
     try {
@@ -139,6 +174,17 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
     if (!function_exists('loan_due')) {
         require_once __DIR__ . '/loan_history.php';
     }
+
+    // How much of this month's earnings are still undeducted. Component
+    // deductions and any cashless-benefit deduction above are already folded
+    // into $deductions — a loan EMI must never take more than what is left
+    // after those, or a heavy-LOP month records the loan as repaid out of a
+    // paycheck the employee never actually received (security audit H-7).
+    // Decremented after each loan below, so a second/third loan for the same
+    // employee correctly sees what the first one already used up.
+    $netRemaining  = max(0.0, round(array_sum($allowances) - array_sum($deductions), 2));
+    $loanShortfall = 0.0;   // total EMI this month's earnings could not cover
+
     try {
         $ln = $db->prepare(
             "SELECT id, employee_id, type, amount, interest_rate, monthly_deduction, date_given, total_months
@@ -168,10 +214,22 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
             if ($emi <= 0) continue;
             // On the final instalment (or when ≤ one EMI is left), deduct the EXACT
             // remaining balance so rounding never leaves a stray pending amount.
-            $deduct = (($paidCount + 1) >= $months || $remaining <= $emi) ? $remaining : min($emi, $remaining);
-            $deduct = round($deduct, 2);
-            if ($deduct <= 0) continue;
+            $wanted = (($paidCount + 1) >= $months || $remaining <= $emi) ? $remaining : min($emi, $remaining);
+            $wanted = round($wanted, 2);
+            if ($wanted <= 0) continue;
+
+            // Cap to what the employee actually has left this month — this is
+            // the fix: never let deductions_json (and so loan_actual_deductions(),
+            // which treats every rupee in it as repaid) claim more than the
+            // paycheck could cover.
+            $deduct = round(min($wanted, $netRemaining), 2);
+            if ($wanted - $deduct > 0.01) {
+                $loanShortfall = round($loanShortfall + ($wanted - $deduct), 2);
+            }
+            if ($deduct <= 0) continue;   // net already exhausted — collect nothing, write no line
+
             $deductions[ucfirst((string) $loan['type']) . ' Deduction #' . (int) $loan['id']] = $deduct;
+            $netRemaining = round($netRemaining - $deduct, 2);
         }
     } catch (Throwable $e) { /* loans table absent — no effect */ }
 
@@ -179,11 +237,25 @@ function payroll_apply_extras(PDO $db, array $result, int $empId, int $month, in
     $gross    = round(array_sum($allowances), 2);
     $totalDed = round(array_sum($deductions), 2);
 
+    // With loans now capped above, this can still be positive if NON-loan
+    // deductions alone (PF/ESI/late penalty/...) already exceed a heavily
+    // prorated gross. Record it rather than letting the max(0, …) clamp below
+    // hide it silently (security audit H-7).
+    $overDeduction = max(0.0, round($totalDed - $gross, 2));
+
     $result['allowances']       = $allowances;
     $result['deductions']       = $deductions;
     $result['gross_earnings']   = $gross;
     $result['total_deductions'] = $totalDed;
     $result['net_pay']          = max(0, round($gross - $totalDed, 2));
+
+    // Surfaced on the payslip (modules/payroll/slip.php) as a visible warning,
+    // not just a number nobody has to notice.
+    if (!isset($result['attendance_summary']) || !is_array($result['attendance_summary'])) {
+        $result['attendance_summary'] = [];
+    }
+    $result['attendance_summary']['loan_shortfall'] = $loanShortfall;
+    $result['attendance_summary']['over_deduction']  = $overDeduction;
 
     return $result;
 }

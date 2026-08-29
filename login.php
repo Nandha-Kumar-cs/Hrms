@@ -1,13 +1,11 @@
 <?php
-require_once __DIR__ . '/config/app.php';
-require_once __DIR__ . '/config/database.php';
-require_once __DIR__ . '/includes/helpers.php';
-require_once __DIR__ . '/includes/auth.php';
-require_once __DIR__ . '/includes/permissions.php';
-require_once __DIR__ . '/includes/activity_log.php';
-
-session_name(SESSION_NAME);
-session_start();
+// bootstrap.php — NOT the individual config/include files. Bootstrap is what
+// calls session_set_cookie_params() with HttpOnly/SameSite/Secure BEFORE the
+// session starts. Including the pieces by hand skipped that block, so the
+// session_regenerate_id(true) inside login_user() re-issued the authenticated
+// cookie using PHP's ini defaults — no HttpOnly, no SameSite, no Secure. Every
+// page except the one that mints the cookie was hardened (security audit H-1).
+require_once __DIR__ . '/includes/bootstrap.php';
 
 if (is_logged_in()) redirect(BASE_URL . '/index.php');
 
@@ -29,6 +27,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             INDEX (ip, attempted_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     } catch (Throwable $e) { /* non-fatal */ }
+
+    // Reaches existing installs, whose users table predates the column that
+    // drives the forced password change (security audit H-3). attempt_login()
+    // does SELECT *, so once the column exists the flag rides into the session.
+    db_ensure_column('users', 'must_change_password', 'TINYINT(1) NOT NULL DEFAULT 0');
+
     $recentFails = function () use ($ip, $email, $LOCK_WINDOW_MIN) {
         try {
             $s = db()->prepare('SELECT COUNT(*) FROM login_attempts

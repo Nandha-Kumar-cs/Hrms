@@ -24,6 +24,42 @@ $db->exec('CREATE TABLE IF NOT EXISTS employee_increments (
     INDEX (employee_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
+/* ── On EDIT, the row itself decides which employee this is ──────────────────
+ * id and emp_id arrived as two independent POST fields and were trusted
+ * separately: the UPDATE matched on id alone, while the activity log and the
+ * salary re-sync both used emp_id. A request pairing employee A's increment id
+ * with employee B's emp_id would therefore edit A's record, file the audit entry
+ * against B, re-sync B's salary, and leave A's salary history stale — with
+ * nothing anywhere pointing at A (security audit M-9).
+ *
+ * delete.php already derives the employee from the row; this is the same shape.
+ */
+if ($id) {
+    $own = $db->prepare('SELECT employee_id FROM employee_increments WHERE id = ? LIMIT 1');
+    $own->execute([$id]);
+    $ownerId = $own->fetchColumn();
+
+    if ($ownerId === false) {
+        flash('error', 'That increment record no longer exists.');
+        redirect(BASE_URL . '/modules/increments/index.php');
+    }
+    $ownerId = (int) $ownerId;
+
+    // A mismatch is never something the UI produces — create.php fills emp_id
+    // from the row. Refuse rather than silently correcting it, so a tampered or
+    // stale form is visible instead of quietly succeeding.
+    if ($emp_id && $emp_id !== $ownerId) {
+        activity_log('updated', 'Increment',
+            'REFUSED an increment edit: request paired increment #' . $id . ' (belongs to '
+            . activity_emp_label($ownerId) . ') with ' . activity_emp_label($emp_id) . '.');
+        flash('error', 'That increment does not belong to the selected employee. No change was made.');
+        redirect(BASE_URL . '/modules/increments/index.php');
+    }
+
+    // Authoritative from here on — logging and the salary re-sync below both use it.
+    $emp_id = $ownerId;
+}
+
 $errors = [];
 $effective_date  = trim($_POST['effective_date'] ?? '');
 $previous_salary = (float)($_POST['previous_salary'] ?? 0);
@@ -58,8 +94,11 @@ $increment_percentage = $previous_salary > 0 ? round(($new_salary - $previous_sa
 $isFuture             = $effective_date > date('Y-m-d');
 
 if ($id) {
-    $db->prepare('UPDATE employee_increments SET effective_date=?, previous_salary=?, new_salary=?, increment_amount=?, increment_percentage=?, remarks=? WHERE id=?')
-       ->execute([$effective_date, $previous_salary, $new_salary, $increment_amount, $increment_percentage, $remarks, $id]);
+    // employee_id in the WHERE as well: $emp_id is already derived from this row
+    // above, so this cannot fail — it keeps the statement self-describing and
+    // means the row can never be reached through a different employee (M-9).
+    $db->prepare('UPDATE employee_increments SET effective_date=?, previous_salary=?, new_salary=?, increment_amount=?, increment_percentage=?, remarks=? WHERE id=? AND employee_id=?')
+       ->execute([$effective_date, $previous_salary, $new_salary, $increment_amount, $increment_percentage, $remarks, $id, $emp_id]);
     activity_log('updated', 'Increment', 'Updated salary increment for ' . activity_emp_label($emp_id), [
         ['field' => 'Salary', 'from' => '₹' . number_format((float)$previous_salary, 2), 'to' => '₹' . number_format((float)$new_salary, 2)],
     ]);
@@ -88,8 +127,9 @@ if ($id) {
             . "Increment: {$pctStr}%\n\n"
             . 'We appreciate your dedication and expect continued excellence in your work. Congratulations on this well-deserved recognition.';
 
-        $cnt = $db->query('SELECT COUNT(*)+1 FROM letters')->fetchColumn();
-        $ref = 'HR/I/' . date('Y') . '/' . str_pad((string)$cnt, 4, '0', STR_PAD_LEFT);
+        // Atomic, monotonic, and shared with modules/letters/create.php so the two
+        // can no longer hand out the same number (security audit L-5).
+        $ref = next_letter_reference('I');
 
         $db->prepare('INSERT INTO letters (employee_id,type,issued_date,reference,content,issued_by,status) VALUES (?,?,?,?,?,?,?)')
            ->execute([$emp_id, 'Increment', $effective_date, $ref, $letterContent, (int)(current_user()['id'] ?? 0) ?: null, 'Draft']);

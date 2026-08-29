@@ -76,9 +76,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $brandName  = (string) setting_get('brand_name', 'HRMS');
 $brandLogo  = (string) setting_get('brand_logo', '');
 if ($brandLogo && is_file($LOGO_DIR . '/' . $brandLogo)) {
-    $logoUrl = BASE_URL . '/storage/branding/' . $brandLogo;
+    $logoUrl = file_url('storage/branding/' . $brandLogo);
 } else {
-    $logoUrl = BASE_URL . '/storage/branding/default_brand.png';
+    $logoUrl = file_url('storage/branding/default_brand.png');
 }
 $errors     = $_SESSION['errors'] ?? [];
 unset($_SESSION['errors']); 

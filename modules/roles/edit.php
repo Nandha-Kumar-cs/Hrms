@@ -31,7 +31,7 @@ $pwaEnabled = [];
 
 $errors = [];
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'manage')) {
     verify_csrf($_POST['csrf_token'] ?? '');
 
     // Only a Super Admin may edit the Super Admin role.
@@ -48,11 +48,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('roles', 'edit')) {
     $pwa   = $_POST['pwa_modules'] ?? [];
 
     if (!$name) $errors[] = 'Role name is required.';
-    // Non-Super-Admins cannot rename a role into the privileged "Super Admin".
-    if (strcasecmp($name, 'Super Admin') === 0 && !is_super_admin())
-        $errors[] = 'You are not allowed to name a role "Super Admin".';
+    // Non-Super-Admins cannot rename a role into ANY administrator role —
+    // renaming an ordinary role to "Admin" was the same escalation as creating
+    // one outright (security audit H-4).
+    if (is_admin_role_name($name) && !is_super_admin())
+        $errors[] = 'You are not allowed to give a role an administrator name.';
 
+    // self_scope is a capability boundary, not a preference — it decides whether
+    // the holder sees only themselves or the whole company. Filter it the same
+    // way permissions are filtered above (security audit M-17).
     $selfScope = !empty($_POST['self_scope']) ? 1 : 0;
+    $scopeErr  = self_scope_change_error($selfScope, (int)($role['self_scope'] ?? 0));
+    if ($scopeErr !== null) {
+        activity_log('updated', 'Role',
+            'REFUSED a self_scope change on role #' . $id . ' (' . $role['name'] . '): actor is self-scoped.');
+        $errors[]  = $scopeErr;
+        $selfScope = (int)($role['self_scope'] ?? 0);   // keep what is already stored
+    }
 
     if (empty($errors)) {
         if (!$role['is_system']) {
@@ -84,7 +96,7 @@ include '../../includes/header.php';
 ?>
 <div class="page-header">
     <div>
-        <h1 class="page-title"><?= can('roles', 'edit') ? 'Edit Role' : 'View Role' ?>: <?= h($role['name']) ?></h1>
+        <h1 class="page-title"><?= can('roles', 'manage') ? 'Edit Role' : 'View Role' ?>: <?= h($role['name']) ?></h1>
         <?php if ($role['is_system']): ?><p class="page-subtitle">System role — name cannot be changed</p><?php endif; ?>
     </div>
     <div class="page-actions">
@@ -113,7 +125,7 @@ include '../../includes/header.php';
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="card-title">Module Permissions</h3>
-                <?php if (can('roles', 'edit')): ?>
+                <?php if (can('roles', 'manage')): ?>
                 <div>
                     <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAllPerms(true)">Select All</button>
                     <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAllPerms(false)">Clear All</button>
@@ -126,7 +138,7 @@ include '../../includes/header.php';
             <div class="card perm-card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <strong><?= h(module_label($module)) ?></strong>
-                    <?php if (can('roles', 'edit')): ?>
+                    <?php if (can('roles', 'manage')): ?>
                     <span class="perm-card-actions">
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', true)">All</button>
                         <button type="button" class="btn btn-xs btn-secondary" onclick="toggleModule('<?= $module ?>', false)">None</button>
@@ -139,7 +151,7 @@ include '../../includes/header.php';
                         <input type="checkbox" name="permissions[]" value="<?= $p['id'] ?>"
                             class="perm-check perm-<?= $p['module'] ?>"
                             <?= in_array($p['id'], $rolePerms) ? 'checked' : '' ?>
-                            <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
+                            <?= !can('roles', 'manage') ? 'disabled' : '' ?>>
                         <span><?= h($p['label'] ?: ucfirst($p['action'])) ?></span>
                         <?php if ($hint !== ''): ?><i class="fa fa-eye perm-hint" title="<?= h($hint) ?>"></i><?php endif; ?>
                     </label>
@@ -200,7 +212,7 @@ include '../../includes/header.php';
                         <label class="form-check">
                             <input type="checkbox" name="notifications[]" value="<?= $key ?>"
                                 <?= in_array($key, $roleNotifs) ? 'checked' : '' ?>
-                                <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
+                                <?= !can('roles', 'manage') ? 'disabled' : '' ?>>
                             <span class="pill pill-secondary" style="font-size:.65rem"><?= $info[0] ?></span>
                             <?= $info[1] ?>
                         </label>
@@ -225,7 +237,7 @@ include '../../includes/header.php';
                                 <label class="form-check justify-content-center">
                                     <input type="checkbox" name="pwa_modules[]" value="<?= $mod ?>"
                                         <?= in_array($mod,$pwaEnabled)?'checked':'' ?>
-                                        <?= !can('roles', 'edit')?'disabled':'' ?>
+                                        <?= !can('roles', 'manage')?'disabled':'' ?>
                                         onchange="this.closest('.card').style.borderColor=this.checked?'var(--success)':'var(--border)'">
                                     <strong style="text-transform:capitalize;margin-left:.5rem"><?= $mod ?></strong>
                                 </label>
@@ -246,11 +258,11 @@ include '../../includes/header.php';
             <div class="card-body">
                 <div class="form-group">
                     <label class="form-label">Role Name</label>
-                    <input type="text" name="name" class="form-control" value="<?= h($role['name']) ?>" <?= !can('roles', 'edit')?'readonly':'' ?>>
+                    <input type="text" name="name" class="form-control" value="<?= h($role['name']) ?>" <?= !can('roles', 'manage')?'readonly':'' ?>>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Description</label>
-                    <textarea name="description" class="form-control" rows="3" <?= !can('roles', 'edit')?'readonly':'' ?>><?= h($role['description']) ?></textarea>
+                    <textarea name="description" class="form-control" rows="3" <?= !can('roles', 'manage')?'readonly':'' ?>><?= h($role['description']) ?></textarea>
                 </div>
                 <hr>
                 <div class="form-group">
@@ -258,9 +270,15 @@ include '../../includes/header.php';
                     <label class="form-check">
                         <input type="checkbox" name="self_scope" value="1"
                             <?= !empty($role['self_scope']) ? 'checked' : '' ?>
-                            <?= !can('roles', 'edit') ? 'disabled' : '' ?>>
+                            <?= (!can('roles', 'manage') || is_self_scoped()) ? 'disabled' : '' ?>>
                         <span>Restrict to own records only (self-service)</span>
                     </label>
+                    <?php if (is_self_scoped()): ?>
+                    <p class="text-muted mt-1" style="font-size:.8rem">
+                        Your own access is limited to your employee record, so you cannot change
+                        this setting (security audit M-17).
+                    </p>
+                    <?php endif; ?>
                     <p class="text-muted mt-1" style="font-size:.8rem">
                         When enabled, users with this role see only their <strong>own</strong> employee
                         data across every list, report, profile and tab — they cannot view other
@@ -276,7 +294,7 @@ include '../../includes/header.php';
         <input type="hidden" name="description" value="<?= h($role['description']) ?>">
     <?php endif; ?>
 
-    <?php if (can('roles', 'edit')): ?>
+    <?php if (can('roles', 'manage')): ?>
     <div class="mt-4">
         <button type="submit" class="btn btn-primary" data-key="S"><u>S</u>ave Changes</button>
         <a href="index.php" class="btn btn-secondary" data-key="B"><u>B</u>ack</a>

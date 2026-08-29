@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('training', 'edit');
+require_permission('training', 'manage');
 
 $roles  = db()->query("SELECT id, name FROM roles ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 $errors = [];

@@ -3,7 +3,7 @@
  * Attendance Monthly Report — Matrix Grid
  * ─────────────────────────────────────────
  * Displays a full employee × day grid for a selected month.
- * Columns: Employee | 1..31 | P | A | H | L | Late Used | Remaining | Exceeded | Deducted | OT Hrs | Man Hrs
+ * Columns: Employee | 1..31 | P | A | H | EO | SL | L | Late Used | Remaining | Exceeded | Deducted | OT Hrs | Man Hrs
  *
  * Non-working days (Sundays, 1st/3rd Saturdays, holidays) span all employee
  * rows via rowspan and show the day label rotated vertically.
@@ -11,7 +11,13 @@
  * Status badges:
  *   P   = On Time   (green)
  *   L   = Late      (blue/info)  — hover shows minutes late
- *   H   = Half Day  (yellow)
+ *   H   = Half Day  (yellow)      — exactly 4 net hours, or a check-in after the
+ *                                     ~11:00 cutoff; the slip folds it into LOP
+ *   EO  = Early Out (amber #b45309) — any other partial day; slip charges it under "Others"
+ *   SL  = Sandwich Leave (maroon #9d174d) — a leave that closed a sandwich, so the
+ *         company leave beside it is charged as LOP too. Badged on the LEAVE days;
+ *         the offs themselves are one cell spanning every row, so they cannot carry
+ *         a per-employee badge. The SL summary column counts the charged offs.
  *   A   = Absent    (red)
  *   A   = No Checkout: On Time/Late with no out_time (orange #e67e22)
  *   CO  = Comp Off  (purple #6f42c1)
@@ -20,8 +26,12 @@
  */
 
 $page_title = 'Monthly Attendance Report';
-require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+// Permission BEFORE any output: header.php emits <!DOCTYPE>, after which
+// http_response_code(403) is ignored and 403.php lands mid-page
+// (security audit L-1).
 require_permission('attendance', 'report');   // sub-module: Attendance Report
+require_once __DIR__ . '/../../includes/header.php';
 
 $db  = db();
 $now = new DateTime();
@@ -177,6 +187,19 @@ foreach ($allRecs as $rec) {
     $recDateSet[$rec['employee_id']][$rec['att_date']] = true;
 }
 
+/* Sandwich leave: company-leave days payroll charges as LOP because leave was
+   taken on the working day either side. Resolved for the whole roster in one
+   call, straight from the payroll engine, so the badges and the payslip can
+   never disagree. $sandwichLeaveMap holds the LEAVE days that closed each
+   sandwich — what the grid badges, since the offs themselves are drawn as one
+   cell spanning every employee row. */
+$sandwichMap      = attendance_sandwich_map(array_column($employees, 'id'), $reqMonth, $reqYear);
+$sandwichLeaveMap = attendance_sandwich_leave_map(array_column($employees, 'id'), $reqMonth, $reqYear);
+/* Every date a sandwich occupies (both leave days + the offs between). The SL
+   column counts these, and the A column excludes them so the same day is never
+   counted twice — A + SL then matches the slip's LOP Days. */
+$sandwichAllMap   = attendance_sandwich_all_dates(array_column($employees, 'id'), $reqMonth, $reqYear);
+
 /* ── Per-employee stats ──────────────────────────────────────────────────── */
 $empStats  = [];
 $lateByDay = []; // [$empId][$dayNum] = late_minutes
@@ -193,6 +216,7 @@ foreach ($employees as $emp) {
     $presentCnt = 0;
     $absentCnt  = 0;
     $halfCnt    = 0;
+    $shortCnt   = 0;
     $paidLvCnt  = 0;
     $lateMins   = 0;
     $otHrs      = 0.0;
@@ -208,7 +232,7 @@ foreach ($employees as $emp) {
         $status     = $rec['status'];
         // Orange A: had check-in but no checkout (saved as Absent by no-checkout rule,
         // or legacy On Time/Late records with missing checkout)
-        $noCheckout = (in_array($status, ['On Time', 'Late'], true) && empty($rec['out_time']))
+        $noCheckout = (in_array($status, attendance_checkin_statuses(), true) && empty($rec['out_time']))
                    || ($status === 'Absent' && !empty($rec['in_time']) && empty($rec['out_time']));
 
         // Man Hours (midnight-crossing safe) — count on working days only
@@ -222,6 +246,10 @@ foreach ($employees as $emp) {
         // Skip non-working days for penalty/count calculations
         if ($isNonWrk) continue;
 
+        // An absence that closed a sandwich is counted in the SL column instead,
+        // so it must not also land in A.
+        if ($status === 'Absent' && isset($sandwichAllMap[$empId][$dateStr])) continue;
+
         // No-checkout = treated as absent
         if ($noCheckout || $status === 'Absent') {
             // An Absent day classified as Paid Leave counts as leave, not absent
@@ -233,17 +261,23 @@ foreach ($employees as $emp) {
             }
             continue;
         }
-        if ($status === 'Half Day') { $halfCnt++; continue; }
+        // A 'Half Day' row WITH punches is classified by its hours below, exactly
+        // as payroll does. Only one with no punches to judge stays a flat half day.
+        if ($status === 'Half Day' && (empty($rec['in_time']) || empty($rec['out_time']))) {
+            $halfCnt++; continue;
+        }
         // OD, Comp Off, Holiday = neither absent nor late
         if (in_array($status, ['OD', 'Comp Off', 'Holiday'], true)) continue;
 
-        // On Time or Late
-        if (in_array($status, ['On Time', 'Late'], true)) {
+        // On Time, Late or a punched Half Day
+        if (in_array($status, ['On Time', 'Late', 'Half Day'], true)) {
             // Half/short day (check-in after ~11:00, or net ≤ 4h)? Such days are
             // EXEMPT from the late penalty (they're already deducted as Half/Short
             // Hours), so their late minutes must NOT be added to the late pool —
             // this keeps the report's Late total in step with the salary slip.
-            $isHalfShort = _rep_isEarlyOut($rec, employee_lunch_window($empId), $empId);
+            $lunchWin    = employee_lunch_window($empId);
+            $isHalfShort = _rep_isEarlyOut($rec, $lunchWin, $empId);
+            $partialKind = _rep_partialKind($rec, $lunchWin, $empId);
             if ($status === 'Late' && !$isHalfShort && !empty($rec['in_time'])) {
                 $ciMins  = _rep_timeToMins($rec['in_time']);
                 // Late measured from the shift stamped on THIS row (payroll does the same).
@@ -254,8 +288,10 @@ foreach ($employees as $emp) {
                     $lateMins += $dayLate;
                 }
             }
-            if ($isHalfShort) { $halfCnt++; }
-            else              { $presentCnt++; }
+            // H counts only the half day; EO counts every other docked day.
+            if     ($partialKind === 'half')  { $halfCnt++;  }
+            elseif ($partialKind === 'short') { $shortCnt++; }
+            else                              { $presentCnt++; }
         }
     }
 
@@ -276,6 +312,8 @@ foreach ($employees as $emp) {
         'present_count'  => $presentCnt,
         'absent_days'    => $absentCnt,
         'half_days'      => $halfCnt,
+        'short_days'     => $shortCnt,
+        'sandwich_days'  => count($sandwichAllMap[$empId] ?? []),
         'leave_days'     => $paidLvCnt,
         'late_mins'      => $lateMins,
         'remaining_perm' => $remainPerm,
@@ -465,8 +503,10 @@ foreach ($employees as $emp) {
 
                     <!-- Summary columns (exact widths, classes, and titles from Laravel source) -->
                     <th class="text-center" style="min-width:32px" title="Present days">P</th>
-                    <th class="text-center" style="min-width:32px" title="Absent days">A</th>
-                    <th class="text-center" style="min-width:32px" title="Half days">H</th>
+                    <th class="text-center" style="min-width:32px" title="Absent days — excludes days counted under SL">A</th>
+                    <th class="text-center" style="min-width:32px" title="Half days — 4 net working hours, or a check-in after the ~11:00 cutoff">H</th>
+                    <th class="text-center" style="min-width:36px" title="Early Out — any other partial day (short hours), deducted under &quot;Others&quot;">EO</th>
+                    <th class="text-center" style="min-width:36px" title="Sandwich Leave &mdash; every day the sandwich spans: the leave before, the company leave(s) between, and the leave after. These days are excluded from the A column">SL</th>
                     <th class="text-center" style="min-width:32px" title="Leave days">L</th>
                     <th class="text-center text-dark bg-warning bg-opacity-10" style="min-width:72px">Late Used</th>
                     <th class="text-center text-dark bg-info bg-opacity-10"   style="min-width:72px">Remaining</th>
@@ -489,6 +529,7 @@ foreach ($employees as $emp) {
                     $presentCount = 0;
                     $absentCount  = 0;
                     $halfCount    = 0;
+                    $shortCount   = 0;
                     $leaveCount   = 0; // no leave_requests table in HRMS — always 0
                 ?>
                 <tr>
@@ -516,14 +557,19 @@ foreach ($employees as $emp) {
 
                         // Orange A: had check-in but no checkout (saved as Absent by server,
                         // or legacy On Time/Late records missing checkout)
-                        $noCheckout = (in_array($status, ['On Time', 'Late'], true) && empty($rec['out_time'] ?? ''))
+                        $noCheckout = (in_array($status, attendance_checkin_statuses(), true) && empty($rec['out_time'] ?? ''))
                                    || ($status === 'Absent' && !empty($rec['in_time'] ?? '') && empty($rec['out_time'] ?? ''));
 
                         // OD override (only on working, non-comp-off days)
                         $isOnDuty = (!$isNonWrk && !$isCompOffDay && $status === 'OD');
 
                         // Under 8 net working hours (after breaks) on a working day → Half Day.
-                        $isEarlyOut = !$isNonWrk && !$isCompOffDay && !$noCheckout && _rep_isEarlyOut($rec, employee_lunch_window($empId), $empId);
+                        // Partial working day: 'half' (exactly 4 net hours, or a
+                        // post-cutoff check-in) → H, 'short' (any other shortfall)
+                        // → EO, null → a normal P/L.
+                        $cellLunch   = employee_lunch_window($empId);
+                        $eligible    = !$isNonWrk && !$isCompOffDay && !$noCheckout;
+                        $partialKind = $eligible ? _rep_partialKind($rec, $cellLunch, $empId) : null;
 
                         // Admin-approved PAID leave covering this date.
                         $hasPaidLeave = isset($paidLeaveDates[$empId][$cellDateStr]);
@@ -561,8 +607,12 @@ foreach ($employees as $emp) {
                             if ($noCheckout && !$isFuture) {
                                 $absentCount++;
                             } elseif (in_array($status, ['On Time', 'Late'], true) && !$noCheckout) {
-                                if ($isEarlyOut) { $halfCount++; }   // early checkout → half day
-                                else             { $presentCount++; }
+                                // H = the half day; EO = any other docked day.
+                                if     ($partialKind === 'half')  { $halfCount++;  }
+                                elseif ($partialKind === 'short') { $shortCount++; }
+                                else                              { $presentCount++; }
+                            } elseif ($status === 'Absent' && isset($sandwichAllMap[$empId][$cellDateStr])) {
+                                // Shown as SL and counted there — never also as A.
                             } elseif (($status === 'Absent' || $status === null) && !$isFuture) {
                                 $absentCount++;
                             } elseif ($status === 'Half Day') {
@@ -630,17 +680,26 @@ foreach ($employees as $emp) {
                                     echo '<span class="badge" style="background:#e67e22;font-size:.7rem;"' . $titleHtml . '>A</span>';
                                 } elseif ($status === 'Absent') {
                                     // Genuine absence (no punches at all) — classifiable as Paid / Unpaid leave.
-                                    echo _rep_absentBadge($empId, $cellDateStr, $rec['leave_classification'] ?? null, $canClassify, $paidUsedByEmp[$empId] ?? 0);
-                                } elseif ($isEarlyOut) {
-                                    // Under a full 8 net hours (excl. breaks) → partial day (Half)
-                                    echo '<span class="badge bg-warning text-dark" style="font-size:.7rem" title="Half / Short day &mdash; under 8 net working hours, excl. breaks (in ' . h(date('h:i A', strtotime($rec['in_time']))) . ', out ' . h(date('h:i A', strtotime($rec['out_time']))) . ')">H</span>';
+                                    echo _rep_absentBadge($empId, $cellDateStr, $rec['leave_classification'] ?? null, $canClassify, $paidUsedByEmp[$empId] ?? 0, $sandwichLeaveMap[$empId][$cellDateStr] ?? 0);
+                                } elseif ($partialKind !== null) {
+                                    // Partial working day. H = a half day (exactly 4 net
+                                    // hours, or a post-cutoff check-in) which the slip folds
+                                    // into LOP Days; EO = every other shortfall, which the
+                                    // slip charges under "Others".
+                                    $pInfo = ' (in ' . h(date('h:i A', strtotime($rec['in_time'])))
+                                           . ', out ' . h(date('h:i A', strtotime($rec['out_time']))) . ')';
+                                    if ($partialKind === 'half') {
+                                        echo '<span class="badge bg-warning text-dark" style="font-size:.7rem" title="Half Day &mdash; 4 net working hours, or a check-in after the ~11:00 cutoff; deducted as a 0.5 LOP day' . $pInfo . '">H</span>';
+                                    } else {
+                                        echo '<span class="badge" style="background:#b45309;color:#fff;font-size:.7rem" title="Early Out &mdash; a partial day other than a half day (short hours); deducted under &quot;Others&quot; on the payslip' . $pInfo . '">EO</span>';
+                                    }
                                 } elseif ($status === null && $isFuture) {
                                     // Future date with no record — neutral dash
                                     echo '<span class="badge bg-light text-dark" style="font-size:.7rem;border:1px solid #dee2e6">&#8212;</span>';
                                 } elseif ($status === null && !$isFuture) {
                                     // Past/today with no record → absent (classifiable; the row is
                                     // created on demand when a classification is chosen).
-                                    echo _rep_absentBadge($empId, $cellDateStr, null, $canClassify, $paidUsedByEmp[$empId] ?? 0);
+                                    echo _rep_absentBadge($empId, $cellDateStr, null, $canClassify, $paidUsedByEmp[$empId] ?? 0, $sandwichLeaveMap[$empId][$cellDateStr] ?? 0);
                                 } else {
                                     // Map HRMS ENUM status to Bootstrap color + abbreviation
                                     switch ($status) {
@@ -680,6 +739,8 @@ foreach ($employees as $emp) {
                         $manHrsVal   = (float)($stat['man_hours']    ?? 0);
                         $absDays     = (int)($stat['absent_days']    ?? $absentCount);
                         $halfDays    = (int)($stat['half_days']      ?? $halfCount);
+                        $shortDays   = (int)($stat['short_days']     ?? $shortCount);
+                        $sandDays    = (int)($stat['sandwich_days']  ?? 0);
                     ?>
 
                     <!-- P: Present count (grid) -->
@@ -690,6 +751,13 @@ foreach ($employees as $emp) {
 
                     <!-- H: Half Day count -->
                     <td class="text-center fw-bold text-warning"><?= $halfDays ?></td>
+
+                    <!-- EO: Early Out day count (every other partial day) -->
+                    <td class="text-center fw-bold" style="color:#b45309"><?= $shortDays ?></td>
+
+                    <!-- SL: Sandwich Leave count (offs/holidays charged as LOP) -->
+                    <td class="text-center fw-bold" style="color:#9d174d"
+                        title="Sandwich Leave &mdash; every day the sandwich spans: the leave before, the company leave(s) between, and the leave after. These days are excluded from the A column"><?= $sandDays ?></td>
 
                     <!-- L: Paid leave days (absences classified as Paid Leave) -->
                     <?php $leaveDays = (int)($stat['leave_days'] ?? 0); ?>
@@ -762,7 +830,9 @@ foreach ($employees as $emp) {
             P = Present &nbsp;|&nbsp;
             A = Absent &nbsp;|&nbsp;
             <span class="badge" style="background:#e67e22;font-size:.7rem">A</span> = No Checkout (marked absent, orange) &nbsp;|&nbsp;
-            H = Half Day &nbsp;|&nbsp;
+            H = Half Day (4 net hrs, or a check-in after ~11:00 &mdash; 0.5 LOP day) &nbsp;|&nbsp;
+            <span class="badge" style="background:#b45309;color:#fff;font-size:.7rem">EO</span> = Early Out (any other partial day &mdash; deducted under &ldquo;Others&rdquo;) &nbsp;|&nbsp;
+            <span class="badge" style="background:#9d174d;color:#fff;font-size:.7rem">SL</span> = Sandwich Leave &mdash; a leave that closed a sandwich, so the company leave beside it is charged as LOP too. The <strong>SL</strong> column counts every day the sandwich spans (leave + off + leave = 3); those days are left out of <strong>A</strong>. &nbsp;|&nbsp;
             L = Late &nbsp;|&nbsp;
             OL = On Leave
             &nbsp;|&nbsp;
@@ -876,38 +946,65 @@ function _rep_satCountUpTo(DateTime $d): int {
 }
 
 /**
- * True when a present working-day (On Time / Late, both punches) should count as
- * a HALF DAY: the employee either checked in after 11:00 AM, or worked under 8
- * hours (which also covers early checkout and the 9:00–1:30 case). A 9:00–6:15
- * day (check-in by 11:00 and ≥ 8 hours) is a full day. Shown as Half Day in the
- * report; payroll pro-rates the salary on the hours actually worked.
+ * Run the shared day classifier over one attendance row, or null when the row is
+ * not a punched working day.
+ *
+ * Net worked = presence − break windows within it, judged against the shift
+ * STAMPED ON THIS ROW (falling back to the employee's current shift, then the
+ * legacy globals) — the same resolver payroll uses, so the report and the salary
+ * slip never disagree about a past month.
+ *
+ * 'Half Day' is an accepted status deliberately: payroll classifies that status
+ * by the hours worked too, so excluding it here would let the grid say H while
+ * the slip charged the day under "Others".
+ *
+ * @return array{status:string,worked_h:float,ded_days:float,late:bool}|null
  */
-function _rep_isEarlyOut(?array $rec, ?array $lunchWindow = null, int $empId = 0): bool {
-    if (!$rec || empty($rec['in_time']) || empty($rec['out_time'])) return false;
-    if (!in_array($rec['status'] ?? '', ['On Time', 'Late'], true)) return false;
+function _rep_classify(?array $rec, ?array $lunchWindow = null, int $empId = 0): ?array {
+    if (!$rec || empty($rec['in_time']) || empty($rec['out_time'])) return null;
+    if (!in_array($rec['status'] ?? '', ['On Time', 'Late', 'Half Day'], true)) return null;
     $in  = _rep_timeToMins($rec['in_time']);
     $out = _rep_timeToMins($rec['out_time']);
-    if ($out <= $in) return false;                 // ignore midnight-cross / bad data
-    // Net worked = presence − break windows within it, judged against the shift
-    // STAMPED ON THIS ROW (falling back to the employee's current shift, then the
-    // legacy globals) — the same resolver payroll uses, so the report and the
-    // salary slip never disagree about a past month.
-    // Shows "H" when: check-in after the cutoff, OR net worked ≤ 4h (half/short).
-    // (The slip splits H into "Half Day" vs "Short Hours"; the report shows both as H.)
+    if ($out <= $in) return null;                  // ignore midnight-cross / bad data
     if ($empId > 0 && function_exists('attendance_row_timing')) {
         $t      = attendance_row_timing(isset($rec['shift_id']) ? (int)$rec['shift_id'] : null, $empId);
         $worked = max(0, ($out - $in) - break_minutes_within($in, $out, $t['lunch'], $t['breaks']));
-        return in_array(
-            attendance_classify($worked, $in, $t['start_mins'], $t['daily_grace'], $out, $t['end_mins'],
-                                $t['shift_id'] !== null ? $t['half_cutoff'] : null)['status'],
-            ['half', 'short'], true
-        );
+        return attendance_classify($worked, $in, $t['start_mins'], $t['daily_grace'], $out, $t['end_mins'],
+                                   $t['shift_id'] !== null ? $t['half_cutoff'] : null);
     }
     $worked = max(0, ($out - $in) - break_minutes_within($in, $out, $lunchWindow));
     $osM = function_exists('setting_office_start_mins') ? (int) setting_office_start_mins() : 9 * 60;
     $grM = function_exists('setting_daily_grace_mins')  ? (int) setting_daily_grace_mins()  : 15;
     $oeM = function_exists('setting_office_end_mins')   ? (int) setting_office_end_mins()    : 18 * 60;
-    return in_array(attendance_classify($worked, $in, $osM, $grM, $out, $oeM)['status'], ['half', 'short'], true);
+    return attendance_classify($worked, $in, $osM, $grM, $out, $oeM);
+}
+
+/**
+ * Which partial-day badge a row earns: 'half' → H, 'short' → EO, null → normal.
+ *
+ * 'half' is the exactly-4-net-hours day OR a post-cutoff (~11:00) check-in, both
+ * of which the slip folds into LOP Days. 'short' is every OTHER day carrying a
+ * shortfall — under 4h, or an early leave with 4h–8h worked — which the slip
+ * charges under "Others". A 'present' day that left early is therefore EO too:
+ * it was docked, so showing it as an ordinary P/L would hide the deduction.
+ */
+function _rep_partialKind(?array $rec, ?array $lunchWindow = null, int $empId = 0): ?string {
+    $c = _rep_classify($rec, $lunchWindow, $empId);
+    if (!$c) return null;
+    if ($c['status'] === 'half') return 'half';
+    return (($c['ded_days'] ?? 0) > 0) ? 'short' : null;
+}
+
+/**
+ * True when a day is EXEMPT from the monthly late pool. Only 'half' and 'short'
+ * qualify — those two suppress the late flag in attendance_classify(), so
+ * counting their minutes here would put the report out of step with the slip.
+ * A deducted 'present' day still owes its late minutes (it is EO on the grid but
+ * late-eligible), which is why this is a separate test from _rep_partialKind().
+ */
+function _rep_isEarlyOut(?array $rec, ?array $lunchWindow = null, int $empId = 0): bool {
+    $c = _rep_classify($rec, $lunchWindow, $empId);
+    return $c !== null && in_array($c['status'], ['half', 'short'], true);
 }
 
 /**
@@ -915,10 +1012,22 @@ function _rep_isEarlyOut(?array $rec, ?array $lunchWindow = null, int $empId = 0
  * clickable control (Paid / Unpaid / Clear). Works for both real Absent rows and
  * "no record" past days (the attendance row is created on demand on first save).
  */
-function _rep_absentBadge(int $empId, string $dateStr, ?string $cls, bool $canClassify, int $paidUsed): string {
+function _rep_absentBadge(int $empId, string $dateStr, ?string $cls, bool $canClassify, int $paidUsed, int $sandwichOffs = 0): string {
     if ($cls === 'paid')       { $bClass = 'badge';           $bStyle = 'background:#e6e6fa;color:#5b21b6;border:1px solid #c4b5fd'; $bTxt = 'PL'; $bTitle = 'Paid Leave'; }
     elseif ($cls === 'unpaid') { $bClass = 'badge bg-danger'; $bStyle = '';                                                          $bTxt = 'UL'; $bTitle = 'Unpaid Leave (LOP)'; }
     else                       { $bClass = 'badge bg-danger'; $bStyle = '';                                                          $bTxt = 'A';  $bTitle = 'Absent'; }
+
+    // A leave that closed a sandwich reads as SL instead of A. It stays the same
+    // clickable control: marking it Paid Leave is precisely how a manager
+    // dissolves the sandwich, so that must not be taken away here.
+    if ($sandwichOffs > 0 && $cls !== 'paid') {
+        $bClass = 'badge';
+        $bStyle = 'background:#9d174d;color:#fff';
+        $bTxt   = 'SL';
+        $bTitle = 'Sandwich Leave — this leave closed a sandwich, so '
+                . $sandwichOffs . ' company leave day' . ($sandwichOffs == 1 ? '' : 's')
+                . ' beside it ' . ($sandwichOffs == 1 ? 'is' : 'are') . ' charged as LOP too';
+    }
 
     if (!$canClassify) {
         return '<span class="' . $bClass . '" style="font-size:.7rem;' . $bStyle . '" title="' . h($bTitle) . '">' . $bTxt . '</span>';

@@ -32,7 +32,7 @@ $_sbLogoUrl   = null;
 try {
     $brandLogo = (string) setting_get('brand_logo', '');
     if ($brandLogo && file_exists(BASE_PATH . '/storage/branding/' . $brandLogo)) {
-        $_sbLogoUrl = BASE_URL . '/storage/branding/' . $brandLogo;
+        $_sbLogoUrl = file_url('storage/branding/' . $brandLogo);
     } else {
         $stmt = db()->prepare(
             "SELECT logo FROM entities
@@ -42,14 +42,14 @@ try {
         $stmt->execute();
         $logoFile = $stmt->fetchColumn();
         if ($logoFile && file_exists(BASE_PATH . '/storage/entities/' . $logoFile)) {
-            $_sbLogoUrl = BASE_URL . '/storage/entities/' . $logoFile;
+            $_sbLogoUrl = file_url('storage/entities/' . $logoFile);
         }
     }
 } catch (Exception $_e) { /* non-fatal */ }
 
 // No branding/entity logo → use the stored default (storage/branding/default_brand.png).
 if (!$_sbLogoUrl && file_exists(BASE_PATH . '/storage/branding/default_brand.png')) {
-    $_sbLogoUrl = BASE_URL . '/storage/branding/default_brand.png';
+    $_sbLogoUrl = file_url('storage/branding/default_brand.png');
 }
 
 // ── Pre-compute collapsed/open state for each submenu group ──────────────────
@@ -82,6 +82,28 @@ $_roleColours = [
     'employee'    => 'secondary',
 ];
 $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
+
+/* Buffer the whole page (security audit L-1).
+ *
+ * Without this the layout below is written straight to the client, so the
+ * response headers are committed the moment the header partial runs. Any
+ * require_permission() that fires afterwards then finds http_response_code(403)
+ * is a no-op and 403.php gets appended to a page already in flight — the browser
+ * receives HTTP 200, the sidebar, and a SECOND <!DOCTYPE html> document.
+ *
+ * With the page buffered, nothing is committed until the script ends, so a late
+ * denial can still discard everything drawn so far and send a real 403. That
+ * covers pages this fix cannot reach directly — modules/deployment/ is a
+ * protected path the deployer refuses to overwrite — and any page added later
+ * that checks its permission after including this file.
+ *
+ * PHP flushes the buffer at shutdown, so nothing else has to change. */
+/* Always open our OWN buffer, even when one is already active: this server runs
+ * output_buffering=4096, so a default buffer exists but FLUSHES as soon as the
+ * layout exceeds 4 KB — which commits the headers long before a late permission
+ * check runs. An unlimited buffer stacked on top holds everything until the
+ * script ends. */
+if (!headers_sent()) ob_start();
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -329,7 +351,7 @@ $_roleBadge = $_roleColours[$_sbRole] ?? 'secondary';
                 <img src="<?= h($_sbLogoUrl) ?>" alt="Logo"
                      style="width:40px;height:40px;object-fit:contain;border-radius:6px;">
             <?php else: ?>
-                <img src="<?= BASE_URL ?>/storage/branding/default_brand.png" alt="Logo">
+                <img src="<?= h(file_url('storage/branding/default_brand.png')) ?>" alt="Logo">
             <?php endif; ?>
         </div>
         <div class="sidebar-brand-text"><?= h($_sbBrandName) ?></div>

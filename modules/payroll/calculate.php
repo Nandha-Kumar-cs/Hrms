@@ -68,7 +68,7 @@ foreach ($employees as $emp) {
     $empId = (int)$emp['id'];
 
     // Skip employees who joined after this month
-    $joiningDate = $emp['joining_date'] ?? null;
+    $joiningDate = $emp['join_date'] ?? null;   // employees.join_date — 'joining_date' is not a column
     $beforeJoining = false;
     if ($joiningDate) {
         $joinMonth = (int)date('Y', strtotime($joiningDate)) * 100 + (int)date('n', strtotime($joiningDate));
@@ -141,11 +141,11 @@ foreach ($employees as $emp) {
 $employeesProcessed = count(array_filter($rows, fn($r) => $r['result'] !== null));
 
 // ─── Working days for this month ─────────────────────────────────────────────
-$monthEnd = date('Y-m-t', strtotime($monthStart));
-$holSt    = $db->prepare('SELECT COUNT(*) FROM holidays WHERE h_date BETWEEN ? AND ?');
-$holSt->execute([$monthStart, $monthEnd]);
-$holidays    = (int)$holSt->fetchColumn();
-$workingDays = PAYROLL_WORKING_DAYS - $holidays;
+// Taken from the engine, not recomputed here. This badge used to be
+// PAYROLL_WORKING_DAYS (a flat 26) minus an unfiltered holiday count, so it
+// both ignored is_working_day and disagreed with the per-employee figure shown
+// in the same table (security audit M-1).
+$workingDays = count($calc->workingDayDates($month, $year));
 
 $page_title = 'Salary Calculation — ' . $monthLabel;
 require_once __DIR__ . '/../../includes/header.php';

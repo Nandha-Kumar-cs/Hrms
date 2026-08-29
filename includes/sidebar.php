@@ -38,7 +38,7 @@ try {
     if ($logoFile) {
         $logoPath = BASE_PATH . '/storage/entities/' . $logoFile;
         if (file_exists($logoPath)) {
-            $_sbLogoUrl = BASE_URL . '/storage/entities/' . $logoFile;
+            $_sbLogoUrl = file_url('storage/entities/' . $logoFile);
         }
     }
 } catch (Exception $_e) { /* non-fatal */ }

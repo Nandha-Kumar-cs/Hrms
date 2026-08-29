@@ -7,7 +7,8 @@
  * attendance as "On Leave"; reversing (edit/delete) restores both.
  *
  * Rules carried over:
- *   • days_requested = calendar days in range excluding Sundays.
+ *   • days_requested = WORKING days in range — the same calendar payroll uses
+ *     (Sundays, 1st/3rd Saturdays and declared holidays are not charged).
  *   • Max 1 approved PAID leave per month (comp-off excluded — own quota).
  *   • Comp-off leave types are gated by the comp-off balance (see comp_off.php).
  */
@@ -19,42 +20,231 @@ $db   = db();
 $user = current_user();
 $yearNow = (int)date('Y');
 
+// Records which calendar year's leave_balances row a request actually debited,
+// so a later reversal (edit/delete) can target that EXACT year rather than
+// whatever year happens to be current when the reversal runs. Approving a
+// December request in January, then deleting it months later, must credit
+// back the December year — not the year "now" happens to be (security audit
+// H-10). No migration file — this project adds columns lazily on first use
+// (see db_ensure_column, includes/helpers.php).
+db_ensure_column('leave_requests', 'balance_year', 'INT NULL');
+
+/* The attendance snapshot columns are added HERE, at page scope, and never from
+ * inside a transaction.
+ *
+ * db_ensure_column() issues ALTER TABLE, and DDL causes an IMPLICIT COMMIT in
+ * MySQL/MariaDB. leave_apply_attendance() and leave_remove_attendance() both call
+ * leave_attendance_columns_ready() as their first statement, and both run inside
+ * the approve / edit / delete transactions below — so on the FIRST request after
+ * a deployment (columns not yet present) that ALTER silently committed the
+ * half-finished transaction, and the rollback in the catch block then had nothing
+ * left to undo: a balance debit or refund could stick with the attendance rows
+ * only partly written. The static guard inside the helper means it struck exactly
+ * once per process, which is why it survived testing on an already-migrated box.
+ *
+ * Doing it up front makes the in-function calls no-ops, so the transactions stay
+ * pure DML and roll back cleanly. */
+leave_attendance_columns_ready();
+
 $canCreate  = can('leaves', 'create');
 $canEdit    = can('leaves', 'edit');                          // edit request FIELDS only (no approval)
 $canApprove = can('leaves', 'approve') && !is_self_scoped();  // admin-only approve / reject
 $canDelete  = can('leaves', 'delete');
 
-// Employee self-service: non-privileged employees only see / act on their own records.
-$isEmployee = (($user['role_name'] ?? '') === 'Employee');
-$selfEmpId  = (int)($user['employee_id'] ?? 0);
+// Employee self-service: a self-scoped user only sees / acts on their OWN records.
+//
+// Driven by the role's self_scope flag, NOT by a literal role name. The old test
+// was $user['role_name'] === 'Employee', so simply renaming that role to "Staff"
+// turned every self-service restriction below off at once: the user could file
+// leave for anybody, open anybody's request, and list everybody's pending leave
+// (security audit M-8). update/delete already used is_self_scoped(); everything
+// else was the outlier.
+$isSelfScoped = is_self_scoped();
+// current_employee_id() also resolves an account whose employee link was never
+// set, by matching the login email — $user['employee_id'] alone reads as 0 there,
+// which would silently widen the checks below.
+$selfEmpId    = (int) current_employee_id();
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
+/**
+ * Is this leave request the CURRENT user's own?
+ *
+ * Uses current_employee_id() rather than users.employee_id directly: that helper
+ * also resolves an account whose employee link was never set, by matching the
+ * login email to an employee record. Without that fallback an unlinked HR
+ * account would read as "employee 0" and sail straight past the self-approval
+ * guard (security audit M-7).
+ *
+ * Returns false when the user maps to no employee at all — such an account has
+ * no own leave to adjudicate, so there is nothing to block.
+ */
+function leave_is_own_request(array $req): bool
+{
+    $own = function_exists('current_employee_id') ? (int) current_employee_id() : 0;
+    return $own > 0 && (int) $req['employee_id'] === $own;
+}
+
+/**
+ * Is this a day an employee would otherwise have worked? (security audit L-6)
+ *
+ * Leave used to count every day except Sunday, while payroll credited only true
+ * working days — so a leave spanning a 1st/3rd Saturday or a declared holiday
+ * debited the employee's quota for a day payroll never paid for. Both sides now
+ * ask WorkCalendar, the same authority the payroll working-day list uses
+ * (override wins → Sunday off → 1st/3rd Saturday off → declared holiday off).
+ *
+ * Memoised: this is called once per day of every leave request on the list page,
+ * and WorkCalendar hits the holidays table each time.
+ */
+function leave_is_working_day(DateTimeInterface $d): bool
+{
+    static $memo = [];
+    $ymd = $d->format('Y-m-d');
+    if (isset($memo[$ymd])) return $memo[$ymd];
+    return $memo[$ymd] = WorkCalendar::isWorkingDay($d);
+}
+
 function leave_days(string $start, string $end): int
 {
     $d = new DateTime($start); $e = new DateTime($end); $n = 0;
-    for (; $d <= $e; $d->modify('+1 day')) if ((int)$d->format('N') !== 7) $n++;
+    for (; $d <= $e; $d->modify('+1 day')) if (leave_is_working_day($d)) $n++;
     return $n;
 }
-function leave_apply_attendance(int $emp, string $start, string $end, string $typeName, int $by): void
+/**
+ * Columns that make an approved leave's effect on attendance REVERSIBLE:
+ *   leave_request_id — which request owns this row. Identifying rows by id
+ *                      instead of by a "Approved leave: X" remarks string means
+ *                      an edited remark or a renamed leave type can no longer
+ *                      orphan the row (security audit M-6).
+ *   leave_prev_state — a JSON snapshot of the punch data the leave displaced,
+ *                      so approving over a real worked day is undoable.
+ * Added lazily, as this project does elsewhere (see db_ensure_column).
+ */
+function leave_attendance_columns_ready(): void
 {
-    $up = db()->prepare(
-        'INSERT INTO attendance (employee_id, att_date, status, remarks, marked_by)
-         VALUES (?,?,"On Leave",?,?)
-         ON DUPLICATE KEY UPDATE status="On Leave", in_time=NULL, out_time=NULL, ot_hours=NULL, remarks=VALUES(remarks), marked_by=VALUES(marked_by)'
+    static $done = false;
+    if ($done) return;
+
+    /* NEVER run DDL inside a transaction. ALTER TABLE forces an implicit COMMIT
+     * in MySQL/MariaDB, which would commit the caller's half-finished work and
+     * leave its rollback with nothing to undo. The page-scope call at the top of
+     * this file has already done this by the time any transaction opens; if some
+     * future caller gets here mid-transaction anyway, skipping is the safe move —
+     * a missing column then raises a normal query error that the surrounding
+     * try/catch rolls back cleanly, instead of silently half-committing. */
+    if (db()->inTransaction()) return;
+
+    $done = true;
+    db_ensure_column('attendance', 'leave_request_id', 'INT UNSIGNED NULL');
+    db_ensure_column('attendance', 'leave_prev_state', 'TEXT NULL');
+}
+
+function leave_apply_attendance(int $emp, string $start, string $end, string $typeName, int $by, int $requestId = 0): void
+{
+    leave_attendance_columns_ready();
+    $db = db();
+
+    $find = $db->prepare(
+        'SELECT status, in_time, out_time, ot_hours, remarks, leave_request_id, leave_prev_state
+           FROM attendance WHERE employee_id = ? AND att_date = ? LIMIT 1'
     );
+    $ins = $db->prepare(
+        'INSERT INTO attendance (employee_id, att_date, status, remarks, marked_by, leave_request_id, leave_prev_state)
+         VALUES (?,?,"On Leave",?,?,?,NULL)'
+    );
+    $upd = $db->prepare(
+        'UPDATE attendance
+            SET status = "On Leave", in_time = NULL, out_time = NULL, ot_hours = NULL,
+                remarks = ?, marked_by = ?, leave_request_id = ?, leave_prev_state = ?
+          WHERE employee_id = ? AND att_date = ?'
+    );
+
     $d = new DateTime($start); $e = new DateTime($end);
     for (; $d <= $e; $d->modify('+1 day')) {
-        if ((int)$d->format('N') === 7) continue;
-        $up->execute([$emp, $d->format('Y-m-d'), 'Approved leave: ' . $typeName, $by]);
+        // Same calendar as leave_days() and payroll — a non-working day is not
+        // marked 'On Leave' at all (security audit L-6).
+        if (!leave_is_working_day($d)) continue;
+        $ds     = $d->format('Y-m-d');
+        $remark = 'Approved leave: ' . $typeName;
+
+        $find->execute([$emp, $ds]);
+        $existing = $find->fetch(PDO::FETCH_ASSOC);
+
+        if (!$existing) {                       // no attendance that day — nothing to preserve
+            $ins->execute([$emp, $ds, $remark, $by, $requestId ?: null]);
+            continue;
+        }
+
+        // Snapshot ONLY genuine attendance. A row already owned by a leave keeps
+        // whatever snapshot it has — re-applying after an edit must not overwrite
+        // the original punch data with the "On Leave" state we ourselves wrote.
+        $prev = $existing['leave_prev_state'];
+        if (empty($existing['leave_request_id'])) {
+            $prev = json_encode([
+                'status'   => $existing['status'],
+                'in_time'  => $existing['in_time'],
+                'out_time' => $existing['out_time'],
+                'ot_hours' => $existing['ot_hours'],
+                'remarks'  => $existing['remarks'],
+            ], JSON_UNESCAPED_UNICODE);
+        }
+        $upd->execute([$remark, $by, $requestId ?: null, $prev, $emp, $ds]);
     }
 }
-function leave_remove_attendance(int $emp, string $start, string $end, string $typeName): void
+
+/**
+ * Undo what leave_apply_attendance() did: restore the displaced punch data where
+ * there was any, and delete only the rows the leave itself created.
+ */
+function leave_remove_attendance(int $emp, string $start, string $end, string $typeName, int $requestId = 0): void
 {
-    $del = db()->prepare("DELETE FROM attendance WHERE employee_id=? AND att_date=? AND remarks=?");
-    $d = new DateTime($start); $e = new DateTime($end);
-    for (; $d <= $e; $d->modify('+1 day')) {
-        if ((int)$d->format('N') === 7) continue;
-        $del->execute([$emp, $d->format('Y-m-d'), 'Approved leave: ' . $typeName]);
+    leave_attendance_columns_ready();
+    $db = db();
+
+    // Rows this request owns — by id, so an edited remark or a renamed leave
+    // type cannot leave them stranded as permanent phantom "On Leave" days.
+    $rows = [];
+    if ($requestId) {
+        $sel = $db->prepare('SELECT id, leave_prev_state FROM attendance WHERE leave_request_id = ?');
+        $sel->execute([$requestId]);
+        $rows = $sel->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // Legacy rows approved before leave_request_id existed carry no owner, so
+    // fall back to the old remarks match — otherwise they could never be
+    // reversed at all.
+    if (!$rows) {
+        $sel = $db->prepare(
+            'SELECT id, leave_prev_state FROM attendance
+              WHERE employee_id = ? AND att_date BETWEEN ? AND ?
+                AND remarks = ? AND leave_request_id IS NULL'
+        );
+        $sel->execute([$emp, $start, $end, 'Approved leave: ' . $typeName]);
+        $rows = $sel->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $restore = $db->prepare(
+        'UPDATE attendance
+            SET status = ?, in_time = ?, out_time = ?, ot_hours = ?, remarks = ?,
+                leave_request_id = NULL, leave_prev_state = NULL
+          WHERE id = ?'
+    );
+    $del = $db->prepare('DELETE FROM attendance WHERE id = ?');
+
+    foreach ($rows as $r) {
+        $prev = !empty($r['leave_prev_state']) ? json_decode((string)$r['leave_prev_state'], true) : null;
+        if (is_array($prev)) {
+            $restore->execute([
+                $prev['status']   ?? 'Absent',
+                $prev['in_time']  ?? null,
+                $prev['out_time'] ?? null,
+                $prev['ot_hours'] ?? null,
+                $prev['remarks']  ?? null,
+                (int)$r['id'],
+            ]);
+        } else {
+            $del->execute([(int)$r['id']]);   // the leave created this row — remove it
+        }
     }
 }
 function leave_balance_adjust(int $emp, int $typeId, int $year, float $totalAllowed, float $delta): void
@@ -64,6 +254,18 @@ function leave_balance_adjust(int $emp, int $typeId, int $year, float $totalAllo
          VALUES (?,?,?,?,GREATEST(0,?))
          ON DUPLICATE KEY UPDATE used_days = GREATEST(0, used_days + ?), total_days = VALUES(total_days)'
     )->execute([$emp, $typeId, $year, $totalAllowed, max(0, $delta), $delta]);
+}
+/**
+ * The year to REVERSE a previously-approved request's balance effect against —
+ * i.e. the year that was actually debited, not whichever year happens to be
+ * current now. Reads the value stored at approval time; falls back to deriving
+ * it from the request's own start_date only for rows approved before the
+ * balance_year column existed (security audit H-10).
+ */
+function leave_balance_year_of(array $req): int
+{
+    if (!empty($req['balance_year'])) return (int) $req['balance_year'];
+    return (int) date('Y', strtotime($req['start_date']));
 }
 /** 1 approved paid leave per month (comp-off excluded). Returns error or null. */
 function leave_paid_conflict(int $emp, int $typeId, string $start, string $end, ?int $excludeId = null): ?string
@@ -107,7 +309,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'create') {
         if (!$canCreate) { http_response_code(403); exit('Forbidden'); }
         $emp   = (int)($_POST['employee_id'] ?? 0);
-        if ($isEmployee) $emp = $selfEmpId;   // employees can only apply for themselves
+        if ($isSelfScoped) $emp = $selfEmpId;   // employees can only apply for themselves
         $typeId= (int)($_POST['leave_type_id'] ?? 0);
         $start = sanitize($_POST['start_date'] ?? '');
         $end   = sanitize($_POST['end_date'] ?? '');
@@ -153,6 +355,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'approve' || $action === 'reject') {
         // Admin-only: requires the separate approve permission (never editors/employees).
         if (!$canApprove) { http_response_code(403); exit('Forbidden'); }
+
+        // Nobody adjudicates their own leave. can('leaves','approve') is a global
+        // flag and is_self_scoped() only stops plain Employees — an HR Manager or
+        // Admin who also HAS an employee record could approve their own request,
+        // stamping approved_by with their own id (security audit M-7).
+        if (leave_is_own_request($req)) {
+            flash('error',
+                'You cannot ' . $action . ' your own leave request. Someone else with approval '
+                . 'rights must decide it. To withdraw it yourself, delete the request instead.'
+            );
+            redirect($self);
+        }
+
         if (($req['admin_approval_status'] ?? 'pending') !== 'pending') { flash('error', 'Only pending requests can be ' . $action . 'd.'); redirect($self); }
         $remarks = trim($_POST['remarks'] ?? '');
 
@@ -167,10 +382,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($c = leave_paid_conflict((int)$req['employee_id'], (int)$req['leave_type_id'], $req['start_date'], $req['end_date'], $id)) { flash('error', $c); redirect($self); }
         if ($req['is_comp_off'] && ($c = comp_off_check_balance((int)$req['employee_id'], (int)$req['days_requested'], $id))) { flash('error', $c); redirect($self); }
 
-        $db->prepare("UPDATE leave_requests SET admin_approval_status='approved', status='approved', approved_by=?, approved_at=NOW(), remarks=? WHERE id=?")
-           ->execute([(int)$user['id'], $remarks ?: null, $id]);
-        leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $yearNow, (float)$req['days_allowed'], (float)$req['days_requested']);
-        leave_apply_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name'], (int)$user['id']);
+        // The leave's OWN year, not the year approval happens to occur in — a
+        // December request approved in January must debit December's year
+        // (security audit H-10). Stored on the row so a later reversal knows
+        // exactly what was debited, regardless of what year "now" is by then.
+        $balanceYear = (int) date('Y', strtotime($req['start_date']));
+
+        // Approving is three writes — the status, the balance debit and one
+        // attendance row per leave day. A throw part-way through (the attendance
+        // loop is the long one) left a request flagged approved with a partial
+        // or missing balance debit and only some days marked, with nothing to
+        // indicate it (security audit M-5).
+        $db->beginTransaction();
+        try {
+            $db->prepare("UPDATE leave_requests SET admin_approval_status='approved', status='approved', approved_by=?, approved_at=NOW(), remarks=?, balance_year=? WHERE id=?")
+               ->execute([(int)$user['id'], $remarks ?: null, $balanceYear, $id]);
+            leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $balanceYear, (float)$req['days_allowed'], (float)$req['days_requested']);
+            leave_apply_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name'], (int)$user['id'], $id);
+            $db->commit();
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            error_log('Leave approve failed for request ' . $id . ': ' . $e->getMessage());
+            flash('error', 'The leave request could not be approved. Nothing was changed — the request is still pending. (' . $e->getMessage() . ')');
+            redirect($self);
+        }
+
         flash('success', 'Leave request approved.');
         redirect($self);
     }
@@ -178,14 +414,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'delete') {
         if (!$canDelete) { http_response_code(403); exit('Forbidden'); }
         if (is_self_scoped() && (int)$req['employee_id'] !== $selfEmpId) { http_response_code(403); exit('Forbidden'); }
-        if ($req['status'] === 'approved') {
-            leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $yearNow, (float)$req['days_allowed'], -(float)$req['days_requested']);
-            leave_remove_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name']);
+        // Same shape as approve/edit: refund the balance, drop the attendance
+        // rows and delete the request must all land together or not at all.
+        // The attachment is removed only after the commit — deleting it first
+        // would destroy it even if the delete then rolled back (security audit
+        // M-5; not named there, but the identical exposure).
+        $db->beginTransaction();
+        try {
+            if ($req['status'] === 'approved') {
+                leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], leave_balance_year_of($req), (float)$req['days_allowed'], -(float)$req['days_requested']);
+                leave_remove_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name'], $id);
+            }
+            $db->prepare('DELETE FROM leave_requests WHERE id=?')->execute([$id]);
+            $db->commit();
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            error_log('Leave delete failed for request ' . $id . ': ' . $e->getMessage());
+            flash('error', 'The leave request could not be deleted. Nothing was changed. (' . $e->getMessage() . ')');
+            redirect($self);
         }
+
         if ($req['document'] && is_file(__DIR__ . '/../../uploads/leave_docs/' . $req['document'])) {
             @unlink(__DIR__ . '/../../uploads/leave_docs/' . $req['document']);
         }
-        $db->prepare('DELETE FROM leave_requests WHERE id=?')->execute([$id]);
         flash('success', 'Leave request deleted.');
         redirect($self);
     }
@@ -216,36 +467,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // The approval decision is left exactly as it was — editing never changes it.
         $wasApproved = ($req['status'] === 'approved');
 
-        // If it was already approved, reverse the old effects so the edited dates
-        // re-apply cleanly (then re-validate the new range against the rules).
+        // ── VALIDATE FIRST, before touching anything ─────────────────────────
+        // These checks used to run AFTER the balance had been refunded and the
+        // attendance rows deleted — so a failure here redirected away leaving an
+        // approved request with no balance debit and no attendance days, silently
+        // (security audit M-5). Both validators already exclude THIS request by
+        // id, so they give the same answer before the reversal as after it —
+        // the reversal-first ordering bought nothing and cost correctness.
         if ($wasApproved) {
-            leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], $yearNow, (float)$req['days_allowed'], -(float)$req['days_requested']);
-            leave_remove_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name']);
             if ($c = leave_paid_conflict($emp, $typeId, $start, $end, $id)) { flash('error', $c); redirect($self); }
             if ($type['is_comp_off'] && ($c = comp_off_check_balance($emp, $days, $id))) { flash('error', $c); redirect($self); }
         }
 
-        // Document: replace / remove / keep.
-        $doc = $req['document'];
+        // ── Document: create now, delete only after the DB work commits ──────
+        // Deleting the old file up-front would destroy it even if the update
+        // below rolled back, leaving the row pointing at a file that is gone.
+        $doc          = $req['document'];
+        $docToDelete  = null;   // superseded file — removed only after commit
+        $docOnFailure = null;   // freshly uploaded file — removed if we roll back
         if (!empty($_FILES['document']['name'])) {
             $new = upload_file($_FILES['document'], __DIR__ . '/../../uploads/leave_docs', 'leave_');
             if ($new === null) { flash('error', 'Document upload failed.'); redirect($self); }
-            if ($doc && is_file(__DIR__ . '/../../uploads/leave_docs/' . $doc)) @unlink(__DIR__ . '/../../uploads/leave_docs/' . $doc);
-            $doc = $new;
+            $docToDelete  = $doc;
+            $docOnFailure = $new;
+            $doc          = $new;
         } elseif (!empty($_POST['remove_document'])) {
-            if ($doc && is_file(__DIR__ . '/../../uploads/leave_docs/' . $doc)) @unlink(__DIR__ . '/../../uploads/leave_docs/' . $doc);
-            $doc = null;
+            $docToDelete = $doc;
+            $doc         = null;
         }
 
-        // Persist field edits only — status & admin_approval_status are untouched.
-        $db->prepare('UPDATE leave_requests SET employee_id=?, leave_type_id=?, start_date=?, end_date=?, days_requested=?, reason=?, document=? WHERE id=?')
-           ->execute([$emp, $typeId, $start, $end, $days, $reason ?: null, $doc, $id]);
+        // ── One unit of work: reverse → update → re-apply ────────────────────
+        $db->beginTransaction();
+        try {
+            // $req still holds the PRE-edit values here, so leave_balance_year_of()
+            // reverses whatever year was actually debited — not the year "now"
+            // happens to be (security audit H-10).
+            if ($wasApproved) {
+                leave_balance_adjust((int)$req['employee_id'], (int)$req['leave_type_id'], leave_balance_year_of($req), (float)$req['days_allowed'], -(float)$req['days_requested']);
+                leave_remove_attendance((int)$req['employee_id'], $req['start_date'], $req['end_date'], $req['type_name'], $id);
+            }
 
-        // Re-apply approved effects with the edited values.
-        if ($wasApproved) {
-            leave_balance_adjust($emp, $typeId, $yearNow, (float)$type['days_allowed'], (float)$days);
-            leave_apply_attendance($emp, $start, $end, $type['name'], (int)$user['id']);
+            // Persist field edits only — status & admin_approval_status are untouched.
+            $db->prepare('UPDATE leave_requests SET employee_id=?, leave_type_id=?, start_date=?, end_date=?, days_requested=?, reason=?, document=? WHERE id=?')
+               ->execute([$emp, $typeId, $start, $end, $days, $reason ?: null, $doc, $id]);
+
+            // Re-apply approved effects with the edited values — against the EDITED
+            // start date's year (which may differ from the original), and store it
+            // so a future reversal targets this, not a re-derived guess (H-10).
+            if ($wasApproved) {
+                $newBalanceYear = (int) date('Y', strtotime($start));
+                $db->prepare('UPDATE leave_requests SET balance_year=? WHERE id=?')->execute([$newBalanceYear, $id]);
+                leave_balance_adjust($emp, $typeId, $newBalanceYear, (float)$type['days_allowed'], (float)$days);
+                leave_apply_attendance($emp, $start, $end, $type['name'], (int)$user['id'], $id);
+            }
+            $db->commit();
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            // The DB never referenced the new upload, so remove it rather than
+            // leaving an orphan in uploads/leave_docs.
+            if ($docOnFailure && is_file(__DIR__ . '/../../uploads/leave_docs/' . $docOnFailure)) {
+                @unlink(__DIR__ . '/../../uploads/leave_docs/' . $docOnFailure);
+            }
+            error_log('Leave edit failed for request ' . $id . ': ' . $e->getMessage());
+            flash('error', 'The leave request could not be updated. Nothing was changed — the balance and attendance are exactly as they were. (' . $e->getMessage() . ')');
+            redirect($self);
         }
+
+        // Committed — the superseded file is now genuinely unreferenced.
+        if ($docToDelete && is_file(__DIR__ . '/../../uploads/leave_docs/' . $docToDelete)) {
+            @unlink(__DIR__ . '/../../uploads/leave_docs/' . $docToDelete);
+        }
+
         flash('success', 'Leave request updated.');
         redirect($self);
     }
@@ -261,7 +553,7 @@ $screen  = isset($_GET['new']) ? 'new' : ($viewId ? 'view' : ($editId ? 'edit' :
 
 $employees  = $db->query("SELECT id, name, employee_id FROM employees WHERE status='Active' ORDER BY name")->fetchAll();
 $selfName   = '';
-if ($isEmployee) foreach ($employees as $e) if ((int)$e['id'] === $selfEmpId) { $selfName = $e['name'] . ' (' . $e['employee_id'] . ')'; break; }
+if ($isSelfScoped) foreach ($employees as $e) if ((int)$e['id'] === $selfEmpId) { $selfName = $e['name'] . ' (' . $e['employee_id'] . ')'; break; }
 $leaveTypes = $db->query("SELECT id, name, days_allowed, is_paid, is_comp_off FROM leave_types WHERE status='active' ORDER BY name")->fetchAll();
 $statusBadge = ['pending' => 'warning text-dark', 'approved' => 'success', 'rejected' => 'danger'];
 
@@ -285,7 +577,7 @@ $leaveLoad = function (int $id) use ($db) {
 $current = null;
 if ($screen === 'view' || $screen === 'edit') {
     $current = $leaveLoad($viewId ?: $editId);
-    if (!$current || ($isEmployee && (int)$current['employee_id'] !== $selfEmpId)) { $screen = 'list'; $current = null; }
+    if (!$current || ($isSelfScoped && (int)$current['employee_id'] !== $selfEmpId)) { $screen = 'list'; $current = null; }
     if ($screen === 'edit' && !$canEdit) { $screen = 'view'; }
 }
 if (($screen === 'new' && !$canCreate)) { $screen = 'list'; }
@@ -313,7 +605,7 @@ if ($screen === 'new'): ?>
             <?= csrf_field() ?><input type="hidden" name="action" value="create">
             <div class="mb-3">
                 <label class="form-label fw-semibold">Employee <span class="text-danger">*</span></label>
-                <?php if ($isEmployee): ?>
+                <?php if ($isSelfScoped): ?>
                     <input type="text" class="form-control" value="<?= h($selfName) ?>" readonly>
                 <?php else: ?>
                 <select name="employee_id" class="form-select" required>
@@ -374,7 +666,7 @@ elseif ($screen === 'view'):
                     <tr><th class="text-muted">Days Requested</th><td><strong><?= $fmtDays($current['days_requested']) ?></strong></td></tr>
                     <tr><th class="text-muted">Reason</th><td><?= h($current['reason'] ?? '') ?: '—' ?></td></tr>
                     <?php if ($current['document']): ?>
-                    <tr><th class="text-muted">Document</th><td><a href="<?= BASE_URL ?>/uploads/leave_docs/<?= h($current['document']) ?>" target="_blank" class="btn btn-sm btn-outline-primary"><i class="fa fa-paperclip me-1"></i>View Attachment</a></td></tr>
+                    <tr><th class="text-muted">Document</th><td><a href="<?= h(file_url('uploads/leave_docs/' . $current['document'])) ?>" target="_blank" class="btn btn-sm btn-outline-primary"><i class="fa fa-paperclip me-1"></i>View Attachment</a></td></tr>
                     <?php endif; ?>
                     <tr><th class="text-muted">Request Status</th><td><span class="badge bg-info">Submitted</span></td></tr>
                     <tr><th class="text-muted">Admin Approval Status</th><td><span class="badge bg-<?= $statusBadge[$current['admin_approval_status']] ?? 'secondary' ?>"><?= ucfirst($current['admin_approval_status']) ?></span></td></tr>
@@ -402,7 +694,21 @@ elseif ($screen === 'view'):
             </div>
         </div>
     </div>
-    <?php if ($current['admin_approval_status'] === 'pending' && $canApprove): ?>
+    <?php if ($current['admin_approval_status'] === 'pending' && $canApprove && leave_is_own_request($current)): ?>
+    <div class="col-lg-4">
+        <div class="card page-card">
+            <div class="card-header bg-white py-3"><h6 class="mb-0 fw-semibold">Admin Approval</h6></div>
+            <div class="card-body">
+                <div class="alert alert-warning mb-0">
+                    <i class="fa fa-user-lock me-1"></i>
+                    <strong>This is your own leave request.</strong>
+                    You cannot approve or reject it — someone else with approval rights must decide it.
+                    To withdraw it, use <em>Delete</em>.
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php elseif ($current['admin_approval_status'] === 'pending' && $canApprove): ?>
     <div class="col-lg-4">
         <div class="card page-card">
             <div class="card-header bg-white py-3"><h6 class="mb-0 fw-semibold">Admin Approval</h6></div>
@@ -468,7 +774,7 @@ elseif ($screen === 'edit'): ?>
                         <?php if ($current['document']): ?>
                         <div class="d-flex align-items-center gap-2 mb-2 p-2 border rounded bg-light">
                             <i class="fa fa-paperclip text-primary"></i>
-                            <a href="<?= BASE_URL ?>/uploads/leave_docs/<?= h($current['document']) ?>" target="_blank" class="text-primary text-decoration-none fw-semibold small"><?= h($current['document']) ?></a>
+                            <a href="<?= h(file_url('uploads/leave_docs/' . $current['document'])) ?>" target="_blank" class="text-primary text-decoration-none fw-semibold small"><?= h($current['document']) ?></a>
                             <span class="ms-auto"><label class="form-check-label small text-danger d-flex align-items-center gap-1 mb-0" style="cursor:pointer"><input type="checkbox" name="remove_document" value="1" class="form-check-input mt-0">Remove file</label></span>
                         </div>
                         <div class="form-text mb-1">Upload a new file below to replace the existing one.</div>
@@ -510,7 +816,7 @@ else:
     // this list and is visible on the Leave History page instead.
     $rowsSql = "SELECT lr.*, e.name AS emp_name, e.employee_id AS emp_code, lt.name AS type_name
                 FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN leave_types lt ON lt.id=lr.leave_type_id";
-    if ($isEmployee) { $rs = $db->prepare($rowsSql . " WHERE lr.employee_id=? AND lr.admin_approval_status='pending' ORDER BY lr.created_at DESC, lr.id DESC"); $rs->execute([$selfEmpId]); $rows = $rs->fetchAll(); }
+    if ($isSelfScoped) { $rs = $db->prepare($rowsSql . " WHERE lr.employee_id=? AND lr.admin_approval_status='pending' ORDER BY lr.created_at DESC, lr.id DESC"); $rs->execute([$selfEmpId]); $rows = $rs->fetchAll(); }
     else             { $rows = $db->query($rowsSql . " WHERE lr.admin_approval_status='pending' ORDER BY lr.created_at DESC, lr.id DESC")->fetchAll(); }
 ?>
 <div class="card page-card">

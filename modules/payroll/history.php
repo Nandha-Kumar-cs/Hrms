@@ -11,11 +11,13 @@ $slips = [];
 $emp = null;
 if ($empId) {
     $emp = db()->query("SELECT * FROM employees WHERE id=$empId")->fetch(PDO::FETCH_ASSOC);
-    $slips = db()->query("SELECT ss.*, pr.month, pr.year, pr.status AS run_status
+    // payroll_runs stores payroll_month (CHAR(7) 'YYYY-MM'); there are no
+    // month/year columns, so this query used to fail outright.
+    $slips = db()->query("SELECT ss.*, pr.payroll_month, pr.status AS run_status
         FROM salary_slips ss
         JOIN payroll_runs pr ON ss.payroll_run_id = pr.id
         WHERE ss.employee_id=$empId
-        ORDER BY pr.year DESC, pr.month DESC")->fetchAll(PDO::FETCH_ASSOC);
+        ORDER BY pr.payroll_month DESC")->fetchAll(PDO::FETCH_ASSOC);
 }
 
 $page_title = 'Payroll History';
@@ -73,14 +75,14 @@ include '../../includes/header.php';
             <tbody>
                 <?php foreach ($slips as $s): ?>
                 <tr>
-                    <td><?= date('M Y', mktime(0,0,0,$s['month'],1,$s['year'])) ?></td>
+                    <td><?= date('M Y', strtotime($s['payroll_month'] . '-01')) ?></td>
                     <td><?= $s['working_days'] ?></td>
                     <td><?= $s['lop_days'] ?></td>
-                    <td><?= money($s['gross_salary']) ?></td>
+                    <td><?= money($s['gross_earnings']) ?></td>
                     <td><?= money($s['pf_employee']) ?></td>
                     <td><?= money($s['esi_employee']) ?></td>
                     <td class="text-danger"><?= money($s['total_deductions']) ?></td>
-                    <td><strong class="text-success"><?= money($s['net_salary']) ?></strong></td>
+                    <td><strong class="text-success"><?= money($s['net_pay']) ?></strong></td>
                     <td><?= $s['run_status']==='Finalized' ? '<span class="pill pill-success">Finalized</span>' : '<span class="pill pill-warn">Draft</span>' ?></td>
                     <td><a href="slip.php?id=<?= $s['id'] ?>" class="btn btn-xs btn-secondary">View</a></td>
                 </tr>

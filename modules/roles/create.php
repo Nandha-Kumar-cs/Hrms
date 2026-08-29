@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('roles', 'edit');
+require_permission('roles', 'manage');
 
 $allPerms = db()->query("SELECT * FROM permissions ORDER BY module, action")->fetchAll(PDO::FETCH_ASSOC);
 $grouped  = [];
@@ -20,11 +20,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Prepared statement (was string-concatenated with addslashes — SQLi risk).
     $dup = db()->prepare("SELECT id FROM roles WHERE name = ?"); $dup->execute([$name]);
     if ($dup->fetchColumn()) $errors[] = 'Role name already exists.';
-    // Only a Super Admin may create the privileged "Super Admin" role (it bypasses all checks).
-    if (strcasecmp($name, 'Super Admin') === 0 && !is_super_admin())
-        $errors[] = 'You are not allowed to create a "Super Admin" role.';
+    // Only a Super Admin may create ANY administrator role. Guarding just the
+    // "Super Admin" name let a roles.edit holder create a role called "Admin",
+    // which is_admin() accepts for impersonation (security audit H-4).
+    if (is_admin_role_name($name) && !is_super_admin())
+        $errors[] = 'You are not allowed to create an administrator role.';
     // You can only grant permissions you already hold (no privilege escalation via roles).
     $perms = filter_assignable_permission_ids((array)$perms);
+    // Same for scoping: a self-scoped creator cannot mint an UNSCOPED role and
+    // then hand it out — that is the edit.php hole by another door (M-17). The
+    // baseline is 1, so requesting 0 is treated as widening.
+    $scopeErr = self_scope_change_error($selfScope, 1);
+    if ($scopeErr !== null) {
+        activity_log('created', 'Role', 'REFUSED an unscoped new role "' . $name . '": actor is self-scoped.');
+        $errors[]  = $scopeErr;
+        $selfScope = 1;
+    }
 
     if (empty($errors)) {
         db()->prepare("INSERT INTO roles (name, description, self_scope, created_at) VALUES (:n,:d,:s,NOW())")
@@ -89,7 +100,9 @@ include '../../includes/header.php';
                     </div>
                     <div class="form-group">
                         <label class="form-check">
-                            <input type="checkbox" name="self_scope" value="1" <?= !empty($_POST['self_scope']) ? 'checked' : '' ?>>
+                            <input type="checkbox" name="self_scope" value="1"
+                                <?= (!empty($_POST['self_scope']) || is_self_scoped()) ? 'checked' : '' ?>
+                                <?= is_self_scoped() ? 'disabled' : '' ?>>
                             <span>Restrict to own records only (self-service)</span>
                         </label>
                         <p class="text-muted mt-1" style="font-size:.8rem">

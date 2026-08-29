@@ -116,8 +116,8 @@ $docIcons = [
                         <td><?= doc_size((int)$d['file_size']) ?></td>
                         <td><?= date_fmt($d['created_at']) ?></td>
                         <td class="text-center text-nowrap">
-                            <a href="<?= BASE_URL ?>/<?= h($d['file_path']) ?>" target="_blank" class="btn btn-sm btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
-                            <a href="<?= BASE_URL ?>/<?= h($d['file_path']) ?>" download class="btn btn-sm btn-outline-secondary" title="Download"><i class="fa fa-download"></i></a>
+                            <a href="<?= h(file_url($d['file_path'])) ?>" target="_blank" class="btn btn-sm btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
+                            <a href="<?= h(file_url($d['file_path'], true)) ?>" class="btn btn-sm btn-outline-secondary" title="Download"><i class="fa fa-download"></i></a>
                             <?php if (can('employee','edit')): ?>
                             <form method="POST" action="<?= BASE_URL ?>/modules/documents/delete.php" class="d-inline" onsubmit="return confirm('Delete this document?')">
                                 <?= csrf_field() ?>

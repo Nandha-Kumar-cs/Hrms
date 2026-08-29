@@ -1,7 +1,13 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('payroll', 'edit');
+require_permission('payroll', 'process');
+
+// The finalize POST below stamps who finalized the run and when. Neither column
+// shipped in the original payroll_runs table, so pressing Finalize used to fail
+// on an unknown column — add them where they are missing.
+db_ensure_column('payroll_runs', 'finalized_at', 'DATETIME NULL');
+db_ensure_column('payroll_runs', 'finalized_by', 'INT UNSIGNED NULL');
 
 $runId = (int)($_GET['run_id'] ?? 0);
 if (!$runId) redirect(BASE_URL . '/modules/payroll/index.php');
@@ -13,6 +19,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
     db()->prepare("UPDATE payroll_runs SET status='Finalized', finalized_at=NOW(), finalized_by=:uid WHERE id=:id")
          ->execute([':uid'=>current_user()['id'],':id'=>$runId]);
+
+    // Finalizing makes slips visible to employees and is described in the UI
+    // as irreversible — exactly the kind of action that had zero audit trail
+    // before (security audit H-11).
+    $sum = db()->query("SELECT COUNT(*) n, COALESCE(SUM(net_pay),0) net FROM salary_slips WHERE payroll_run_id=$runId")->fetch(PDO::FETCH_ASSOC);
+    activity_log('updated', 'Payroll',
+        'Finalized payroll for ' . date('F Y', strtotime($run['payroll_month'] . '-01'))
+        . ' — ' . (int)$sum['n'] . ' employees, total net ' . money((float)$sum['net'])
+        . '. Slips are now visible to employees.'
+    );
+
     flash('success','Payroll finalized successfully. Salary slips are now available.');
     redirect(BASE_URL . '/modules/payroll/index.php');
 }
@@ -27,9 +44,9 @@ $slips = db()->query("SELECT ss.*, e.name AS emp_name, e.employee_id AS emp_code
 
 $totals = ['gross'=>0,'deductions'=>0,'net'=>0,'pf'=>0,'esi'=>0];
 foreach ($slips as $s) {
-    $totals['gross']      += $s['gross_salary'];
+    $totals['gross']      += $s['gross_earnings'];
     $totals['deductions'] += $s['total_deductions'];
-    $totals['net']        += $s['net_salary'];
+    $totals['net']        += $s['net_pay'];
     $totals['pf']         += $s['pf_employee'];
     $totals['esi']        += $s['esi_employee'];
 }
@@ -40,7 +57,7 @@ include '../../includes/header.php';
 <div class="page-header">
     <div>
         <h1 class="page-title">Finalize Payroll</h1>
-        <p class="page-subtitle"><?= date('F Y', mktime(0,0,0,$run['month'],1,$run['year'])) ?></p>
+        <p class="page-subtitle"><?= date('F Y', strtotime($run['payroll_month'] . '-01')) ?></p>
     </div>
     <div class="page-actions">
         <a href="export.php?run_id=<?= $runId ?>" class="btn btn-secondary" data-key="E"><u>E</u>xport CSV</a>
@@ -50,7 +67,14 @@ include '../../includes/header.php';
 
 <?php render_flash(); ?>
 
-<?php if ($run['status'] === 'Draft'): ?>
+<?php
+/* A run reaches this screen as 'Processed' — that is precisely the state you
+   review before finalizing. Gating on 'Draft' hid the warning AND the Finalize
+   button on every real run, since process.php writes 'Processed' and nothing
+   ever leaves a run in 'Draft'. */
+$canFinalize = $run['status'] !== 'Finalized';
+?>
+<?php if ($canFinalize): ?>
 <div class="alert alert-warn">
     <strong>⚠️ Review before finalizing.</strong> Once finalized, salary slips will be accessible to employees. This action cannot be undone.
 </div>
@@ -87,11 +111,11 @@ include '../../includes/header.php';
                     <td><strong><?= h($s['emp_code']) ?></strong><br><small><?= h($s['emp_name']) ?></small></td>
                     <td><?= h($s['dept_name']) ?></td>
                     <td><?= $s['lop_days'] ?></td>
-                    <td><?= money($s['gross_salary']) ?></td>
+                    <td><?= money($s['gross_earnings']) ?></td>
                     <td><?= money($s['pf_employee']) ?></td>
                     <td><?= money($s['esi_employee']) ?></td>
                     <td class="text-danger"><?= money($s['total_deductions']) ?></td>
-                    <td><strong class="text-success"><?= money($s['net_salary']) ?></strong></td>
+                    <td><strong class="text-success"><?= money($s['net_pay']) ?></strong></td>
                     <td><a href="slip.php?id=<?= $s['id'] ?>" class="btn btn-xs btn-secondary">View</a></td>
                 </tr>
                 <?php endforeach; ?>
@@ -111,10 +135,10 @@ include '../../includes/header.php';
     </div>
 </div>
 
-<?php if ($run['status'] === 'Draft'): ?>
+<?php if ($canFinalize): ?>
 <div class="card">
     <div class="card-body d-flex gap-3 align-items-center">
-        <form method="POST" onsubmit="return confirm('Finalize payroll for <?= date('F Y', mktime(0,0,0,$run['month'],1,$run['year'])) ?>? This cannot be undone.')">
+        <form method="POST" onsubmit="return confirm('Finalize payroll for <?= date('F Y', strtotime($run['payroll_month'] . '-01')) ?>? This cannot be undone.')">
             <?= csrf_field() ?>
             <button type="submit" class="btn btn-primary" data-key="F"><u>F</u>inalize Payroll</button>
         </form>

@@ -1,21 +1,18 @@
 <?php
 $page_title = 'Employee Benefits';
-require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+// Permission BEFORE any output: header.php emits <!DOCTYPE>, after which
+// http_response_code(403) is ignored and 403.php lands mid-page
+// (security audit L-1).
 require_permission('benefits', 'view');
+require_once __DIR__ . '/../../includes/header.php';
 
 $db = db();
 
-$db->exec('CREATE TABLE IF NOT EXISTS employee_benefits (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    employee_id INT NOT NULL,
-    fund_type VARCHAR(100) NOT NULL,
-    amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-    effective_month DATE NOT NULL,
-    status ENUM(\'active\',\'inactive\') DEFAULT \'active\',
-    description TEXT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX (employee_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+// One definition, shared with modules/benefits/save.php and payroll (L-7 follow-up).
+// The two pages used to carry DIFFERENT CREATE TABLE statements; whichever ran
+// first on a fresh install won, and the loser's columns never appeared.
+benefits_table_ready();
 
 $filterEmp    = (int)($_GET['employee_id'] ?? 0);
 $filterEmp    = scope_employee_id($filterEmp);   // self-scope → own records only (−1 = none when unlinked)

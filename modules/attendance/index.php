@@ -5,8 +5,12 @@
  * Actions: Mark Today · Daily Import · Monthly Import · Export
  */
 $page_title = 'Attendance';
-require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+// Permission BEFORE any output: header.php emits <!DOCTYPE>, after which
+// http_response_code(403) is ignored and 403.php lands mid-page
+// (security audit L-1).
 require_permission('attendance', 'view');
+require_once __DIR__ . '/../../includes/header.php';
 
 $db         = db();
 $month      = preg_replace('/[^0-9\-]/', '', $_GET['month'] ?? date('Y-m'));
@@ -66,6 +70,14 @@ $sql .= ' ORDER BY a.att_date DESC, e.name';
 $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $records = $stmt->fetchAll();
+
+/* Sandwich leave for this month — company-leave days payroll charges as LOP
+   because the employee was absent on the working day either side. Read from the
+   payroll engine (one call, two queries) so the badge here and the deduction on
+   the payslip can never tell different stories. */
+$sandwichLeaveMap = attendance_sandwich_leave_map(
+    array_unique(array_column($records, 'employee_id')), $reqMonth, $reqYear
+);
 
 // Summary counts
 $sumStmt = $db->prepare(
@@ -181,6 +193,15 @@ if ($activeTab === 'report') {
     )->fetchAll();
     $empCount = count($mxEmployees);
 
+    // Sandwich leave for everyone on the grid. $mxSandwich holds the company
+    // leaves charged as LOP (the count column); $mxSandwichLeave holds the LEAVE
+    // days that closed each sandwich — what the grid badges, since a non-working
+    // day is drawn as one cell spanning every employee row.
+    $mxSandwich      = attendance_sandwich_map(array_column($mxEmployees, 'id'), $reqMonth, $reqYear);
+    $mxSandwichLeave = attendance_sandwich_leave_map(array_column($mxEmployees, 'id'), $reqMonth, $reqYear);
+    // Every date a sandwich occupies — counted by SL, excluded from A.
+    $mxSandwichAll   = attendance_sandwich_all_dates(array_column($mxEmployees, 'id'), $reqMonth, $reqYear);
+
     // Attendance records for the month
     $attStmt2 = $db->prepare(
         "SELECT employee_id, shift_id, att_date, status, in_time, out_time, ot_hours, remarks
@@ -218,7 +239,7 @@ if ($activeTab === 'report') {
             // "Checked in but never checked out". Covers BOTH shapes: the mark
             // sheet leaves such a day as On Time/Late, while the no-checkout rule
             // (and the importers) store it as Absent with in_time kept.
-            $noCheckout = (in_array($status, ['On Time','Late'], true) && empty($rec['out_time']))
+            $noCheckout = (in_array($status, attendance_checkin_statuses(), true) && empty($rec['out_time']))
                        || ($status === 'Absent' && !empty($rec['in_time']) && empty($rec['out_time']));
             if (!$isNonWrk && !empty($rec['in_time']) && !empty($rec['out_time'])) {
                 $inM  = _rep_timeToMins($rec['in_time']);
@@ -516,7 +537,15 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                 </span>
             </td>
             <?php endif; ?>
-            <td><span class="pill <?= $pc ?>"><?= h($r['status']) ?></span></td>
+            <td>
+                <span class="pill <?= $pc ?>"><?= h($r['status']) ?></span>
+                <?php if ($swN = ($sandwichLeaveMap[$r['employee_id']][$r['att_date']] ?? 0)): ?>
+                <span class="badge" style="background:#9d174d;color:#fff;font-size:.62rem;vertical-align:middle"
+                      title="<?= h('Sandwich Leave — this leave closed a sandwich, so ' . $swN
+                            . ' company leave day' . ($swN == 1 ? '' : 's') . ' beside it '
+                            . ($swN == 1 ? 'is' : 'are') . ' charged as LOP too') ?>">SL</span>
+                <?php endif; ?>
+            </td>
             <td><?= $r['in_time']  ? date('h:i A', strtotime($r['in_time']))  : '—' ?></td>
             <td><?= $r['out_time'] ? date('h:i A', strtotime($r['out_time'])) : '—' ?></td>
             <td class="small"><?= $hrs ?: '—' ?></td>
@@ -661,8 +690,9 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                     </th>
                     <?php endfor; ?>
                     <th class="text-center" style="min-width:32px" title="Present days">P</th>
-                    <th class="text-center" style="min-width:32px" title="Absent days">A</th>
+                    <th class="text-center" style="min-width:32px" title="Absent days — excludes days counted under SL">A</th>
                     <th class="text-center" style="min-width:32px" title="Half days">H</th>
+                    <th class="text-center" style="min-width:36px" title="Sandwich Leave &mdash; every day the sandwich spans: the leave before, the company leave(s) between, and the leave after. These days are excluded from the A column">SL</th>
                     <th class="text-center" style="min-width:32px" title="Leave days">L</th>
                     <th class="text-center bg-warning bg-opacity-10" style="min-width:72px">Late Used</th>
                     <th class="text-center bg-info bg-opacity-10"   style="min-width:72px">Remaining</th>
@@ -703,7 +733,7 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                         // Orange A — checked in but no checkout. Also matches rows the
                         // no-checkout rule stored as Absent (in_time kept, out_time null),
                         // which is how imported days arrive.
-                        $noCheckout    = (in_array($status, ['On Time','Late'], true) && empty($rec['out_time'] ?? ''))
+                        $noCheckout    = (in_array($status, attendance_checkin_statuses(), true) && empty($rec['out_time'] ?? ''))
                                       || ($status === 'Absent' && !empty($rec['in_time'] ?? '') && empty($rec['out_time'] ?? ''));
                         $isOnDuty      = (!$isNonWrk && !$isCompOffDay && $status === 'OD');
                     ?>
@@ -724,6 +754,7 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                         if (!$isCompOffDay && !$isOnDuty) {
                             if ($noCheckout && !$isFuture)                                       { $absentCount++; }
                             elseif (in_array($status, ['On Time','Late'], true) && !$noCheckout) { $presentCount++; }
+                            elseif ($status === 'Absent' && isset($mxSandwichAll[$empId][$cellDateStr])) { /* counted under SL */ }
                             elseif (($status === 'Absent' || $status === null) && !$isFuture)    { $absentCount++; }
                             elseif ($status === 'Half Day')                                       { $halfCount++; }
                         }
@@ -749,12 +780,25 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                                 else { $titleAttr = ''; }
                                 $titleHtml = $titleAttr ? ' title="'.h($titleAttr).'"' : '';
 
+                                // A leave that closed a sandwich reads as SL, not A.
+                                $swOffs = $mxSandwichLeave[$empId][$cellDateStr] ?? 0;
+                                $swHtml = '';
+                                if ($swOffs > 0) {
+                                    $swHtml = '<span class="badge" style="background:#9d174d;color:#fff;font-size:.7rem" title="'
+                                        . h('Sandwich Leave — this leave closed a sandwich, so ' . $swOffs
+                                            . ' company leave day' . ($swOffs == 1 ? '' : 's') . ' beside it '
+                                            . ($swOffs == 1 ? 'is' : 'are') . ' charged as LOP too')
+                                        . '">SL</span>';
+                                }
+
                                 if ($noCheckout) {
                                     echo '<span class="badge" style="background:#e67e22;font-size:.7rem;"'.$titleHtml.'>A</span>';
                                 } elseif ($status === null && $isFuture) {
                                     echo '<span class="badge bg-light text-dark" style="font-size:.7rem;border:1px solid #dee2e6">&#8212;</span>';
                                 } elseif ($status === null && !$isFuture) {
-                                    echo '<span class="badge bg-danger"'.$titleHtml.' style="font-size:.7rem">A</span>';
+                                    echo $swHtml ?: '<span class="badge bg-danger"'.$titleHtml.' style="font-size:.7rem">A</span>';
+                                } elseif ($status === 'Absent' && $swHtml !== '') {
+                                    echo $swHtml;
                                 } else {
                                     switch ($status) {
                                         case 'On Time':  $clr='success';   $abr='P';  break;
@@ -788,10 +832,17 @@ unset($_SESSION['att_daily_result'], $_SESSION['att_monthly_result']);
                         $mxMh     = (float)($mxStat['man_hours']    ?? 0);
                         $mxAbs    = (int)($mxStat['absent_days']    ?? $absentCount);
                         $mxHalf   = (int)($mxStat['half_days']      ?? $halfCount);
+                        // Non-working days are drawn as ONE cell spanning every employee
+                        // row, so the charged offs cannot carry a per-employee badge here
+                        // — this column carries the count, and the LEAVE days that closed
+                        // each sandwich are badged SL on their own cells.
+                        $mxSand   = count($mxSandwichAll[$empId] ?? []);
                     ?>
                     <td class="text-center fw-bold text-success"><?= $presentCount ?></td>
                     <td class="text-center fw-bold text-danger"><?= $mxAbs ?></td>
                     <td class="text-center fw-bold text-warning"><?= $mxHalf ?></td>
+                    <td class="text-center fw-bold" style="color:#9d174d"
+                        title="Sandwich Leave &mdash; every day the sandwich spans: the leave before, the company leave(s) between, and the leave after. These days are excluded from the A column"><?= $mxSand ?></td>
                     <td class="text-center fw-bold text-secondary"
                         title="Approved paid leaves + comp-offs (from payroll)"><?= $leaveCount ?></td>
                     <td class="text-center <?= $mxLateM > 0 ? 'text-warning fw-semibold' : 'text-muted' ?>"

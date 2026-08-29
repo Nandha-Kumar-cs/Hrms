@@ -106,6 +106,27 @@ if (!$emp) {
     redirect(BASE_URL . '/modules/employee/index.php');
 }
 
+/* ── Reset just the portal password (the printed card keeps working) ──────── */
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'reset_password') {
+    verify_csrf($_POST['csrf_token'] ?? '');
+    if (!can('idcard', 'generate')) {
+        flash('error', 'You do not have permission to reset the portal password.');
+    } else {
+        $tk = $db->prepare('SELECT id FROM employee_qr_tokens WHERE employee_id = ? LIMIT 1');
+        $tk->execute([$empId]);
+        $tkId = (int) $tk->fetchColumn();
+        if (!$tkId) {
+            flash('error', 'No ID card has been issued for this employee yet.');
+        } else {
+            id_card_set_password($tkId, $empId, 'reset');
+            activity_log('updated', 'Employee ID Card',
+                'Reset the secure-access portal password for ' . $emp['name'] . ' (' . $emp['employee_id'] . ')');
+            flash('success', 'A new portal password was generated. It is shown below once — copy it now.');
+        }
+    }
+    redirect(BASE_URL . '/modules/employee/id_card.php?id=' . $empId);
+}
+
 /* ── Regenerate the token (invalidates every previously printed sticker) ───── */
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'regenerate') {
     verify_csrf($_POST['csrf_token'] ?? '');
@@ -154,7 +175,10 @@ $portalUrl = id_card_portal_url($token['token']);
 // ~12% larger printed modules — the difference between an easy and a fiddly scan.
 $qrUri     = id_card_qr_data_uri($token['token'], 6, 2);
 $photoUri  = id_card_photo_data_uri($emp['photo'] ?? null);
-$password  = id_card_derive_password($emp['name'], $emp['dob'] ?? null);
+// One-time reveal: the plaintext exists only at the moment it is issued or
+// reset. It is never derivable and never recoverable from the stored hash, so
+// this is the only chance to hand it to the employee (security audit M-4).
+$revealed = id_card_take_revealed_password($empId);
 
 /* ── Company identity printed on the card ─────────────────────────────────────
  * Name, logo and address all come from the employee's OWN entity, so a
@@ -437,12 +461,31 @@ require_once __DIR__ . '/../../includes/header.php';
 </div>
 <?php endif; ?>
 
-<?php if ($password === null): ?>
-<div class="alert alert-warn" style="margin-top:14px">
-    <strong>This employee has no date of birth on record.</strong>
-    The card and QR code still print, but the secure-access portal stays closed until a DOB is saved
-    (the password is derived from the name + DOB).
-    <a href="<?= BASE_URL ?>/modules/employee/edit.php?id=<?= $empId ?>">Add a date of birth</a>.
+<?php if ($revealed !== null): ?>
+<div class="alert alert-success no-print" style="margin-top:14px">
+    <strong>
+        <?php if ($revealed['reason'] === 'legacy'): ?>
+            This card's portal password has been replaced.
+        <?php elseif ($revealed['reason'] === 'new'): ?>
+            Portal password issued for <?= h($emp['name']) ?>.
+        <?php else: ?>
+            New portal password generated.
+        <?php endif; ?>
+    </strong>
+    <div style="margin:10px 0">
+        <code style="font-size:22px;font-weight:700;letter-spacing:2px;padding:8px 14px;
+                     background:#fff;border:2px solid var(--success);border-radius:var(--radius)"><?= h($revealed['password']) ?></code>
+    </div>
+    <div style="font-size:13px">
+        <?php if ($revealed['reason'] === 'legacy'): ?>
+            The previous password was derived from this employee's name and date of birth — both of
+            which are on the printed card — so anyone holding the card could work it out.
+            It has been replaced with a random one.
+        <?php endif; ?>
+        <strong>Copy it now and give it to the employee.</strong>
+        It is stored only as a one-way hash and cannot be shown again — if it is lost,
+        use <em>Reset portal password</em> to issue another.
+    </div>
 </div>
 <?php endif; ?>
 
@@ -602,20 +645,25 @@ require_once __DIR__ . '/../../includes/header.php';
                     <div class="idc-meta-row">
                         <span>Portal password</span>
                         <strong>
-                            <?php if ($password === null): ?>
-                                <span class="text-danger">Unavailable — no DOB</span>
+                            <?php if (!empty($token['password_hash'])): ?>
+                                Set — random, not retrievable
                             <?php else: ?>
-                                First 4 letters of name + DDMM
+                                <span class="text-danger">Not set</span>
                             <?php endif; ?>
                         </strong>
                     </div>
-                    <?php if ($password !== null): ?>
-                    <div class="idc-meta-row">
-                        <span>Example for this employee</span>
-                        <strong><code><?= h($password) ?></code></strong>
-                    </div>
-                    <?php endif; ?>
                 </div>
+
+                <?php if (can('idcard', 'generate')): ?>
+                <form method="POST" style="margin-top:12px"
+                      onsubmit="return confirm('Generate a new portal password?\n\nThe employee\'s current password will stop working immediately. The printed card and QR code are NOT affected.');">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="action" value="reset_password">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">
+                        <i class="fa fa-key me-1"></i>Reset portal password
+                    </button>
+                </form>
+                <?php endif; ?>
 
                 <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:12px;margin-top:14px">
                     <i class="fa fa-circle-info me-1" style="color:var(--primary)"></i>

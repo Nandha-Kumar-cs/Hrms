@@ -482,10 +482,14 @@ function portal_render_login(string $action, string $csrf, string $error): void
                     <label class="plabel" for="pw">Password</label>
                     <input class="pinput" type="password" id="pw" name="password"
                            required autofocus autocapitalize="none" autocorrect="off" spellcheck="false"
-                           inputmode="text" placeholder="e.g. arun1508">
+                           inputmode="text" placeholder="Enter your password">
                     <p class="pmuted" style="margin:8px 0 16px">
-                        First 4 letters of your name followed by your date of birth as DDMM.
-                        Example: <strong>Arun Kumar</strong>, born <strong>15/08/1998</strong> &rarr; <code>arun1508</code>.
+                        <?php /* This used to spell out the derivation rule (name + DOB) — which,
+                                 with the name printed on the card the QR is attached to, told a
+                                 finder most of the secret (security audit M-4). The password is
+                                 now random and issued by HR. */ ?>
+                        Enter the password HR gave you with this card.
+                        If you do not have it, ask HR to issue a new one.
                     </p>
                     <button class="pbtn pbtn-block" type="submit">Sign In</button>
                 </form>

@@ -135,6 +135,7 @@ $user     = current_user();
 $inserted = 0;
 $updated  = 0;
 $skipped  = 0;
+$badStatuses = [];   // unrecognised status value => row count (M-19)
 $errors   = [];
 
 $upsertSql = "INSERT INTO attendance
@@ -302,6 +303,14 @@ foreach ($rows as $i => $row) {
     $rawStatus = $r['status'] ?? $r['attendance'] ?? '';
     if ($rawStatus !== '') {
         $status = _att_normalize_status($rawStatus);
+        // Unrecognised → refuse the row. Guessing "Absent" is what let a whole
+        // file be zeroed while the import still reported success (M-19).
+        if ($status === null) {
+            $skipped++;
+            $bad = trim($rawStatus);
+            $badStatuses[$bad] = ($badStatuses[$bad] ?? 0) + 1;
+            continue;
+        }
     } elseif ($autoClassify) {
         $status = _att_classify_from_time($inTime, $useDate, $empDbId);
     } else {
@@ -337,6 +346,18 @@ foreach ($rows as $i => $row) {
 }
 
 /* ── Store rich result in session for the index banner ───────────────────── */
+/* Lead with a per-VALUE summary, not one message per row: $errors is sliced to
+ * 20 for display, so 300 identical lines would bury everything else (M-19). */
+if ($badStatuses) {
+    arsort($badStatuses);
+    $parts = [];
+    foreach ($badStatuses as $val => $n) $parts[] = '"' . $val . '" (' . $n . ' row' . ($n === 1 ? '' : 's') . ')';
+    array_unshift($errors,
+        'Unrecognised attendance status ' . implode(', ', $parts)
+      . '. Those rows were NOT imported and nothing was guessed for them. '
+      . 'Correct the file, or add the value to the status map in _att_normalize_status().');
+}
+
 $_SESSION['att_daily_result'] = [
     'date'     => $attDate,
     'saved'    => $inserted,
@@ -365,7 +386,7 @@ redirect(BASE_URL . '/modules/attendance/report.php?month=' . (int)date('n', str
  * Normalize an attendance status string to the schema ENUM value.
  * Handles abbreviations, mixed case, and common variations.
  */
-function _att_normalize_status(string $raw): string
+function _att_normalize_status(string $raw): ?string
 {
     $map = [
         // Present / On Time
@@ -395,7 +416,13 @@ function _att_normalize_status(string $raw): string
     foreach ($valid as $v) {
         if (strcasecmp($key, strtolower($v)) === 0) return $v;
     }
-    return 'Absent'; // safe fallback
+    /* Unrecognised. Returning 'Absent' here looked "safe" but was the opposite:
+     * a biometric export using an unmapped vocabulary (WO / OFF / PR / A1 …) had
+     * EVERY row silently rewritten to Absent, and the importer still reported a
+     * successful import. A whole month of attendance could be zeroed with nothing
+     * on screen to say so. Signal the failure instead and let the caller refuse
+     * the row (security audit M-19). */
+    return null;
 }
 
 /**

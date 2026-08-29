@@ -236,7 +236,7 @@ $doc_size = function (int $bytes): string {
             <a href="index.php" class="btn btn-sm btn-outline-secondary"><i class="fa fa-arrow-left"></i></a>
 
             <?php if ($e['photo']): ?>
-            <img src="<?= BASE_URL ?>/uploads/photos/<?= h($e['photo']) ?>" alt="<?= h($e['name']) ?>" class="profile-photo">
+            <img src="<?= h(file_url('uploads/photos/' . $e['photo'])) ?>" alt="<?= h($e['name']) ?>" class="profile-photo">
             <?php else: ?>
             <div class="profile-avatar"><?= strtoupper(substr($e['name'],0,1)) ?></div>
             <?php endif; ?>
@@ -742,8 +742,8 @@ $doc_size = function (int $bytes): string {
                     <td><?= $doc_size((int)$d['file_size']) ?></td>
                     <td><?= date_fmt($d['created_at']) ?></td>
                     <td class="text-center text-nowrap">
-                        <a href="<?= BASE_URL ?>/<?= h($d['file_path']) ?>" target="_blank" class="btn btn-xs btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
-                        <a href="<?= BASE_URL ?>/<?= h($d['file_path']) ?>" download class="btn btn-xs btn-outline-secondary ms-1" title="Download"><i class="fa fa-download"></i></a>
+                        <a href="<?= h(file_url($d['file_path'])) ?>" target="_blank" class="btn btn-xs btn-outline-primary" title="View"><i class="fa fa-eye"></i></a>
+                        <a href="<?= h(file_url($d['file_path'], true)) ?>" class="btn btn-xs btn-outline-secondary ms-1" title="Download"><i class="fa fa-download"></i></a>
                         <?php if (can('employee','edit')): ?>
                         <form method="POST" action="<?= BASE_URL ?>/modules/documents/delete.php" class="d-inline" onsubmit="return confirm('Delete this document?')">
                             <?= csrf_field() ?>

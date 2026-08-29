@@ -43,14 +43,16 @@ if (!$file || $file['error'] !== UPLOAD_ERR_OK) {
     $errors[] = 'Please select a valid file to upload.';
 }
 
-$allowed_ext  = ['pdf','jpg','jpeg','png','doc','docx'];
-$max_size     = 5 * 1024 * 1024; // 5 MB
+$max_size = 5 * 1024 * 1024; // 5 MB
 
-if (!$errors) {
-    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, $allowed_ext)) $errors[] = 'File type not allowed. Use: ' . implode(', ', $allowed_ext);
-    if ($file['size'] > $max_size)     $errors[] = 'File size exceeds 5 MB limit.';
-}
+/* ── Size only; the TYPE is decided by upload_file() ──────────────────────────
+ * This used to read the extension straight off $file['name'] — a value the
+ * client supplies and can say anything — check it against a list, and then reuse
+ * that same untrusted extension as the one it saved under. Nothing ever looked
+ * at what the file actually contained. upload_file() sniffs the real MIME type
+ * and derives the extension from THAT, so a file can only be stored as what it
+ * genuinely is (security audit L-2). */
+if (!$errors && $file['size'] > $max_size) $errors[] = 'File size exceeds 5 MB limit.';
 
 if ($errors) {
     $_SESSION['errors']   = $errors;
@@ -58,19 +60,22 @@ if ($errors) {
     redirect($createUrl);
 }
 
-// Store file
-$hrmsRoot = dirname(__DIR__, 2); // modules/documents/../../ = hrms root
-$uploadDir = $hrmsRoot . '/uploads/employee_docs/' . $emp_id . '/';
-if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+// Store file — MIME-verified, extension derived from content, is_uploaded_file()
+// checked, directory created with the same permissions as before.
+$hrmsRoot  = dirname(__DIR__, 2); // modules/documents/../../ = hrms root
+$relDir    = 'uploads/employee_docs/' . $emp_id;
+$fileName  = upload_file($file, $hrmsRoot . '/' . $relDir,
+                         date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '_',
+                         upload_document_ext_map(), $max_size);
 
-$ext      = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-$fileName = date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-$filePath = 'uploads/employee_docs/' . $emp_id . '/' . $fileName;
-
-if (!move_uploaded_file($file['tmp_name'], $hrmsRoot . '/' . $filePath)) {
-    flash('error', 'File upload failed. Please try again.');
+if ($fileName === null) {
+    $_SESSION['errors'] = ['That file could not be accepted. Allowed documents are PDF, JPG, PNG '
+                         . 'and Word (.doc/.docx) — and the file must genuinely be one of those, '
+                         . 'not merely named like one.'];
+    $_SESSION['form_old'] = $_POST;
     redirect($createUrl);
 }
+$filePath = $relDir . '/' . $fileName;
 
 $db->prepare('INSERT INTO employee_documents (employee_id,document_type,document_name,file_path,file_size,description) VALUES (?,?,?,?,?,?)')
    ->execute([$emp_id, $document_type, $document_name, $filePath, (int)$file['size'], $description]);

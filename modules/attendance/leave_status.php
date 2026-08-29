@@ -11,8 +11,12 @@
  *     current month number, otherwise 12. Balance = quota − paid days used.
  */
 $page_title = 'Leave Status';
-require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/bootstrap.php';
+// Permission BEFORE any output: header.php emits <!DOCTYPE>, after which
+// http_response_code(403) is ignored and 403.php lands mid-page
+// (security audit L-1).
 require_permission('leave_history', 'view');
+require_once __DIR__ . '/../../includes/header.php';
 require_once __DIR__ . '/../../includes/comp_off.php';   // WorkCalendar
 
 $db = db();

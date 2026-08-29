@@ -1,7 +1,7 @@
 <?php
 require_once '../../includes/bootstrap.php';
 require_login();
-require_permission('letters', 'edit');
+require_permission('letters', 'create');
 
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) redirect(BASE_URL . '/modules/letters/index.php');

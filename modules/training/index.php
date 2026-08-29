@@ -61,8 +61,8 @@ $lessons = [
         'sub'  => 'Understand earnings, deductions and net pay.',
         'steps' => [
             'Go to <b>Payroll → Salary Slips</b> and open your slip (or download the <b>PDF</b>).',
-            '<b>Earnings</b>: Basic, HRA, Conveyance, etc., plus any Benefits and a combined Bonus line.',
-            '<b>Deductions</b>: PF and ESI (statutory), plus <b>Absent</b>, <b>Half Day</b>, <b>Short Hours</b> and <b>Late</b> deductions based on your attendance, and any <b>Loan</b> EMI.',
+            '<b>Earnings</b>: your FULL monthly salary split into Basic, HRA, Conveyance, etc., plus any Benefits and a combined Bonus line — the breakdown does not shrink when you lose days.',
+            '<b>Deductions</b>: PF (on your Basic after LOP) and ESI (on your full monthly salary), plus <b>LOP Amount</b> (with the <b>LOP Days</b> it covers), <b>Half Day</b>, <b>Others</b> (short hours) and <b>Late</b> deductions from your attendance, and any <b>Loan</b> EMI.',
             '<b>Net Pay</b> = Total Earnings − Total Deductions (also written in words).',
             'Most attendance deductions come from absences / short days — good attendance keeps your net pay high.',
         ],

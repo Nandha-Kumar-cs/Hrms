@@ -148,6 +148,64 @@ function comp_off_undeclare_working_day(string $date): void
  * ───────────────────────────────────────────────────────────────────────────*/
 
 /**
+ * comp_off_credits predates the credit_days column; add it lazily, the way this
+ * project does elsewhere. NEVER call this from inside a transaction — ALTER TABLE
+ * forces an implicit COMMIT (the M-5 lesson).
+ */
+function comp_off_credit_columns_ready(): void
+{
+    static $done = false;
+    if ($done || db()->inTransaction()) return;
+    $done = true;
+    db_ensure_column('comp_off_credits', 'credit_days', 'DECIMAL(3,1) NOT NULL DEFAULT 1.0');
+}
+
+/**
+ * What is a day worked on a non-working day actually worth? (security audit M-21)
+ *
+ * The old rule was "any present status → one full day", so a Half Day — or a
+ * ten-minute punch that classified as one — earned a whole day off. Credit is now
+ * proportional to hours actually worked, measured from the punch pair on the
+ * attendance row:
+ *
+ *   ≥ COMP_OFF_MIN_HOURS_FULL  → 1.0 day
+ *   ≥ COMP_OFF_MIN_HOURS_HALF  → 0.5 day
+ *   otherwise                  → nothing
+ *
+ * No punch-out means the day cannot be measured, so it earns nothing — the same
+ * position attendance takes on a missing check-out (M-18). Overnight pairs are
+ * normalised, so a 22:00→06:00 shift counts as eight hours and not minus sixteen.
+ */
+function comp_off_credit_days_for(int $empId, string $date, string $status): float
+{
+    if (!in_array($status, ['On Time', 'Late', 'Half Day'], true)) return 0.0;
+
+    $st = db()->prepare('SELECT in_time, out_time FROM attendance WHERE employee_id = ? AND att_date = ? LIMIT 1');
+    $st->execute([$empId, $date]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+
+    $in  = (string) ($row['in_time']  ?? '');
+    $out = (string) ($row['out_time'] ?? '');
+    if ($in === '' || $out === '') return 0.0;      // unverifiable → earns nothing
+
+    $toMins = static function (string $t): int {
+        $p = explode(':', $t);
+        return ((int) ($p[0] ?? 0)) * 60 + ((int) ($p[1] ?? 0));
+    };
+    $inM  = $toMins($in);
+    $outM = $toMins($out);
+    if ($outM <= $inM) $outM += 1440;               // crossed midnight
+    $hours = ($outM - $inM) / 60;
+
+    $full = defined('COMP_OFF_MIN_HOURS_FULL') ? (float) COMP_OFF_MIN_HOURS_FULL : 6.0;
+    $half = defined('COMP_OFF_MIN_HOURS_HALF') ? (float) COMP_OFF_MIN_HOURS_HALF : 3.0;
+
+    if ($hours >= $full) return 1.0;
+    if ($hours >= $half) return 0.5;
+    return 0.0;
+}
+
+/**
  * Auto-generate (or cancel) a comp-off credit for one attendance row.
  * Present on a non-working / declared-working day → credited; otherwise cancelled.
  * HRMS "present" statuses: On Time, Late, Half Day.
@@ -169,14 +227,17 @@ function comp_off_process_attendance_credit(int $empId, string $date, string $st
         [$dayType, $holidayName] = WorkCalendar::classifyNonWorkingDay($dateObj);
     }
 
-    $present = in_array($status, ['On Time', 'Late', 'Half Day'], true);
+    // How much is this day actually worth? 0 = not enough worked to earn anything.
+    $creditDays = comp_off_credit_days_for($empId, $date, $status);
 
-    if ($present) {
+    if ($creditDays > 0) {
+        comp_off_credit_columns_ready();
         db()->prepare(
-            'INSERT INTO comp_off_credits (employee_id, work_date, day_type, holiday_name, status)
-             VALUES (:e, :d, :t, :n, "credited")
-             ON DUPLICATE KEY UPDATE day_type = VALUES(day_type), holiday_name = VALUES(holiday_name), status = "credited"'
-        )->execute([':e' => $empId, ':d' => $date, ':t' => $dayType, ':n' => $holidayName]);
+            'INSERT INTO comp_off_credits (employee_id, work_date, day_type, holiday_name, credit_days, status)
+             VALUES (:e, :d, :t, :n, :c, "credited")
+             ON DUPLICATE KEY UPDATE day_type = VALUES(day_type), holiday_name = VALUES(holiday_name),
+                                     credit_days = VALUES(credit_days), status = "credited"'
+        )->execute([':e' => $empId, ':d' => $date, ':t' => $dayType, ':n' => $holidayName, ':c' => $creditDays]);
         return 'credited';
     }
 
@@ -214,11 +275,43 @@ function comp_off_leave_type(): ?array
 }
 
 /** Credited (active) credit count for an employee. */
-function comp_off_credited_count(int $empId): int
+/**
+ * Credits an employee can still spend (security audit M-21).
+ *
+ * Two changes from the original COUNT(*):
+ *   • It SUMS credit_days, so a half-day credit is worth half a day rather than
+ *     the whole day COUNT(*) gave it.
+ *   • It ignores credits older than COMP_OFF_EXPIRY_DAYS. There was no expiry at
+ *     all, so a day worked years ago stayed spendable for ever and the liability
+ *     only ever grew. Set COMP_OFF_EXPIRY_DAYS to 0 to restore never-expires.
+ */
+function comp_off_credited_count(int $empId): float
 {
-    $s = db()->prepare("SELECT COUNT(*) FROM comp_off_credits WHERE employee_id = ? AND status = 'credited'");
-    $s->execute([$empId]);
-    return (int)$s->fetchColumn();
+    comp_off_credit_columns_ready();
+    $days = defined('COMP_OFF_EXPIRY_DAYS') ? (int) COMP_OFF_EXPIRY_DAYS : 0;
+
+    $sql    = "SELECT COALESCE(SUM(credit_days),0) FROM comp_off_credits
+                WHERE employee_id = ? AND status = 'credited'";
+    $params = [$empId];
+    if ($days > 0) {
+        $sql .= ' AND work_date >= ?';
+        $params[] = date('Y-m-d', strtotime('-' . $days . ' days'));
+    }
+    $s = db()->prepare($sql);
+    $s->execute($params);
+    return (float) $s->fetchColumn();
+}
+
+/** Credits that have lapsed unused — shown so an expiry is never a silent loss. */
+function comp_off_expired_count(int $empId): float
+{
+    $days = defined('COMP_OFF_EXPIRY_DAYS') ? (int) COMP_OFF_EXPIRY_DAYS : 0;
+    if ($days <= 0) return 0.0;
+    comp_off_credit_columns_ready();
+    $s = db()->prepare("SELECT COALESCE(SUM(credit_days),0) FROM comp_off_credits
+                         WHERE employee_id = ? AND status = 'credited' AND work_date < ?");
+    $s->execute([$empId, date('Y-m-d', strtotime('-' . $days . ' days'))]);
+    return (float) $s->fetchColumn();
 }
 
 /** Availed comp-offs for an employee (holiday-driven grants taken). */
@@ -247,9 +340,10 @@ function comp_off_used_days(int $empId, ?int $excludeRequestId = null): int
 }
 
 /** Comp-off balance = credited credits − used comp-off leave days (never below 0). */
-function comp_off_balance(int $empId): int
+function comp_off_balance(int $empId): float
 {
-    return max(0, comp_off_credited_count($empId) - comp_off_used_days($empId));
+    // float, not int: a half-day credit must not round up into a whole day (M-21).
+    return max(0.0, comp_off_credited_count($empId) - comp_off_used_days($empId));
 }
 
 /**
@@ -261,10 +355,18 @@ function comp_off_check_balance(int $empId, int $days, ?int $excludeRequestId = 
     if (!comp_off_leave_type()) {
         return 'Comp Off leave type is not configured. Please contact admin.';
     }
-    $balance = max(0, comp_off_credited_count($empId) - comp_off_used_days($empId, $excludeRequestId));
+    $balance = max(0.0, comp_off_credited_count($empId) - comp_off_used_days($empId, $excludeRequestId));
     if ($balance < $days) {
-        return 'Insufficient Comp Off balance. Available: ' . $balance . ' day(s), Requested: ' . $days
-             . ' day(s). Earn Comp Off credits by working on public holidays or weekly offs.';
+        $msg = 'Insufficient Comp Off balance. Available: ' . rtrim(rtrim(number_format($balance, 1), '0'), '.')
+             . ' day(s), Requested: ' . $days . ' day(s).';
+        // If credits lapsed, say so — otherwise a balance that quietly shrank
+        // looks like the system losing days rather than a policy being applied.
+        $lapsed = comp_off_expired_count($empId);
+        if ($lapsed > 0) {
+            $msg .= ' ' . rtrim(rtrim(number_format($lapsed, 1), '0'), '.') . ' day(s) expired after '
+                  . (int) COMP_OFF_EXPIRY_DAYS . ' days and can no longer be used.';
+        }
+        return $msg . ' Earn Comp Off credits by working a full day on a public holiday or weekly off.';
     }
     return null;
 }

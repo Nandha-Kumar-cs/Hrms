@@ -61,6 +61,7 @@ INSERT IGNORE INTO permissions (module, action, label) VALUES
 ('od','view','View OD Requests'),
 ('payroll','calculate','Salary Calculation'),
 ('payroll','export','Export Payroll'),
+('payroll','override','Override Paid Leave / OT on a Salary Slip'),
 ('payroll','process','Process Payroll'),
 ('payroll','view','View Payroll'),
 ('promotions','create','Manage Promotions'),

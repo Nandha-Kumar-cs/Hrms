@@ -12,24 +12,10 @@ $emp_id = (int)($_POST['emp_id'] ?? 0);
 $id     = (int)($_POST['id'] ?? 0);
 $return = ($_POST['return'] ?? '') === 'profile';
 
-$db->exec('CREATE TABLE IF NOT EXISTS employee_benefits (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    employee_id INT NOT NULL,
-    benefit_fund_type_id INT NULL,
-    frequency ENUM(\'weekly\',\'fortnightly\',\'monthly\',\'quarterly\',\'half_yearly\',\'annual\') NOT NULL DEFAULT \'monthly\',
-    start_date DATE NULL,
-    end_date DATE NULL,
-    benefit_name VARCHAR(255) NULL,
-    fund_type VARCHAR(100) NOT NULL,
-    amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-    effective_month DATE NOT NULL,
-    status ENUM(\'active\',\'inactive\') DEFAULT \'active\',
-    payment_mode ENUM(\'cash\',\'cashless\') NOT NULL DEFAULT \'cash\',
-    added_by INT NULL,
-    description TEXT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX (employee_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+// One definition, shared with modules/benefits/save.php and payroll (L-7 follow-up).
+// The two pages used to carry DIFFERENT CREATE TABLE statements; whichever ran
+// first on a fresh install won, and the loser's columns never appeared.
+benefits_table_ready();
 
 $freqList     = ['weekly','fortnightly','monthly','quarterly','half_yearly','annual'];
 $fundTypeId   = (int)($_POST['benefit_fund_type_id'] ?? 0);

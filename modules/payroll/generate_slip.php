@@ -37,6 +37,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$empId)               $errors[] = 'Please select an employee.';
     if ($month < 1 || $month > 12) $errors[] = 'Please select a valid month.';
     if ($year < 2000 || $year > 2099) $errors[] = 'Please select a valid year.';
+    // Overriding paid leave or OT is not a routine part of processing payroll —
+    // it can zero out an employee's LOP or grant 300 hours of overtime pay with
+    // nothing to review beforehand. Holding payroll.process is not enough; it
+    // additionally requires payroll.override (security audit H-11).
+    $usesOverride = $paidLeaves > 0 || $manualOt !== null;
+    if ($usesOverride && !can('payroll', 'override')) {
+        $errors[] = 'Overriding paid leave or OT hours requires the "Override Payroll" permission.';
+    }
     // Block future months — payroll cannot be run before the month has started
     // (otherwise e.g. a loan EMI gets deducted for a month that hasn't happened).
     if ($month >= 1 && $month <= 12 && $year >= 2000
@@ -48,6 +56,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($errors) {
         flash('error', implode(' ', $errors));
+        redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId . '&month=' . $month . '&year=' . $year);
+    }
+
+    // ── A finalized month is closed ──────────────────────────────────────────
+    // process.php refuses to reprocess a finalized month, but this page never
+    // looked at payroll_runs at all — so force_regenerate=1 silently rewrote
+    // slips belonging to a month whose totals had already been signed off and
+    // published to employees (security audit M-3). Applies to a first-time
+    // generation too, not just a regeneration: once the month is closed, adding
+    // a slip changes the finalized totals just as much as rewriting one does.
+    $lockMonth = sprintf('%04d-%02d', $year, $month);
+    $runSt = $db->prepare('SELECT status FROM payroll_runs WHERE payroll_month = ? LIMIT 1');
+    $runSt->execute([$lockMonth]);
+    if (($runSt->fetchColumn() ?: '') === 'Finalized') {
+        flash('error',
+            'Payroll for ' . date('F Y', mktime(0, 0, 0, $month, 1, $year))
+            . ' is finalized and can no longer be changed. Salary slips for a finalized month '
+            . 'cannot be generated or regenerated.'
+        );
         redirect(BASE_URL . '/modules/payroll/generate_slip.php?emp=' . $empId . '&month=' . $month . '&year=' . $year);
     }
 
@@ -175,6 +202,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         flash('success', 'Salary slip generated for ' . h($employee['name']) . ' — ' . date('F Y', mktime(0, 0, 0, $month, 1, $year)));
     }
 
+    // Payroll had zero activity-log coverage, and the two override fields above
+    // let an operator zero out LOP or grant 300 OT hours with nothing recording
+    // that it happened (security audit H-11). Every generate/regenerate is
+    // logged; when an override was used, its exact values are logged as an
+    // explicit change row, not folded silently into the summary line.
+    $empLabel   = h($employee['name']) . ' (' . h($employee['employee_id']) . ')';
+    $monthLabel = date('F Y', mktime(0, 0, 0, $month, 1, $year));
+    $logChanges = [];
+    if ($paidLeaves > 0) {
+        $logChanges[] = ['field' => 'Paid Leave override', 'from' => '0 days', 'to' => $paidLeaves . ' day(s)'];
+    }
+    if ($manualOt !== null) {
+        $logChanges[] = ['field' => 'OT hours override', 'from' => 'auto-calculated', 'to' => number_format($manualOt, 1) . ' hrs'];
+    }
+    activity_log(
+        ($existing && $forceReg) ? 'updated' : 'created',
+        'Payroll',
+        (($existing && $forceReg) ? 'Regenerated' : 'Generated') . " salary slip for $empLabel — $monthLabel."
+            . ' Net Pay: ' . money($result['net_pay'])
+            . ($logChanges ? ' [MANUAL OVERRIDE APPLIED]' : ''),
+        $logChanges
+    );
+
     unset($_SESSION['slip_exists']);
     redirect(BASE_URL . '/modules/payroll/slip.php?id=' . $slipId);
 }
@@ -257,30 +307,47 @@ require_once __DIR__ . '/../../includes/header.php';
                 <strong><?= date('F Y', mktime(0,0,0,$slipExists['month'],1,$slipExists['year'])) ?></strong>
                 already exists. Net Pay: <strong style="color:var(--success)"><?= money($slipExists['net_pay']) ?></strong>
             </p>
+            <?php
+            // A finalized month is closed — do not offer a Regenerate button the
+            // POST handler is only going to refuse (security audit M-3).
+            $exLockMonth = sprintf('%04d-%02d', (int)$slipExists['year'], (int)$slipExists['month']);
+            $exRunSt = $db->prepare('SELECT status FROM payroll_runs WHERE payroll_month = ? LIMIT 1');
+            $exRunSt->execute([$exLockMonth]);
+            $exFinalized = (($exRunSt->fetchColumn() ?: '') === 'Finalized');
+            ?>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
                 <a href="<?= BASE_URL ?>/modules/payroll/slip.php?id=<?= $slipExists['slip_id'] ?>" class="btn btn-sm btn-outline-info">
                     <i class="fa fa-eye"></i> View Existing Payslip
                 </a>
+                <?php if ($exFinalized): ?>
+                <span class="badge bg-danger d-inline-flex align-items-center" style="font-size:12px;padding:8px 12px">
+                    <i class="fa fa-lock me-1"></i> Finalized — this month can no longer be changed
+                </span>
+                <?php else: ?>
                 <form method="POST" class="d-flex align-items-end gap-2" onsubmit="return confirm('Regenerate salary slip?\n\nThis will overwrite the existing slip with a fresh calculation.')">
                     <?= csrf_field() ?>
                     <input type="hidden" name="employee_id" value="<?= $slipExists['emp_id'] ?>">
                     <input type="hidden" name="month" value="<?= $slipExists['month'] ?>">
                     <input type="hidden" name="year" value="<?= $slipExists['year'] ?>">
                     <input type="hidden" name="force_regenerate" value="1">
+                    <?php $canOverride = can('payroll', 'override'); ?>
                     <div>
                         <label class="form-label small mb-1">Paid Leaves (days)</label>
                         <input type="number" name="paid_leaves" class="form-control form-control-sm" min="0" step="1"
-                               value="<?= (int)($slipExists['paid_leaves'] ?? 0) ?>" style="max-width:120px">
+                               value="<?= (int)($slipExists['paid_leaves'] ?? 0) ?>" style="max-width:120px"
+                               <?= $canOverride ? '' : 'disabled title="Requires the Override Payroll permission"' ?>>
                     </div>
                     <div>
                         <label class="form-label small mb-1">OT Hours</label>
                         <input type="number" name="ot_hours" class="form-control form-control-sm" min="0" step="0.5"
-                               placeholder="auto" value="<?= h((string)($slipExists['ot_hours'] ?? '')) ?>" style="max-width:120px">
+                               placeholder="auto" value="<?= h((string)($slipExists['ot_hours'] ?? '')) ?>" style="max-width:120px"
+                               <?= $canOverride ? '' : 'disabled title="Requires the Override Payroll permission"' ?>>
                     </div>
                     <button type="submit" class="btn btn-sm btn-warning">
                         <i class="fa fa-refresh"></i> Regenerate Payslip
                     </button>
                 </form>
+                <?php endif; ?>
                 <a href="<?= BASE_URL ?>/modules/payroll/generate_slip.php" class="btn btn-sm btn-ghost">Dismiss</a>
             </div>
         </div>
@@ -345,21 +412,26 @@ require_once __DIR__ . '/../../includes/header.php';
                     </div>
                 </div>
 
+                <?php $canOverride = can('payroll', 'override'); ?>
                 <div style="margin-top:12px">
                     <label class="form-label">Paid Leaves (days)</label>
-                    <input type="number" name="paid_leaves" class="form-control" min="0" step="1" value="0" style="max-width:160px">
+                    <input type="number" name="paid_leaves" class="form-control" min="0" step="1" value="0" style="max-width:160px"
+                           <?= $canOverride ? '' : 'disabled title="Requires the Override Payroll permission"' ?>>
                     <div class="form-text">
                         Number of absent days to treat as <strong>paid leave</strong> this month — those days are
                         <strong>not deducted</strong>. e.g. 4 absent &amp; 2 paid leaves entered → only 2 days deducted.
+                        <?php if (!$canOverride): ?><br><span class="text-danger">Requires the Override Payroll permission — every use is logged.</span><?php endif; ?>
                     </div>
                 </div>
 
                 <div style="margin-top:12px">
                     <label class="form-label">OT Hours</label>
-                    <input type="number" name="ot_hours" class="form-control" min="0" step="0.5" placeholder="auto" style="max-width:160px">
+                    <input type="number" name="ot_hours" class="form-control" min="0" step="0.5" placeholder="auto" style="max-width:160px"
+                           <?= $canOverride ? '' : 'disabled title="Requires the Override Payroll permission"' ?>>
                     <div class="form-text">
                         <strong>Leave blank</strong> to auto-calculate overtime from attendance (as now).
                         Enter a value to <strong>override</strong> the OT hours used on this slip.
+                        <?php if (!$canOverride): ?><br><span class="text-danger">Requires the Override Payroll permission — every use is logged.</span><?php endif; ?>
                     </div>
                 </div>
 

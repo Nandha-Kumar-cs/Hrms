@@ -20,6 +20,10 @@ $canEdit   = can('users', 'edit');
 $canDelete = can('users', 'delete');
 $self      = BASE_URL . '/modules/settings/users.php';
 
+// This screen writes must_change_password on every create and every admin-issued
+// password reset (security audit H-3) — make sure the column is there first.
+db_ensure_column('users', 'must_change_password', 'TINYINT(1) NOT NULL DEFAULT 0');
+
 // ── POST actions ─────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf($_POST['csrf_token'] ?? '');
@@ -44,8 +48,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'toggle') {
         if (!$canEdit) { http_response_code(403); exit('Forbidden'); }
         $uid = (int)($_POST['id'] ?? 0);
-        if ($uid === (int)$me['id']) flash('error', 'You cannot change your own status.');
-        else { $db->prepare('UPDATE users SET is_active = 1 - is_active WHERE id=?')->execute([$uid]); flash('success', 'User status updated.'); }
+        // Read the current state first: the guard needs to know what this flip
+        // would WRITE, and 1 - is_active is only a deactivation half the time.
+        $cur = $db->prepare('SELECT is_active FROM users WHERE id=?');
+        $cur->execute([$uid]);
+        $curActive = $cur->fetchColumn();
+
+        if ($uid === (int)$me['id'])  flash('error', 'You cannot change your own status.');
+        elseif ($curActive === false) flash('error', 'User not found.');
+        elseif ($err = super_admin_lockout_error($db, $uid, null, 1 - (int)$curActive)) {
+            activity_log('updated', 'User', 'REFUSED a status change on Super Admin user #' . $uid . ': ' . $err);
+            flash('error', $err);
+        } else {
+            $db->prepare('UPDATE users SET is_active = 1 - is_active WHERE id=?')->execute([$uid]);
+            activity_log('updated', 'User', ((int)$curActive === 1 ? 'Deactivated' : 'Activated') . ' user #' . $uid);
+            flash('success', 'User status updated.');
+        }
         redirect($self);
     }
 
@@ -73,13 +91,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Only a Super Admin may grant the Super Admin role (no self-minted admins).
             elseif (!can_assign_role($roleId)) $errors[] = 'You are not allowed to assign that role.';
         }
-        // You cannot change your OWN role or permissions (prevents self-escalation).
+        // You cannot change your OWN role or permissions (prevents self-escalation),
+        // nor deactivate yourself. Both are force-kept BEFORE the lockout guard
+        // below, so editing your own profile can never trip it.
         if ($editingSelf) {
             $selfRow = $db->prepare('SELECT role_id FROM users WHERE id=?'); $selfRow->execute([$id]);
             $roleId  = (int)$selfRow->fetchColumn();   // force-keep current role
+            $active  = 1;                              // never lock yourself out
         }
-        if ($action === 'create' && strlen($pw) < 6) $errors[] = 'Password must be at least 6 characters.';
-        if ($action === 'update' && $pw !== '' && strlen($pw) < 6) $errors[] = 'Password must be at least 6 characters.';
+        // Password rules match change_password.php exactly (PASSWORD_MIN_LENGTH).
+        // They used to be 6 here and 10 there, so an admin could issue a password
+        // the holder would then be refused when they tried to keep it.
+        if ($pw !== '' && strlen($pw) < PASSWORD_MIN_LENGTH)
+            $errors[] = 'Password must be at least ' . PASSWORD_MIN_LENGTH . ' characters.';
+        if ($action === 'create' && $pw === '')
+            $errors[] = 'Password must be at least ' . PASSWORD_MIN_LENGTH . ' characters.';
+
+        // ── Step-up re-authentication before minting a credential (M-13) ──────
+        // Writing a password hash was reachable with nothing but a live session:
+        // no proof the actor knew their OWN password. That made a stolen session
+        // (or an unlocked desk) enough to take over an account permanently — and
+        // for a SELF edit it side-stepped change_password.php, which does demand
+        // the current password, by simply setting a new one here instead.
+        if ($pw !== '') {
+            if (!verify_actor_password((string)($_POST['actor_password'] ?? ''))) {
+                activity_log('updated', 'User',
+                    'REFUSED a password change on user #' . ($id ?: 'new')
+                    . ': the actor did not confirm their own password.');
+                $errors[] = 'To set a password, confirm your own password in the "Your password" field.';
+            }
+        }
+
+        // Same lockout guard as the status toggle, for the two ways this form can
+        // strip a Super Admin: clearing is_active, or moving them to another role
+        // (security audit M-12).
+        if ($action === 'update' && $id
+            && ($err = super_admin_lockout_error($db, $id, $roleId, $active))) {
+            $errors[] = $err;
+        }
 
         if ($errors) {
             flash('error', implode(' ', $errors));
@@ -89,16 +138,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'create') {
             $hash = password_hash($pw, PASSWORD_BCRYPT, ['cost' => 12]);
-            $db->prepare('INSERT INTO users (email,name,password_hash,role_id,employee_id,is_active,created_at) VALUES (?,?,?,?,?,?,NOW())')
+            // An administrator chose this password, so it is temporary by
+            // definition — force the account holder to set their own on first
+            // login (security audit H-3).
+            $db->prepare('INSERT INTO users (email,name,password_hash,role_id,employee_id,is_active,must_change_password,created_at) VALUES (?,?,?,?,?,?,1,NOW())')
                ->execute([$email, $name, $hash, $roleId, $empId, $active]);
             $id = (int)$db->lastInsertId();
             activity_log('created', 'User', "Created user: $name ($email)");
         } else {
-            if ($id === (int)$me['id']) $active = 1;   // never lock yourself out
             if ($pw !== '') {
                 $hash = password_hash($pw, PASSWORD_BCRYPT, ['cost' => 12]);
-                $db->prepare('UPDATE users SET name=?,email=?,role_id=?,employee_id=?,is_active=?,password_hash=? WHERE id=?')
-                   ->execute([$name, $email, $roleId, $empId, $active, $hash, $id]);
+                // Resetting someone else's password issues a temporary one they
+                // must replace; changing your own here is a real change, so it
+                // does not re-prompt you (security audit H-3).
+                $mustChange = ($id === (int)$me['id']) ? 0 : 1;
+                $db->prepare('UPDATE users SET name=?,email=?,role_id=?,employee_id=?,is_active=?,password_hash=?,must_change_password=? WHERE id=?')
+                   ->execute([$name, $email, $roleId, $empId, $active, $hash, $mustChange, $id]);
             } else {
                 $db->prepare('UPDATE users SET name=?,email=?,role_id=?,employee_id=?,is_active=? WHERE id=?')
                    ->execute([$name, $email, $roleId, $empId, $active, $id]);
@@ -175,7 +230,14 @@ if ($screen === 'new' || $screen === 'edit'):
                     <div class="mb-3"><label class="form-label fw-semibold">Email <span class="text-danger">*</span></label>
                         <input type="email" name="email" class="form-control" value="<?= h($val('email')) ?>" required></div>
                     <div class="mb-3"><label class="form-label fw-semibold">Password <?= $screen === 'new' ? '<span class="text-danger">*</span>' : '<span class="text-muted fw-normal">(leave blank to keep)</span>' ?></label>
-                        <input type="password" name="password" class="form-control" autocomplete="new-password" <?= $screen === 'new' ? 'required' : '' ?>></div>
+                        <input type="password" name="password" class="form-control" autocomplete="new-password"
+                               minlength="<?= PASSWORD_MIN_LENGTH ?>" <?= $screen === 'new' ? 'required' : '' ?>>
+                        <small class="text-muted">At least <?= PASSWORD_MIN_LENGTH ?> characters. The holder must change it on first login.</small></div>
+                    <!-- Step-up: setting a password requires the ACTOR's own password (M-13). -->
+                    <div class="mb-3"><label class="form-label fw-semibold">Your password
+                            <span class="text-muted fw-normal">(only needed if you set a password above)</span></label>
+                        <input type="password" name="actor_password" class="form-control" autocomplete="current-password">
+                        <small class="text-muted">Confirms it is really you before a login credential is issued.</small></div>
                     <div class="mb-3"><label class="form-label fw-semibold">Role <span class="text-danger">*</span></label>
                         <select name="role_id" id="roleSel" class="form-select" required>
                             <option value="">Select role</option>

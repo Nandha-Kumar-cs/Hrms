@@ -159,7 +159,7 @@ $rows = $db->query('SELECT * FROM entities ORDER BY name')->fetchAll();
                         <td><?= $i + 1 ?></td>
                         <td>
                             <?php if (!empty($r['logo']) && is_file($LOGO_DIR . '/' . $r['logo'])): ?>
-                                <img src="<?= BASE_URL ?>/storage/entities/<?= h($r['logo']) ?>" alt="" style="height:34px;max-width:60px;object-fit:contain">
+                                <img src="<?= h(file_url('storage/entities/' . $r['logo'])) ?>" alt="" style="height:34px;max-width:60px;object-fit:contain">
                             <?php else: ?>
                                 <span class="text-muted">—</span>
                             <?php endif; ?>

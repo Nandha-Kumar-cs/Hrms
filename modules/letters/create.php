@@ -103,8 +103,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$errors) {
             // Auto-generate ref number
             if (!$ref) {
-                $cnt = $db->query('SELECT COUNT(*)+1 FROM letters')->fetchColumn();
-                $ref = 'HR/' . (LETTER_REF_CODES[$type] ?? $type[0]) . '/' . date('Y') . '/' . str_pad($cnt, 4, '0', STR_PAD_LEFT);
+                // COUNT(*)+1 raced with itself and with increments/save.php, and any
+                // deletion made the next reference duplicate an existing one (L-5).
+                // The per-type code (EXP / INT / ...) still comes from LETTER_REF_CODES.
+                $ref = next_letter_reference(LETTER_REF_CODES[$type] ?? $type[0]);
             }
             $db->prepare('INSERT INTO letters (employee_id,type,issued_date,reference,content,issued_by,status) VALUES(?,?,?,?,?,?,?)')
                ->execute([$sel_emp, $type, $date, $ref, $content, $user['id'], 'Draft']);

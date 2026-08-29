@@ -1,13 +1,18 @@
-# Never execute scripts uploaded here — serve as static only
-<FilesMatch "\.(php|php\d|phtml|phps|pht|phar|cgi|pl|py|asp|aspx|sh|svgz?)$">
-    <IfModule mod_authz_core.c>
-        Require all denied
-    </IfModule>
-    <IfModule !mod_authz_core.c>
-        Order allow,deny
-        Deny from all
-    </IfModule>
-</FilesMatch>
+# hrms-data-dir-hardening v1
+# Direct web access is DENIED. These files are employee PII and signature
+# images; every read goes through /file.php, which checks the permission and
+# the record's owner (security audit H-2).
+# Managed by hrms_harden_data_dirs() in includes/helpers.php — edits are
+# overwritten on the next request.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
+Options -Indexes
+# Belt and braces: never executable, even if the deny above is overridden.
 php_flag engine off
 RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .phar
 RemoveType .php .phtml .php3 .php4 .php5 .php7 .phar
