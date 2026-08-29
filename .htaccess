@@ -25,7 +25,3 @@ Options -Indexes
 # the codebase (nullable type hints need 7.1+, arrow functions 7.4+, match()
 # and str_contains() 8.0+).
 # ─────────────────────────────────────────────────────────────────────────────
-<!-- 
-<FilesMatch "\.(php)$">
-  SetHandler application/x-lsphp82
-</FilesMatch> -->g
